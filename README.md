@@ -1,4 +1,4 @@
-<!-- Banner is added in v0.8.0 together with the brand assets. -->
+<p align="center"><img src="https://github.com/lacodda/midda/raw/main/assets/banner.svg" alt="midda - what is safe to delete" width="720"></p>
 
 # midda
 
