@@ -24,39 +24,8 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-Early development. The version map to 1.0 is fixed:
-
-| Version | What lands |
-| --- | --- |
-| v0.1.0 | Filesystem walk, size tree, sortable table |
-| v0.2.0 | Treemap visualization, drill-down |
-| v0.3.0 | MFT mode behind UAC — seconds instead of minutes |
-| v0.4.0 | USN Journal — incremental index updates |
-| v0.5.0 | "Safe to delete" rules engine |
-| v0.6.0 | Deletion with recycle bin and confirmation |
-| v0.7.0 | Duplicate detection |
-| v0.8.0 | Shell integration, installer, auto-update |
-| v1.0.0 | Public release |
-
-## Building
-
-```
-cargo run --release
-cargo fmt --check && cargo clippy -- -D warnings && cargo test
-```
-
-Requires Rust 1.85 or newer.
-
-## Principles
-
-**It always works.** Missing administrator rights slows the scan down; it never blocks it.
-
-**Nothing is deleted without asking.** The tool shows and explains; the decision is the user's, and the recycle bin is the default.
-
-**Every rule justifies itself.** A finding without an explanation of what regenerates it is not a finding.
-
-Architecture decisions are recorded in [`docs/adr/`](docs/adr/).
+Scaffold stage: the crate builds and runs, but the scanner itself is not written yet — nothing here can be pointed at a drive today. See [CONTRIBUTING.md](https://github.com/lacodda/midda/blob/main/CONTRIBUTING.md) for the build and the project's principles.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/lacodda/midda/blob/main/LICENSE).
