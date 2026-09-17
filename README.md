@@ -1,8 +1,11 @@
 <p align="center"><img src="https://github.com/lacodda/midda/raw/main/assets/banner.svg" alt="midda - what is safe to delete" width="720"></p>
 
-# midda
+> A disk space analyzer for Windows that answers the question you actually have.
 
-**A disk space analyzer for Windows that answers the question you actually have.**
+<p align="center">
+  <a href="https://github.com/lacodda/midda/actions"><img src="https://img.shields.io/github/actions/workflow/status/lacodda/midda/ci.yml?style=flat-square" alt="CI"></a>
+  <a href="https://github.com/lacodda/midda/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lacodda/midda?style=flat-square" alt="License"></a>
+</p>
 
 Existing tools tell you *what is large*. That is the easy half. Looking at 40 GB spread across project folders, the real question is *which of this comes back with one build command, and which is the only copy*. `midda` answers that one.
 
@@ -28,4 +31,4 @@ Scaffold stage: the crate builds and runs, but the scanner itself is not written
 
 ## License
 
-MIT — see [LICENSE](https://github.com/lacodda/midda/blob/main/LICENSE).
+MIT (c) [Kirill Lakhtachev](https://lacodda.com)
