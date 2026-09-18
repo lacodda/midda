@@ -3,32 +3,39 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ['docs/**']
   pull_request:
-    paths-ignore: ['docs/**']
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: ${{ matrix.os }}
+  rust:
+    name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Windows is the product target (MFT, USN Journal). Linux keeps the
-        # walk-based scanner honest — it is the portable half of ADR 0001.
+        # Windows is the product target (MFT, USN Journal, the allocated size).
+        # Linux keeps the walk-based scanner honest — it is the portable half of
+        # ADR 0001, and the one place a Windows-only assumption shows up.
         os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v7
-      - name: Install Linux build deps (eframe)
+      - name: Install Linux build deps (Tauri)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The desktop crate's build script needs a frontendDist to exist, and its
+      # tests read the brand assets rather than the bundle — so an empty dist is
+      # enough here and the real one is built by the `frontend` job.
+      - name: Stub the frontend bundle
+        shell: bash
+        run: mkdir -p dist && echo '<!doctype html><title>midda</title>' > dist/index.html
       - name: Format
         run: cargo fmt --check
       - name: Lint
@@ -38,22 +45,42 @@ jobs:
       - name: Build
         run: cargo build --release
 
-  # rust-version is a promise to anyone building from source. Without a job
-  # that actually builds on it, the number silently rots the first time a new
-  # API is used — so read it from the manifest and hold it to it.
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `lint` is eslint, tsc and vitest in one: the formatting rules are the
+      # product's argument about what a byte means, and they are tested.
+      - run: pnpm lint
+      - run: pnpm build
+
+  # rust-version is a promise to anyone building from source. Without a job that
+  # actually builds on it, the number silently rots the first time a new API is
+  # used — so read it from the manifest and hold it to it.
   msrv:
     name: msrv
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install Linux build deps
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+      - name: Install Linux build deps (Tauri)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Read rust-version from the manifest
         id: msrv
-        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '[.packages[].rust_version] | map(select(. != null)) | first')" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
+      - name: Stub the frontend bundle
+        run: mkdir -p dist && echo '<!doctype html><title>midda</title>' > dist/index.html
       - name: Build on the declared MSRV
         run: cargo check --all-targets
