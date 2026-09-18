@@ -27,7 +27,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-Scaffold stage: the crate builds and runs, but the scanner itself is not written yet — nothing here can be pointed at a drive today. See [CONTRIBUTING.md](https://github.com/lacodda/midda/blob/main/CONTRIBUTING.md) for the build and the project's principles.
+v0.1.0. Pick a drive or a folder and midda reads it, in parallel, with a live count of what it has found; the result is a list of what is inside, biggest first, with the share of the total, the age of each layer, and how far down you are. Sizes are what the volume gives up, and a switch shows what files read as instead. The treemap, the sortable table and the rules about what is safe to delete are still ahead — see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
