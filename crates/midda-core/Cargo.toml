@@ -1,0 +1,33 @@
+[package]
+name = "midda-core"
+description = "The engine behind midda: scans a volume and builds the tree of what occupies it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+# A walk is a tree of independent subtrees, which is what a work-stealing pool
+# is for: `rayon` is the whole job here, and writing a thread pool by hand to
+# avoid one dependency is how the line gets a worse one.
+rayon = "1"
+
+[target.'cfg(windows)'.dependencies]
+# Allocated size, compression and sparseness are not in `std::fs::Metadata`:
+# they come from `GetFileInformationByHandleEx` / `FindFirstFileEx` and the
+# attribute bits. `windows-sys` is the raw declarations with no wrapper layer.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

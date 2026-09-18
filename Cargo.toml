@@ -1,51 +1,33 @@
-[package]
-name = "midda"
+[workspace]
+resolver = "3"
+members = ["crates/midda-core", "src-tauri"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
-description = "A disk space analyzer for Windows that tells you not just what is large, but what is safe to delete"
 license = "MIT"
-repository = "https://github.com/lacodda/midda"
-homepage = "https://github.com/lacodda/midda"
-readme = "README.md"
-keywords = ["disk-usage", "treemap", "ntfs", "cleanup", "windows"]
-categories = ["filesystem", "visualization"]
 authors = ["Kirill Lakhtachev <lahtachev@gmail.com>"]
-# assets/icon.ico is required by build.rs on Windows; the rest of the brand
-# artwork only serves GitHub and the docs site.
-exclude = [
-    "docs/",
-    ".github/",
-    "cliff.toml",
-    "rustfmt.toml",
-    "assets/social-preview.png",
-    "assets/logo-512.png",
-    "assets/apple-touch-icon.png",
-    "assets/favicon-32.png",
-]
+repository = "https://github.com/lacodda/midda"
+# Measured against the crates actually resolved, not copied from the toolchain.
+# Raised only when a dependency or a feature needs it; the CI `msrv` job reads
+# this number and builds on it, so it cannot silently rot.
+rust-version = "1.88"
 
-[target.'cfg(windows)'.build-dependencies]
-winresource = "0.1"
+[workspace.lints.rust]
+# `deny` rather than `forbid`: the on-disk size of a file is not in
+# `std::fs::Metadata` and never will be — it comes from `GetCompressedFileSizeW`,
+# which is one FFI call. `forbid` cannot be lifted locally, which would push that
+# call into a second crate outside the workspace lint — more moving parts
+# guarding less. Every `allow` carries its safety argument beside it.
+unsafe_code = "deny"
 
-[dependencies]
-anyhow = "1"
-thiserror = "2"
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
 
-# UI: no GPU canvas here, so immediate mode is the fastest path to tables and treemaps
-eframe = "0.36"
-egui = "0.36"
-
-# Scanning: the walkdir path works without elevation; the MFT path arrives in v0.3.0
-walkdir = "2"
-rayon = "1"
-directories = "6"
-
-[target.'cfg(windows)'.dependencies]
-# MFT and USN Journal access (v0.3.0 / v0.4.0) — requires administrator privileges
-ntfs-reader = "0.4"
-
-[dev-dependencies]
-tempfile = "3"
+# Line-table debug info keeps backtraces readable while cutting the .pdb weight
+# that dominates target/debug. Full debug info is a one-line revert when needed.
+[profile.dev]
+debug = 1
 
 [profile.release]
 lto = true
