@@ -1,5 +1,9 @@
 /target
 
+# Frontend
+node_modules/
+/dist/
+
 # Docs site (Astro Starlight)
 docs/node_modules/
 docs/dist/

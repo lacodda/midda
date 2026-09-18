@@ -1,0 +1,42 @@
+[package]
+name = "midda-desktop"
+description = "midda: a disk space analyzer for Windows (Tauri v2 desktop app)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# Presentation rasters serve the README and the release page, not anyone
+# building from the crate. icon.ico stays: the Windows resource needs it.
+exclude = [
+    "../assets/social-preview.png",
+    "../assets/logo-512.png",
+    "../assets/apple-touch-icon.png",
+    "../assets/favicon-32.png",
+]
+
+[lib]
+name = "midda_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+midda-core = { path = "../crates/midda-core", version = "0.1.0" }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-dialog = "2"
+
+# The first screen lists drives with their capacity: which letters exist, how
+# full each is, and what it is called. None of that is in std.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
