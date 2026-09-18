@@ -63,11 +63,15 @@ export function formatAge(millis: number | null, now: number = Date.now()): stri
   if (days === 1) return 'yesterday'
   if (days < 30) return `${days} days`
 
-  const months = Math.floor(days / 30)
-  if (months < 12) return months === 1 ? '1 month' : `${months} months`
-
+  // Years are counted before months are ruled out. Handing off at "twelve
+  // 30-day months" and picking up at "one 365-day year" leaves the five days
+  // between them belonging to neither: 360 days rendered as "0 years", which is
+  // a row claiming to be from the future. Found on screen, on a real list.
   const years = Math.floor(days / 365)
-  return years === 1 ? '1 year' : `${years} years`
+  if (years >= 1) return years === 1 ? '1 year' : `${years} years`
+
+  const months = Math.max(Math.floor(days / 30), 1)
+  return months === 1 ? '1 month' : `${months} months`
 }
 
 /**

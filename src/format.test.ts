@@ -62,6 +62,21 @@ describe('formatAge', () => {
     expect(formatAge(daysAgo(1200), now)).toBe('3 years')
   })
 
+  it('leaves no gap between the last month and the first year', () => {
+    // Months step by 30 days and years by 365, so the five days between the
+    // twelfth month and the first year belonged to neither branch: 360 days
+    // rendered as "0 years". Found on screen, on a real list of files.
+    for (let days = 28; days <= 800; days += 1) {
+      const age = formatAge(daysAgo(days), now)
+      expect(age, `${days} days ago`).not.toMatch(/^0 /)
+    }
+    // 360 and 364 days are twelve 30-day months and not yet a 365-day year;
+    // they now say so instead of falling through to "0 years".
+    expect(formatAge(daysAgo(360), now)).toBe('12 months')
+    expect(formatAge(daysAgo(364), now)).toBe('12 months')
+    expect(formatAge(daysAgo(365), now)).toBe('1 year')
+  })
+
   it('says nothing when the filesystem said nothing', () => {
     // An invented date would poison every "what is old" question the later
     // versions are built on.
