@@ -5,7 +5,20 @@ import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Progress } from '@/components/ui/progress'
-import { cancelScan, listChildren, listVolumes, scanProgress, startScan, type Row, type ScanResult, type SizeBasis, type Volume } from '@/core'
+import {
+  cancelScan,
+  DEFAULT_SORT,
+  listVolumes,
+  scanProgress,
+  startScan,
+  toggleSort,
+  type Row,
+  type ScanResult,
+  type SizeBasis,
+  type Sort,
+  type SortKey,
+  type Volume,
+} from '@/core'
 import { formatBytes, formatCount } from '@/format'
 import { Rows } from '@/Rows'
 import { Volumes } from '@/Volumes'
@@ -31,7 +44,7 @@ export default function App() {
   const [stage, setStage] = useState<Stage>({ at: 'choosing' })
   const [counted, setCounted] = useState({ entries: 0, bytes: 0 })
   const [basis, setBasis] = useState<SizeBasis>('allocated')
-  const [rows, setRows] = useState<Row[]>([])
+  const [sort, setSort] = useState<Sort>(DEFAULT_SORT)
   /** The path from the scan root down to what is on screen. */
   const [trail, setTrail] = useState<Row[]>([])
 
@@ -57,7 +70,7 @@ export default function App() {
     async (target: string) => {
       setStage({ at: 'scanning', target })
       setCounted({ entries: 0, bytes: 0 })
-      setRows([])
+      setSort(DEFAULT_SORT)
       setTrail([])
 
       try {
@@ -94,10 +107,18 @@ export default function App() {
   // Whatever is at the end of the trail is what the table shows.
   const showing = trail.at(-1) ?? null
 
-  useEffect(() => {
-    if (stage.at !== 'done' || showing === null) return
-    void listChildren(showing.id, basis).then(setRows)
-  }, [stage.at, showing, basis])
+  const changeSort = useCallback((key: SortKey) => {
+    setSort((sort) => toggleSort(sort, key))
+  }, [])
+
+  /* The switch moves the sort with it when the sort is on the other size.
+   * Showing "on disk" while ordering by what files read as is two answers to
+   * one question, and the reader cannot see which they are looking at. A sort
+   * on name, date or item count is left alone: it is not about size at all. */
+  const changeBasis = useCallback((next: SizeBasis) => {
+    setBasis(next)
+    setSort((sort) => (sort.key === 'allocated' || sort.key === 'logical' ? { key: next, direction: sort.direction } : sort))
+  }, [])
 
   const descend = useCallback((row: Row) => {
     if (row.isDirectory) setTrail((trail) => [...trail, row])
@@ -131,7 +152,7 @@ export default function App() {
                 <button
                   key={value}
                   type="button"
-                  onClick={() => setBasis(value)}
+                  onClick={() => changeBasis(value)}
                   aria-pressed={basis === value}
                   className={
                     basis === value
@@ -190,8 +211,9 @@ export default function App() {
             result={stage.result}
             trail={trail}
             showing={showing}
-            rows={rows}
+            sort={sort}
             basis={basis}
+            onSortChange={changeSort}
             onDescend={descend}
             onClimb={climbTo}
           />

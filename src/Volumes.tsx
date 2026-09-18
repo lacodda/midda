@@ -1,7 +1,7 @@
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import type { Volume } from '@/core'
-import { formatBytes } from '@/format'
+import { formatBytes, formatShare } from '@/format'
 
 interface VolumesProps {
   /** `null` while the list is still being read. */
@@ -10,36 +10,63 @@ interface VolumesProps {
   onBrowse: () => void
 }
 
+/** What is used on a volume, when it could be read. */
+function usedOf(volume: Volume): { used: number; share: number } | null {
+  if (volume.total === null || volume.free === null || volume.total <= 0) return null
+  const used = volume.total - volume.free
+  return { used, share: used / volume.total }
+}
+
 /**
- * The first screen: where is the space, and which of it should be read.
+ * The first screen: where is the space, across every volume at once.
  *
- * A drive is shown with how full it already is, because the question "which
- * drive" is usually answered by "the one that is nearly full" — and making the
- * user open a picker to find that out would be asking them for the answer.
+ * The question "which drive should I look at" is nearly always answered by "the
+ * one that is nearly full", and a file picker cannot say which that is. So the
+ * drives are shown with how full each already is, sorted by what is left rather
+ * than by letter — the one about to run out belongs at the top, whatever it is
+ * called.
+ *
+ * This is not the scan. Nothing here has been read: these are the numbers the
+ * volume itself reports, which arrive instantly and are the reason the reader
+ * can choose before waiting for anything.
  */
 export function Volumes({ volumes, onPick, onBrowse }: VolumesProps) {
   if (volumes === null) {
     return (
       <div className="flex flex-1 items-center justify-center">
-        <Spinner />
+        <Spinner label="Reading the volumes" />
       </div>
     )
   }
 
+  // Fullest first. A volume that would not report its space has no claim on the
+  // top of the list, so it sorts last — the same rule the table uses for a row
+  // with no date: unknown is not the same as zero.
+  const ordered = [...volumes].sort((a, b) => {
+    const [left, right] = [usedOf(a), usedOf(b)]
+    if (left === null && right === null) return a.path.localeCompare(b.path)
+    if (left === null) return 1
+    if (right === null) return -1
+    return right.share - left.share
+  })
+
+  const known = ordered.map(usedOf).filter((space): space is { used: number; share: number } => space !== null)
+  const totalUsed = known.reduce((sum, space) => sum + space.used, 0)
+  const totalCapacity = ordered.reduce((sum, volume) => sum + (volume.total ?? 0), 0)
+
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center gap-6 p-8">
       <div>
-        <h1 className="text-lg font-semibold">What should midda read?</h1>
+        <h1 className="text-lg font-semibold">Where is the space?</h1>
         <p className="mt-1 text-sm text-dim">
-          Sizes are what the volume gives up, not what a file reads as. Without administrator rights the scan walks the
-          filesystem, which is slower and works everywhere.
+          Every volume on this machine, fullest first. Sizes are what the volume gives up, not what a file reads as. Without
+          administrator rights the scan walks the filesystem, which is slower and works everywhere.
         </p>
       </div>
 
       <ul className="flex flex-col gap-2">
-        {volumes.map((volume) => {
-          const used = volume.total !== null && volume.free !== null ? volume.total - volume.free : null
-          const share = used !== null && volume.total ? used / volume.total : null
+        {ordered.map((volume) => {
+          const space = usedOf(volume)
 
           return (
             <li key={volume.path}>
@@ -50,9 +77,9 @@ export function Volumes({ volumes, onPick, onBrowse }: VolumesProps) {
               >
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium">{volume.label}</span>
-                  {volume.total !== null && used !== null ? (
+                  {space !== null && volume.total !== null && volume.free !== null ? (
                     <span className="tabular mt-0.5 block text-xs text-dim">
-                      {formatBytes(used)} used of {formatBytes(volume.total)}
+                      {formatBytes(space.used)} used of {formatBytes(volume.total)} · {formatBytes(volume.free)} free
                     </span>
                   ) : (
                     // A drive that is not ready — an empty card reader, a
@@ -62,13 +89,18 @@ export function Volumes({ volumes, onPick, onBrowse }: VolumesProps) {
                   )}
                 </span>
 
-                {share !== null && (
-                  <span className="h-1.5 w-32 shrink-0 overflow-hidden rounded-full bg-soft" aria-hidden>
-                    <span
-                      className={share > 0.9 ? 'block h-full bg-bad' : share > 0.75 ? 'block h-full bg-warn' : 'block h-full bg-accent'}
-                      style={{ width: `${Math.round(share * 100)}%` }}
-                    />
-                  </span>
+                {space !== null && (
+                  <>
+                    <span className="tabular w-12 shrink-0 text-right text-xs text-dim">{formatShare(space.used, volume.total ?? 0)}</span>
+                    <span className="h-1.5 w-32 shrink-0 overflow-hidden rounded-full bg-soft" aria-hidden>
+                      <span
+                        className={
+                          space.share > 0.9 ? 'block h-full bg-bad' : space.share > 0.75 ? 'block h-full bg-warn' : 'block h-full bg-accent'
+                        }
+                        style={{ width: `${Math.round(space.share * 100)}%` }}
+                      />
+                    </span>
+                  </>
                 )}
               </button>
             </li>
@@ -76,10 +108,15 @@ export function Volumes({ volumes, onPick, onBrowse }: VolumesProps) {
         })}
       </ul>
 
-      <div>
+      <div className="flex items-baseline justify-between gap-4">
         <Button variant="ghost" size="sm" onClick={onBrowse}>
           Or choose a folder…
         </Button>
+        {known.length > 1 && totalCapacity > 0 && (
+          <span className="tabular text-xs text-dim">
+            {formatBytes(totalUsed)} used across {known.length} volumes
+          </span>
+        )}
       </div>
     </div>
   )

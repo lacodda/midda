@@ -1,27 +1,25 @@
-import type { Row, ScanResult, SizeBasis } from '@/core'
+import { EntryTable } from '@/EntryTable'
+import type { Row, ScanResult, SizeBasis, Sort, SortKey } from '@/core'
 import { sizeOf } from '@/core'
-import { describeOverhead, formatAge, formatBytes, formatCount, formatShare } from '@/format'
+import { describeOverhead, formatBytes, formatCount } from '@/format'
 
 interface RowsProps {
   result: ScanResult
   /** The scan root down to what is on screen. */
   trail: Row[]
   showing: Row
-  rows: Row[]
+  sort: Sort
   basis: SizeBasis
+  onSortChange: (key: SortKey) => void
   onDescend: (row: Row) => void
   onClimb: (depth: number) => void
 }
 
 /**
- * What the scan found, one level at a time.
- *
- * A plain list rather than a virtualized table: this version shows one level's
- * children, which is hundreds of rows at worst. The virtualized table over the
- * whole tree, with sorting and columns, is v0.2.0 — building it here would mean
- * building it before there is a screen to judge it on.
+ * What the scan found: where you are, what it costs, and the table of what is
+ * inside.
  */
-export function Rows({ result, trail, showing, rows, basis, onDescend, onClimb }: RowsProps) {
+export function Rows({ result, trail, showing, sort, basis, onSortChange, onDescend, onClimb }: RowsProps) {
   const total = sizeOf(showing, basis)
   const overhead = describeOverhead(showing.logical, showing.allocated)
   // `skipped` counts the whole scan, so it is only true of the scan root.
@@ -64,45 +62,18 @@ export function Rows({ result, trail, showing, rows, basis, onDescend, onClimb }
         </div>
       )}
 
-      <ul className="min-h-0 flex-1 overflow-y-auto">
-        {rows.length === 0 && <li className="px-4 py-6 text-sm text-dim">This folder is empty.</li>}
-
-        {rows.map((row) => {
-          const size = sizeOf(row, basis)
-          const gap = describeOverhead(row.logical, row.allocated)
-
-          return (
-            <li key={row.id}>
-              <button
-                type="button"
-                onClick={() => onDescend(row)}
-                disabled={!row.isDirectory}
-                className={
-                  row.isDirectory
-                    ? 'flex w-full cursor-pointer items-center gap-3 px-4 py-1.5 text-left text-sm hover:bg-soft'
-                    : 'flex w-full items-center gap-3 px-4 py-1.5 text-left text-sm'
-                }
-                title={gap === null ? row.path : `${row.path}\n${gap}`}
-              >
-                {/* The bar is the row's share of what is on screen, so a glance
-                    down the list is the shape of this folder. */}
-                <span className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-soft" aria-hidden>
-                  <span className="block h-full bg-accent" style={{ width: total > 0 ? `${(size / total) * 100}%` : '0%' }} />
-                </span>
-
-                <span className={row.isDirectory ? 'min-w-0 flex-1 truncate font-medium' : 'min-w-0 flex-1 truncate text-dim'}>
-                  {row.name}
-                  {row.isDirectory && <span className="text-dim">/</span>}
-                </span>
-
-                <span className="tabular w-16 shrink-0 text-right text-xs text-dim">{formatShare(size, total)}</span>
-                <span className="tabular w-24 shrink-0 text-right">{formatBytes(size)}</span>
-                <span className="tabular w-20 shrink-0 text-right text-xs text-dim">{formatAge(row.subtreeModified)}</span>
-              </button>
-            </li>
-          )
-        })}
-      </ul>
+      {/* Keyed by the folder and the order: a change to either makes every
+          row held meaningless, and a fresh component says that better than
+          clearing five pieces of state by hand. */}
+      <EntryTable
+        key={`${showing.id}:${sort.key}:${sort.direction}`}
+        parentId={showing.id}
+        total={total}
+        sort={sort}
+        basis={basis}
+        onSortChange={onSortChange}
+        onDescend={onDescend}
+      />
     </div>
   )
 }
