@@ -19,6 +19,7 @@ pub fn run() {
             scan::scan_progress,
             scan::cancel_scan,
             scan::list_children,
+            scan::trail_to,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the midda application");

@@ -14,7 +14,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use midda_core::{Progress, SizeBasis, Tree};
+use midda_core::order::{self, Sort, Span};
+use midda_core::{Progress, Tree};
 use serde::{Deserialize, Serialize};
 
 /// What the window is looking at, if anything.
@@ -63,6 +64,19 @@ pub struct Row {
     pub subtree_modified: Option<i64>,
     /// The full path, for the tooltip and for the reveal-in-Explorer of v0.2.0.
     pub path: String,
+}
+
+/// One page of an ordered list of rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Page {
+    pub rows: Vec<Row>,
+    /// Where these rows start in the whole ordered list, so the window can put
+    /// them at the right height without counting.
+    pub offset: u32,
+    /// How many rows there are in total — what makes the scrollbar honest about
+    /// a folder whose rows are not all here.
+    pub total: u32,
 }
 
 /// What the window draws while a scan runs, and when it has finished.
@@ -178,16 +192,18 @@ pub fn cancel_scan(session: tauri::State<'_, Session>) -> Result<(), String> {
     Ok(())
 }
 
-/// The children of `id`, biggest first.
+/// One page of the children of `id`, ordered by `sort`.
 ///
-/// `basis` decides which of the two sizes the order is taken on; the window
-/// sends what its switch says, and the default is what the volume gives up.
+/// Paged rather than whole: a folder on a system volume can hold hundreds of
+/// thousands of children, and a table that received all of them on every click
+/// of a column header would send megabytes across the bridge to redraw thirty
+/// rows. The window asks for the span it is drawing.
 ///
 /// # Errors
 ///
 /// When there is no finished scan, or `id` is not in it.
 #[tauri::command]
-pub fn list_children(id: u32, basis: SizeBasis, session: tauri::State<'_, Session>) -> Result<Vec<Row>, String> {
+pub fn list_children(id: u32, sort: Sort, span: Span, session: tauri::State<'_, Session>) -> Result<Page, String> {
     let state = session.shared.lock().map_err(|_| "the scan session is poisoned".to_owned())?;
     let tree = state.tree.as_ref().ok_or_else(|| "nothing has been scanned yet".to_owned())?;
 
@@ -195,7 +211,43 @@ pub fn list_children(id: u32, basis: SizeBasis, session: tauri::State<'_, Sessio
         return Err(format!("no entry {id} in this scan"));
     }
 
-    Ok(tree.children_by_size(id, basis).into_iter().map(|child| row(tree, child)).collect())
+    let (ids, total) = order::children_page(tree, id, sort, span);
+    Ok(Page {
+        rows: ids.into_iter().map(|child| row(tree, child)).collect(),
+        offset: span.offset,
+        total: u32::try_from(total).unwrap_or(u32::MAX),
+    })
+}
+
+/// The trail from the scan root down to `id`, root first.
+///
+/// Asked of the core rather than remembered by the window: the window's own
+/// copy is right only as long as the reader arrived by clicking, and from
+/// v0.3.0 a click in the treemap arrives at a node the window has never drawn.
+///
+/// # Errors
+///
+/// When there is no finished scan, or `id` is not in it.
+#[tauri::command]
+pub fn trail_to(id: u32, session: tauri::State<'_, Session>) -> Result<Vec<Row>, String> {
+    let state = session.shared.lock().map_err(|_| "the scan session is poisoned".to_owned())?;
+    let tree = state.tree.as_ref().ok_or_else(|| "nothing has been scanned yet".to_owned())?;
+
+    if id as usize >= tree.len() {
+        return Err(format!("no entry {id} in this scan"));
+    }
+
+    let mut trail = Vec::new();
+    let mut at = id;
+    loop {
+        trail.push(row(tree, at));
+        if at == midda_core::ROOT {
+            break;
+        }
+        at = tree.node(at).parent;
+    }
+    trail.reverse();
+    Ok(trail)
 }
 
 /// Turns a node into a row.
