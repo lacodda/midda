@@ -258,16 +258,24 @@ impl Tree {
 
     /// The children of `id`, largest first on `basis`.
     ///
-    /// Ties break on name so the order is the same between two runs — a table
-    /// that reshuffles equal rows on every rescan looks broken.
+    /// A convenience over [`crate::order::children`] for the one order the
+    /// product treats as its default. Anything else — a column the reader
+    /// picked, a direction they flipped — goes through `order`, which is where
+    /// the rules about absence and ties live.
     #[must_use]
     pub fn children_by_size(&self, id: NodeId, basis: SizeBasis) -> Vec<NodeId> {
-        let mut children = self.node(id).children.clone();
-        children.sort_unstable_by(|&a, &b| {
-            let (a, b) = (self.node(a), self.node(b));
-            basis.of(b.size).cmp(&basis.of(a.size)).then_with(|| a.name.cmp(&b.name))
-        });
-        children
+        let key = match basis {
+            SizeBasis::Allocated => crate::order::SortKey::Allocated,
+            SizeBasis::Logical => crate::order::SortKey::Logical,
+        };
+        crate::order::children(
+            self,
+            id,
+            crate::order::Sort {
+                key,
+                direction: crate::order::Direction::Descending,
+            },
+        )
     }
 }
 

@@ -34,6 +34,7 @@
 //! ```
 
 pub mod error;
+pub mod order;
 pub mod platform;
 pub mod scanner;
 pub mod size;
@@ -41,6 +42,7 @@ pub mod tree;
 pub mod walk;
 
 pub use error::{Error, Result};
+pub use order::{Direction, Sort, SortKey, Span};
 pub use scanner::{Progress, Scanner};
 pub use size::{Size, SizeBasis};
 pub use tree::{Kind, Node, NodeId, ROOT, Skipped, Tree};
