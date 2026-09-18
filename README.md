@@ -27,7 +27,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.1.0. Pick a drive or a folder and midda reads it, in parallel, with a live count of what it has found; the result is a list of what is inside, biggest first, with the share of the total, the age of each layer, and how far down you are. Sizes are what the volume gives up, and a switch shows what files read as instead. The treemap, the sortable table and the rules about what is safe to delete are still ahead — see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.2.0. Every volume at once, fullest first, then pick one and midda reads it — in parallel, with a live count. The result is a sortable table that draws a screenful of a folder however many rows it holds: name, items, share, what it occupies and what it reads as side by side, and the age of the layer beneath it. The treemap and the rules about what is safe to delete are still ahead — see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
