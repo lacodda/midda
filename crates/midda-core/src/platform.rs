@@ -218,22 +218,22 @@ mod imp {
     use std::fs::Metadata;
     use std::path::Path;
 
+    // `st_blocks` counts 512-byte units by POSIX definition, whatever the
+    // filesystem's own block size is — and it is the real answer, sparse ranges
+    // and all. Windows is the product's target, but the walk is the portable
+    // half of ADR 0001 and it should be honest wherever it runs.
+    #[cfg(unix)]
     pub(super) fn allocated_size(_path: &Path, metadata: &Metadata) -> Option<u64> {
-        // `st_blocks` counts 512-byte units by POSIX definition, whatever the
-        // filesystem's own block size is — and it is the real answer, sparse
-        // ranges and all. Windows is the product's target, but the walk is the
-        // portable half of ADR 0001 and it should be honest wherever it runs.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt as _;
-            return Some(metadata.blocks() * 512);
-        }
+        use std::os::unix::fs::MetadataExt as _;
+        Some(metadata.blocks() * 512)
+    }
 
-        #[cfg(not(unix))]
-        {
-            let _ = metadata;
-            None
-        }
+    // Neither Windows nor Unix: there is no portable way to ask, so the caller
+    // falls back to rounding up to a cluster rather than being told a number
+    // that was not measured.
+    #[cfg(not(unix))]
+    pub(super) fn allocated_size(_path: &Path, _metadata: &Metadata) -> Option<u64> {
+        None
     }
 
     pub(super) fn cluster_bytes_of(_path: &Path) -> Option<u64> {
