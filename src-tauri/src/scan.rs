@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use midda_core::order::{self, Sort, Span};
+use midda_core::treemap::{self, Layout, Tile};
 use midda_core::{Progress, Tree};
 use serde::{Deserialize, Serialize};
 
@@ -248,6 +249,28 @@ pub fn trail_to(id: u32, session: tauri::State<'_, Session>) -> Result<Vec<Row>,
     }
     trail.reverse();
     Ok(trail)
+}
+
+/// The rectangles that draw the children of `id`.
+///
+/// The layout is the core's, not the window's: the areas, the order, the
+/// cut-off for what is too small to see, and the tile that gathers what fell
+/// under it. The window passes its own shape and its own idea of the smallest
+/// useful rectangle, and multiplies the fractions it gets back by its size.
+///
+/// # Errors
+///
+/// When there is no finished scan, or `id` is not in it.
+#[tauri::command]
+pub fn treemap(id: u32, layout: Layout, session: tauri::State<'_, Session>) -> Result<Vec<Tile>, String> {
+    let state = session.shared.lock().map_err(|_| "the scan session is poisoned".to_owned())?;
+    let tree = state.tree.as_ref().ok_or_else(|| "nothing has been scanned yet".to_owned())?;
+
+    if id as usize >= tree.len() {
+        return Err(format!("no entry {id} in this scan"));
+    }
+
+    Ok(treemap::tiles(tree, id, layout))
 }
 
 /// Turns a node into a row.
