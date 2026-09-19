@@ -2,11 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0] - 2026-09-19
+
+### Documentation
+- Record where the treemap is laid out, and why
+
+### Features
+- Lay a folder out as a treemap, in fractions
+- Serve the treemap layout to the window
+- A treemap beside the table, pointing at the same entry
+
+### Testing
+- Hold every manifest to one version number
 ## [0.2.0] - 2026-09-18
 
 ### Bug Fixes
 - Close the gap between the last month and the first year
 - Declare midda-core once, in the workspace
+
+### Documentation
+- Add the changelog for v0.2.0
 
 ### Features
 - Order and page a folder's children in the core
