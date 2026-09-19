@@ -27,7 +27,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.2.0. Every volume at once, fullest first, then pick one and midda reads it — in parallel, with a live count. The result is a sortable table that draws a screenful of a folder however many rows it holds: name, items, share, what it occupies and what it reads as side by side, and the age of the layer beneath it. The treemap and the rules about what is safe to delete are still ahead — see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.3.0, and the point where it becomes useful. Pick a volume, watch it read, and see the folder two ways at once: a sortable table of any length, and a treemap whose rectangles are shares of what is on disk. Click either and the other highlights the same entry; double-click to go in, Backspace to come back. The picture takes arrow keys, names the full path under the pointer, and copies itself as a PNG. The rules that say *why* something is safe to delete are next — see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
