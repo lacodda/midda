@@ -54,8 +54,12 @@ interface EntryTableProps {
   total: number
   sort: Sort
   basis: SizeBasis
+  /** The entry the picture beside this has highlighted, if any. */
+  selectedId: number | null
   onSortChange: (key: SortKey) => void
   onDescend: (row: Row) => void
+  /** A row was chosen without being entered — the picture follows. */
+  onSelect: (row: Row | null) => void
 }
 
 /**
@@ -73,7 +77,7 @@ interface EntryTableProps {
  * hand — a cascading render, and one more place for the scroll position to
  * survive a change it should not have survived.
  */
-export function EntryTable({ parentId, total, sort, basis, onSortChange, onDescend }: EntryTableProps) {
+export function EntryTable({ parentId, total, sort, basis, selectedId, onSortChange, onDescend, onSelect }: EntryTableProps) {
   const viewport = useRef<HTMLDivElement>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
@@ -207,19 +211,28 @@ export function EntryTable({ parentId, total, sort, basis, onSortChange, onDesce
                 }
 
                 const size = sizeOf(row, basis)
+                const chosen = row.id === selectedId
                 return (
                   <button
                     key={row.id}
                     type="button"
                     role="row"
-                    onClick={() => onDescend(row)}
-                    disabled={!row.isDirectory}
+                    aria-selected={chosen}
+                    /* One click highlights, and the picture beside this
+                     * highlights with it; a second on a folder goes in. A
+                     * single click that descended would make the two views
+                     * impossible to point at the same thing, because pointing
+                     * at it would have left it. */
+                    onClick={() => onSelect(row)}
+                    onDoubleClick={() => onDescend(row)}
                     title={row.path}
                     style={{ display: 'grid', gridTemplateColumns: GRID, height: ROW_HEIGHT }}
                     className={
-                      row.isDirectory
-                        ? 'w-full cursor-pointer items-center text-left hover:bg-soft'
-                        : 'w-full items-center text-left'
+                      chosen
+                        ? 'w-full cursor-pointer items-center bg-accent-soft text-left'
+                        : row.isDirectory
+                          ? 'w-full cursor-pointer items-center text-left hover:bg-soft'
+                          : 'w-full cursor-pointer items-center text-left hover:bg-soft'
                     }
                   >
                     <span role="gridcell" className="flex min-w-0 items-center gap-2 px-3">

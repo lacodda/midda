@@ -12,6 +12,7 @@ import {
   scanProgress,
   startScan,
   toggleSort,
+  trailTo,
   type Row,
   type ScanResult,
   type SizeBasis,
@@ -47,6 +48,8 @@ export default function App() {
   const [sort, setSort] = useState<Sort>(DEFAULT_SORT)
   /** The path from the scan root down to what is on screen. */
   const [trail, setTrail] = useState<Row[]>([])
+  /** The one entry both the table and the picture are pointing at. */
+  const [selected, setSelected] = useState<Row | null>(null)
 
   useEffect(() => {
     void listVolumes().then(setVolumes)
@@ -72,6 +75,7 @@ export default function App() {
       setCounted({ entries: 0, bytes: 0 })
       setSort(DEFAULT_SORT)
       setTrail([])
+      setSelected(null)
 
       try {
         await startScan(target)
@@ -121,11 +125,50 @@ export default function App() {
   }, [])
 
   const descend = useCallback((row: Row) => {
-    if (row.isDirectory) setTrail((trail) => [...trail, row])
+    if (!row.isDirectory) return
+    setTrail((trail) => [...trail, row])
+    setSelected(null)
+  }, [])
+
+  /* A click in the picture arrives as an id, not a row: the treemap draws
+   * rectangles the table may never have fetched. The trail is asked of the
+   * core rather than appended to, because the window's own copy is only right
+   * as long as the reader arrived by clicking down one level at a time. */
+  const descendTo = useCallback((id: number) => {
+    void trailTo(id).then((steps) => {
+      setTrail(steps)
+      setSelected(null)
+    })
+  }, [])
+
+  const selectById = useCallback((id: number | null) => {
+    if (id === null) {
+      setSelected(null)
+      return
+    }
+    // The same ask, for the same reason — and the last step of the trail is
+    // the row itself, with both its sizes and its path.
+    void trailTo(id).then((steps) => setSelected(steps.at(-1) ?? null))
   }, [])
 
   const climbTo = useCallback((depth: number) => {
     setTrail((trail) => trail.slice(0, depth + 1))
+    setSelected(null)
+  }, [])
+
+  /* Backspace goes up a level, from anywhere that is not a text field. It is
+   * what Explorer does, and the mockup says so on the breadcrumb. */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Backspace') return
+      const target = event.target as HTMLElement | null
+      if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable) return
+      event.preventDefault()
+      setTrail((trail) => (trail.length > 1 ? trail.slice(0, -1) : trail))
+      setSelected(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
   return (
@@ -213,9 +256,13 @@ export default function App() {
             showing={showing}
             sort={sort}
             basis={basis}
+            selected={selected}
             onSortChange={changeSort}
             onDescend={descend}
+            onDescendById={descendTo}
             onClimb={climbTo}
+            onSelect={setSelected}
+            onSelectById={selectById}
           />
         )}
 

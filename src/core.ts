@@ -67,6 +67,44 @@ export interface ScanState {
   error: string | null
 }
 
+/** A rectangle in fractions of the box being drawn. Mirrors `Rect`. */
+export interface Rect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** What a tile is made of, as far as the colour is concerned. Mirrors `Category`. */
+export type Category = 'build' | 'source' | 'media' | 'other'
+
+/** One rectangle of a laid-out treemap. Mirrors `Tile`. */
+export interface Tile {
+  /** The node, or `null` for the tile that gathers what was too small to draw. */
+  id: number | null
+  name: string
+  /** The bytes this tile's area is proportional to. */
+  bytes: number
+  rect: Rect
+  isDirectory: boolean
+  category: Category
+  entries: number
+  /** The full path, for the tooltip. Empty for the gathered remainder, which
+   * stands for many paths and so has none. */
+  path: string
+}
+
+/** What the window asks the core to lay out. Mirrors `Layout`. */
+export interface Layout {
+  basis: SizeBasis
+  /** How wide the box is relative to its height, so "square" means square on
+   * screen rather than square in fraction space. */
+  aspect: number
+  /** The smallest fraction of the box a tile may take before it is gathered. */
+  minArea: number
+  maxTiles: number
+}
+
 /** A drive the user can point a scan at. Mirrors `Volume`. */
 export interface Volume {
   path: string
@@ -97,6 +135,10 @@ export function listChildren(id: number, sort: Sort, span: Span): Promise<Page> 
 
 export function trailTo(id: number): Promise<Row[]> {
   return invoke<Row[]>('trail_to', { id })
+}
+
+export function treemap(id: number, layout: Layout): Promise<Tile[]> {
+  return invoke<Tile[]>('treemap', { id, layout })
 }
 
 /** Picks the size a basis names out of a row. */
