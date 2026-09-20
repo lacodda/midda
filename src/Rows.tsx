@@ -2,7 +2,7 @@ import { EntryTable } from '@/EntryTable'
 import { Treemap } from '@/Treemap'
 import type { Row, ScanResult, SizeBasis, Sort, SortKey } from '@/core'
 import { sizeOf } from '@/core'
-import { describeOverhead, formatBytes, formatCount } from '@/format'
+import { describeOverhead, explainSize, formatBytes, formatCount } from '@/format'
 
 interface RowsProps {
   result: ScanResult
@@ -47,8 +47,21 @@ export function Rows({
 }: RowsProps) {
   const total = sizeOf(showing, basis)
   const overhead = describeOverhead(showing.logical, showing.allocated)
-  // `skipped` counts the whole scan, so it is only true of the scan root.
-  const showsSkipped = trail.length === 1 && result.skipped > 0
+  // Why this entry in particular is unusual, when it is one — a folder carries
+  // no traits, so in practice this speaks for a file the reader has descended
+  // to rather than for a directory.
+  const explanation = explainSize(showing.traits, showing.links)
+  // `skipped` and the shared-bytes count are both for the whole scan, so they
+  // are only true of the scan root. Repeating them inside every folder would
+  // read as a claim about that folder, which nothing here knows.
+  const atRoot = trail.length === 1
+  const showsSkipped = atRoot && result.skipped > 0
+  const showsShared = atRoot && result.sharedNames > 0
+  // The scan-level sentence counts the names and the bytes; the entry-level one
+  // only says that something inside is shared. Showing both at the root puts
+  // the weaker claim beside the stronger one, saying the same thing twice.
+  const showsExplanation = explanation !== null && !showsShared
+  const showsNotes = overhead !== null || showsExplanation || showsSkipped || showsShared
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -73,10 +86,22 @@ export function Rows({
         </span>
       </div>
 
-      {(overhead !== null || showsSkipped) && (
+      {showsNotes && (
         <div className="flex shrink-0 flex-wrap gap-x-4 border-b border-line bg-soft/40 px-4 py-1.5 text-xs text-dim">
           {overhead !== null && <span>{overhead}</span>}
+          {showsExplanation && <span>{explanation}</span>}
           {result.clusterBytes !== null && overhead !== null && <span>cluster {formatBytes(result.clusterBytes)}</span>}
+          {/* The difference between midda's total and a naive one, stated
+              rather than silently applied. A volume holding a package
+              manager's store can double under a scanner that counts every name
+              of a hard-linked file, and a reader comparing two tools should be
+              able to see which of them is explaining itself. */}
+          {showsShared && (
+            <span>
+              {formatCount(result.sharedNames)} {result.sharedNames === 1 ? 'entry is another name' : 'entries are other names'} for bytes counted
+              elsewhere — {formatBytes(result.sharedReclaimed)} not counted twice
+            </span>
+          )}
           {/* A scan of a system volume always refuses something. Saying so is
               the difference between a total that is short and a total that is
               quietly wrong.

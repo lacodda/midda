@@ -97,12 +97,60 @@ export function formatShare(part: number, total: number): string {
  * noise. This is the product's own argument made visible: a folder of a hundred
  * thousand tiny files costs far more than it reads, and a sparse virtual disk
  * costs far less.
+ *
+ * An entry that occupies *nothing* and reads as something is the extreme of the
+ * second case, not an absence of one: a cloud placeholder, or a second name for
+ * bytes counted elsewhere. It used to return `null` here, which left the two
+ * numbers a reader could see with no account of themselves at all.
  */
 export function describeOverhead(logical: number, allocated: number): string | null {
-  if (logical === 0 || allocated === 0) return null
+  if (logical === 0) return null
+  if (allocated === 0) return `${formatBytes(logical)} that occupies nothing on this disk`
 
   const ratio = allocated / logical
   if (ratio >= 1.1) return `${formatBytes(allocated - logical)} more on disk than it reads`
   if (ratio <= 0.9) return `${formatBytes(logical - allocated)} less on disk than it reads`
+  return null
+}
+
+/**
+ * Why this entry's two sizes are what they are, in words, or `null` when there
+ * is nothing unusual to report.
+ *
+ * Ordered by how surprising each one is rather than by bit. A reader looking at
+ * a row that reads 5 GB and occupies nothing wants the sentence that explains
+ * *that*, and a file can carry several of these at once — a cloud placeholder
+ * is sparse as well, and reporting "sparse" to someone whose file is in the
+ * cloud is true and useless.
+ */
+export function explainSize(traits: number, links: number | null): string | null {
+  const has = (bit: number) => (traits & bit) === bit
+
+  // The bit values are the core's; see `TRAIT` in core.ts. Written out here
+  // rather than imported to keep this module free of the bridge — it is the
+  // one place tested without a DOM or a Tauri runtime.
+  const PLACEHOLDER = 1
+  const COMPRESSED = 2
+  const SPARSE = 4
+  const LINKED = 8
+  const COUNTED_HERE = 16
+  const HOLDS_SHARED = 32
+
+  if (has(LINKED) && !has(COUNTED_HERE)) {
+    return 'another name for bytes counted elsewhere on this disk — deleting this frees nothing'
+  }
+  if (has(PLACEHOLDER)) {
+    return 'stored in the cloud: it reads as its full size and occupies almost nothing here'
+  }
+  if (has(LINKED) && has(COUNTED_HERE)) {
+    const names = links !== null && links > 1 ? `${formatCount(links)} names` : 'more than one name'
+    return `the same bytes under ${names} on this disk, counted here`
+  }
+  if (has(COMPRESSED)) return 'compressed by NTFS: it occupies less than it reads'
+  if (has(SPARSE)) return 'sparse: parts of it read as zeroes and occupy nothing'
+  // Last, because it is the weakest claim: it says something is in here, not
+  // that this entry is anything. It is also the one that keeps a folder reading
+  // 0 B from being a mystery.
+  if (has(HOLDS_SHARED)) return 'what is inside is named elsewhere too, and counted there'
   return null
 }

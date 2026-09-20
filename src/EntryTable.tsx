@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { Badge } from '@/components/ui/badge'
 import { TableSortHeader } from '@/components/ui/table'
 import { windowFor } from '@/components/ui/virtual-list'
-import { listChildren, sizeOf, type Page, type Row, type SizeBasis, type Sort, type SortKey } from '@/core'
-import { formatAge, formatBytes, formatCount, formatShare } from '@/format'
+import { hasTrait, isSharedName, listChildren, sizeOf, TRAIT, type Page, type Row, type SizeBasis, type Sort, type SortKey } from '@/core'
+import { explainSize, formatAge, formatBytes, formatCount, formatShare } from '@/format'
 
 /**
  * How tall one row is. Fixed, because virtualization is arithmetic over a known
@@ -212,6 +213,16 @@ export function EntryTable({ parentId, total, sort, basis, selectedId, onSortCha
 
                 const size = sizeOf(row, basis)
                 const chosen = row.id === selectedId
+                // Why this row's two numbers differ, when they do. A second
+                // name for shared bytes is the one worth marking in the list
+                // itself rather than only in a tooltip: it is the row whose
+                // zero would otherwise read as a scanner that gave up.
+                const explanation = explainSize(row.traits, row.links)
+                // Marked when this row's own size would otherwise be a mystery:
+                // a second name, or a folder whose contents are named elsewhere
+                // and counted there. Both draw a zero the reader would
+                // otherwise read as a scanner that gave up.
+                const shared = isSharedName(row.traits) || hasTrait(row.traits, TRAIT.holdsShared)
                 return (
                   <button
                     key={row.id}
@@ -225,7 +236,7 @@ export function EntryTable({ parentId, total, sort, basis, selectedId, onSortCha
                      * at it would have left it. */
                     onClick={() => onSelect(row)}
                     onDoubleClick={() => onDescend(row)}
-                    title={row.path}
+                    title={explanation === null ? row.path : `${row.path}\n${explanation}`}
                     style={{ display: 'grid', gridTemplateColumns: GRID, height: ROW_HEIGHT }}
                     className={
                       chosen
@@ -245,6 +256,18 @@ export function EntryTable({ parentId, total, sort, basis, selectedId, onSortCha
                         {row.name}
                         {row.isDirectory && <span className="text-dim">/</span>}
                       </span>
+                      {/* A word on the row rather than only in the tooltip: the
+                          reader is scanning a column of sizes for something to
+                          delete, and a zero with no reason beside it is the one
+                          row they will act on wrongly. Only the second name is
+                          marked here — the name holding the bytes is an
+                          ordinary large row, and labelling it too would put a
+                          badge on half the list. */}
+                      {shared && (
+                        <Badge variant="soft" className="shrink-0 px-1.5 py-0 text-[0.625rem] leading-4" title={explanation ?? undefined}>
+                          linked
+                        </Badge>
+                      )}
                     </span>
                     <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
                       {row.isDirectory ? formatCount(row.entries) : ''}

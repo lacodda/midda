@@ -27,6 +27,44 @@ export interface Span {
   limit: number
 }
 
+/**
+ * Why an entry's two sizes differ. Mirrors `Traits` in midda-core.
+ *
+ * Bits rather than an enum, because a file can be several of these at once: a
+ * cloud placeholder is sparse as well, and a sparse file can have a second
+ * name. The values are the core's and must not be reordered — they cross the
+ * bridge as a number.
+ */
+export const TRAIT = {
+  /** The bytes live in the cloud; the file is a stub until something opens it. */
+  placeholder: 1 << 0,
+  /** NTFS is storing the contents compressed. */
+  compressed: 1 << 1,
+  /** The file has holes: ranges that read as zeroes and occupy nothing. */
+  sparse: 1 << 2,
+  /** The same bytes are reachable under another name on this volume. */
+  linked: 1 << 3,
+  /** This is the name those shared bytes were counted under. */
+  countedHere: 1 << 4,
+  /** Somewhere beneath this directory is a name for bytes counted elsewhere. */
+  holdsShared: 1 << 5,
+} as const
+
+/** Whether `traits` carries `trait`. */
+export function hasTrait(traits: number, bit: number): boolean {
+  return (traits & bit) === bit
+}
+
+/**
+ * Whether this entry is a second name for bytes counted elsewhere.
+ *
+ * The row that shows zero is the one wanting an explanation, not the row that
+ * shows the bytes — so the polarity here is the whole point of the function.
+ */
+export function isSharedName(traits: number): boolean {
+  return hasTrait(traits, TRAIT.linked) && !hasTrait(traits, TRAIT.countedHere)
+}
+
 /** One row of the table. Mirrors `Row` in src-tauri/src/scan.rs. */
 export interface Row {
   id: number
@@ -40,6 +78,10 @@ export interface Row {
   /** Milliseconds since the Unix epoch, or `null` when the filesystem would not say. */
   subtreeModified: number | null
   path: string
+  /** Why the two sizes differ, as the bits of `TRAIT`. */
+  traits: number
+  /** How many names these bytes have, or `null` when it could not be asked. */
+  links: number | null
 }
 
 /** One page of an ordered list. Mirrors `Page`. */
@@ -56,6 +98,10 @@ export interface ScanResult {
   root: Row
   clusterBytes: number | null
   skipped: number
+  /** How many entries were second names for bytes counted elsewhere. */
+  sharedNames: number
+  /** The bytes those second names would have been counted as, and are not. */
+  sharedReclaimed: number
 }
 
 /** What a scan looks like from outside. Mirrors `ScanState`. */

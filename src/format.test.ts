@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { describeOverhead, formatAge, formatBytes, formatCount, formatShare } from '@/format'
+import { describeOverhead, explainSize, formatAge, formatBytes, formatCount, formatShare } from '@/format'
 
 describe('formatBytes', () => {
   it('names the binary steps the way Explorer does', () => {
@@ -125,6 +125,80 @@ describe('describeOverhead', () => {
   it('stays quiet rather than dividing by zero', () => {
     expect(describeOverhead(0, 0)).toBeNull()
     expect(describeOverhead(0, 4096)).toBeNull()
+  })
+
+  it('accounts for an entry that reads as something and occupies nothing', () => {
+    // A cloud placeholder, or a second name for shared bytes. This used to fall
+    // through to null, which left the two numbers on screen with no account of
+    // themselves — the most surprising row in the table was the silent one.
+    expect(describeOverhead(5_898_024, 0)).toMatch(/occupies nothing/)
+  })
+})
+
+describe('explainSize', () => {
+  // The bit values mirror `TRAIT` in core.ts, which mirrors `Traits` in the
+  // core. Written out rather than imported so this file stays free of the
+  // bridge — and so a change to the numbering shows up here as a failure.
+  const PLACEHOLDER = 1
+  const COMPRESSED = 2
+  const SPARSE = 4
+  const LINKED = 8
+  const COUNTED_HERE = 16
+  const HOLDS_SHARED = 32
+
+  it('says nothing about an ordinary file', () => {
+    expect(explainSize(0, 1)).toBeNull()
+  })
+
+  it('tells the second name that deleting it frees nothing', () => {
+    const explanation = explainSize(LINKED, 2)
+    expect(explanation).toMatch(/frees nothing/)
+  })
+
+  it('does not tell that to the name holding the bytes', () => {
+    // The polarity that matters. Both rows carry LINKED; only one of them shows
+    // a zero, and putting the warning on the other would send a reader to
+    // delete the name that is actually costing them the space.
+    const owner = explainSize(LINKED | COUNTED_HERE, 2)
+    expect(owner).not.toMatch(/frees nothing/)
+    expect(owner).toMatch(/counted here/)
+  })
+
+  it('counts the names when it knows how many', () => {
+    expect(explainSize(LINKED | COUNTED_HERE, 3)).toMatch(/3 names/)
+    expect(explainSize(LINKED | COUNTED_HERE, null)).toMatch(/more than one name/)
+  })
+
+  it('explains a cloud placeholder', () => {
+    expect(explainSize(PLACEHOLDER, 1)).toMatch(/cloud/)
+  })
+
+  it('explains compression and sparseness', () => {
+    expect(explainSize(COMPRESSED, 1)).toMatch(/compressed/i)
+    expect(explainSize(SPARSE, 1)).toMatch(/sparse/i)
+  })
+
+  it('lets a folder that reads as empty account for itself', () => {
+    // A folder holding nothing but second names shows 0 B. On screen, with no
+    // sentence beside it, that reads as a scanner that gave up on a folder the
+    // reader can see is full.
+    expect(explainSize(HOLDS_SHARED, null)).toMatch(/named elsewhere/)
+  })
+
+  it('prefers what this entry is over what is inside it', () => {
+    // A second name that also holds second names beneath it: the stronger claim
+    // is about the entry itself.
+    expect(explainSize(LINKED | HOLDS_SHARED, 2)).toMatch(/frees nothing/)
+  })
+
+  it('leads with the most surprising fact when a file carries several', () => {
+    // A cloud placeholder is sparse as well — measured on real OneDrive files,
+    // 2026-09-20 — and telling someone their file is sparse when it is in the
+    // cloud is true and useless.
+    expect(explainSize(PLACEHOLDER | SPARSE, 1)).toMatch(/cloud/)
+    // And a second name outranks everything: it is the one that changes what
+    // deleting the row would do.
+    expect(explainSize(LINKED | PLACEHOLDER | SPARSE, 2)).toMatch(/frees nothing/)
   })
 })
 
