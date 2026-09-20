@@ -65,6 +65,18 @@ pub struct Row {
     pub subtree_modified: Option<i64>,
     /// The full path, for the tooltip and for the reveal-in-Explorer of v0.2.0.
     pub path: String,
+    /// Why the two sizes differ, when they do, as the bits of
+    /// `midda_core::Traits`.
+    ///
+    /// A number rather than a list of names: it is read by one function on the
+    /// other side, and a row of a table that carries four strings it will not
+    /// print is four allocations per row times a hundred thousand rows.
+    pub traits: u8,
+    /// How many names these bytes have on the volume, when the platform said.
+    ///
+    /// `null` when it could not be asked. A file has one name unless it says
+    /// otherwise, and the window shows the number only when it is above one.
+    pub links: Option<u32>,
 }
 
 /// One page of an ordered list of rows.
@@ -106,6 +118,15 @@ pub struct ScanResult {
     /// How many entries the scan could not read. A system volume always has
     /// some, and a total that hid them would be quietly wrong.
     pub skipped: u64,
+    /// How many entries turned out to be second names for bytes counted
+    /// elsewhere.
+    pub shared_names: u64,
+    /// The bytes those second names would have been counted as, and are not.
+    ///
+    /// Reported rather than silently corrected: this is the difference between
+    /// midda's total and the one another tool shows, and a reader comparing the
+    /// two deserves to know which of them is explaining itself.
+    pub shared_reclaimed: u64,
 }
 
 /// Starts a scan of `path`.
@@ -174,6 +195,8 @@ pub fn scan_progress(session: tauri::State<'_, Session>) -> Result<ScanState, St
             root: row(tree, midda_core::ROOT),
             cluster_bytes: tree.cluster_bytes(),
             skipped: tree.skipped().len() as u64,
+            shared_names: tree.shared().shared_names,
+            shared_reclaimed: tree.shared().reclaimed.allocated,
         }),
         error: state.failure.clone(),
     })
@@ -285,6 +308,8 @@ fn row(tree: &Tree, id: u32) -> Row {
         entries: node.entries,
         subtree_modified: node.subtree_modified.and_then(millis_since_epoch),
         path: tree.path_of(id).to_string_lossy().into_owned(),
+        traits: node.traits.bits(),
+        links: node.links,
     }
 }
 
