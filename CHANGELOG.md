@@ -2,10 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.1] - 2026-09-20
+
+### Testing
+- Find the owner by its mark, not by its name
 ## [0.4.0] - 2026-09-20
 
 ### Documentation
 - Record how shared bytes are charged, and to which name
+- Add the changelog for v0.4.0
 
 ### Features
 - Learn why a file's two sizes differ
