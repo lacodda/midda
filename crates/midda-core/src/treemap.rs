@@ -593,14 +593,8 @@ mod tests {
 
     fn node(name: &str, parent: NodeId, kind: Kind, allocated: u64) -> Node {
         Node {
-            name: name.into(),
-            parent,
-            kind,
             size: Size { logical: allocated, allocated },
-            modified: None,
-            subtree_modified: None,
-            entries: 1,
-            children: Vec::new(),
+            ..Node::new(name.into(), parent, kind)
         }
     }
 

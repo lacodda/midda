@@ -12,7 +12,10 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::links::Deduplicated;
+use crate::platform::FileIdentity;
 use crate::size::{Size, SizeBasis};
+use crate::traits::Traits;
 
 /// Where a node sits in the flat arena.
 ///
@@ -65,6 +68,23 @@ pub struct Node {
     pub entries: u64,
     /// Children, in scan order. Empty for a file.
     pub children: Vec<NodeId>,
+    /// Why this entry's two sizes differ, when they do — and, after
+    /// [`crate::links::count_shared_once`], whether its bytes were counted here
+    /// or under another name.
+    pub traits: Traits,
+    /// How many names this file has on the volume, when the platform said.
+    ///
+    /// `None` means the question could not be asked, which is not the same as
+    /// `Some(1)`: the second is a measurement, the first is a gap, and the
+    /// deduplication treats only the measurement as evidence.
+    pub links: Option<u32>,
+    /// What identifies this file's bytes on its volume, when the platform said.
+    ///
+    /// The key the deduplication matches names on. Kept on the node rather than
+    /// discarded after that pass so a later version can say *where* the other
+    /// name is without rescanning — and so a test can show that two unknowns
+    /// were never treated as a match.
+    pub identity: Option<FileIdentity>,
 }
 
 impl Node {
@@ -72,6 +92,28 @@ impl Node {
     #[must_use]
     pub const fn is_directory(&self) -> bool {
         matches!(self.kind, Kind::Directory)
+    }
+
+    /// A node with nothing unusual about it: one name, no traits, no identity
+    /// asked for.
+    ///
+    /// The shape every directory has and most scanner fixtures want, so that
+    /// adding a field to `Node` does not mean editing a hundred literals.
+    #[must_use]
+    pub fn new(name: String, parent: NodeId, kind: Kind) -> Self {
+        Self {
+            name,
+            parent,
+            kind,
+            size: Size::zero(),
+            modified: None,
+            subtree_modified: None,
+            entries: 1,
+            children: Vec::new(),
+            traits: Traits::none(),
+            links: None,
+            identity: None,
+        }
     }
 }
 
@@ -91,6 +133,12 @@ pub struct Tree {
     /// another user's profile — and hiding them would make the totals quietly
     /// wrong. See [`Tree::skipped`].
     skipped: Vec<Skipped>,
+    /// What the deduplication of shared bytes found, once it has run.
+    ///
+    /// Kept on the tree because it explains a number the reader can see: a
+    /// folder whose contents look larger than the folder is one holding second
+    /// names, and without this the tree offers no way to say so.
+    shared: Deduplicated,
 }
 
 /// Something the scan could not look at.
@@ -114,19 +162,11 @@ impl Tree {
             .unwrap_or_else(|| root.to_string_lossy().into_owned());
 
         Self {
-            nodes: vec![Node {
-                name,
-                parent: ROOT,
-                kind: Kind::Directory,
-                size: Size::zero(),
-                modified: None,
-                subtree_modified: None,
-                entries: 1,
-                children: Vec::new(),
-            }],
+            nodes: vec![Node::new(name, ROOT, Kind::Directory)],
             root,
             cluster_bytes,
             skipped: Vec::new(),
+            shared: Deduplicated::default(),
         }
     }
 
@@ -151,6 +191,20 @@ impl Tree {
     /// Records something the scan could not read.
     pub fn skip(&mut self, path: PathBuf, reason: String) {
         self.skipped.push(Skipped { path, reason });
+    }
+
+    /// What the deduplication of shared bytes found.
+    ///
+    /// Zeroes until [`crate::links::count_shared_once`] has run, and on nearly
+    /// every volume zeroes afterwards too.
+    #[must_use]
+    pub const fn shared(&self) -> Deduplicated {
+        self.shared
+    }
+
+    /// Records what the deduplication found. Called by scanners.
+    pub const fn record_shared(&mut self, shared: Deduplicated) {
+        self.shared = shared;
     }
 
     /// Puts the scan root's own timestamp on node 0.
@@ -221,6 +275,21 @@ impl Tree {
         path
     }
 
+    /// Changes one node in place.
+    ///
+    /// The one writable door onto a node after it has been pushed, and it exists
+    /// for exactly one caller: [`crate::links::count_shared_once`], which has to
+    /// move bytes off a second name. Handing out `&mut Node` freely would let a
+    /// consumer rewrite a size the roll-up has already folded upward, which is a
+    /// tree whose leaves and totals disagree.
+    ///
+    /// # Panics
+    ///
+    /// If `id` is not in this tree.
+    pub fn mark(&mut self, id: NodeId, change: impl FnOnce(&mut Node)) {
+        change(&mut self.nodes[id as usize]);
+    }
+
     /// Appends a child under `parent` and returns its id.
     ///
     /// # Panics
@@ -241,14 +310,22 @@ impl Tree {
     /// complete by the time it is folded into the one above.
     pub fn roll_up(&mut self) {
         for index in (1..self.nodes.len()).rev() {
-            let (size, subtree_modified, entries, parent) = {
+            let (size, subtree_modified, entries, traits, parent) = {
                 let node = &self.nodes[index];
-                (node.size, node.subtree_modified, node.entries, node.parent as usize)
+                (node.size, node.subtree_modified, node.entries, node.traits, node.parent as usize)
             };
             let parent = &mut self.nodes[parent];
 
             parent.size.add(size);
             parent.entries = parent.entries.saturating_add(entries);
+            // A folder inherits the fact that something under it is a second
+            // name, so a directory reading `0 B` can say why. Only this one
+            // trait travels upward: "compressed" or "sparse" are true of a file
+            // and meaningless of the folder above it, whereas "there are shared
+            // bytes in here" is exactly a statement about the folder.
+            if traits.has(Traits::LINKED) || traits.has(Traits::HOLDS_SHARED) {
+                parent.traits.insert(Traits::HOLDS_SHARED);
+            }
             parent.subtree_modified = match (parent.subtree_modified, subtree_modified) {
                 (Some(ours), Some(theirs)) => Some(ours.max(theirs)),
                 (ours, theirs) => ours.or(theirs),
@@ -291,27 +368,18 @@ mod tests {
 
     fn file(name: &str, parent: NodeId, size: Size, modified: Option<SystemTime>) -> Node {
         Node {
-            name: name.into(),
-            parent,
-            kind: Kind::File,
             size,
             modified,
             subtree_modified: modified,
-            entries: 1,
-            children: Vec::new(),
+            ..Node::new(name.into(), parent, Kind::File)
         }
     }
 
     fn directory(name: &str, parent: NodeId, modified: Option<SystemTime>) -> Node {
         Node {
-            name: name.into(),
-            parent,
-            kind: Kind::Directory,
-            size: Size::zero(),
             modified,
             subtree_modified: modified,
-            entries: 1,
-            children: Vec::new(),
+            ..Node::new(name.into(), parent, Kind::Directory)
         }
     }
 

@@ -12,6 +12,18 @@
 //! shown are the occupied ones, because someone who opened a disk analyzer came
 //! to free space. See [`size`].
 //!
+//! # And why they differ
+//!
+//! When the two numbers are far apart there is a reason, and the reason travels
+//! with the entry: a cloud placeholder, NTFS compression, a sparse file, or a
+//! second name for bytes counted elsewhere. See [`traits`].
+//!
+//! Shared bytes are the one of those four that is a property of the *scan*
+//! rather than of the file: a hard-linked file measured under each of its names
+//! is counted as many times as it has them, so [`links`] charges it to one name
+//! and marks the rest. Without that pass a package manager's store doubles the
+//! volume, invisibly, with every individual number correct.
+//!
 //! # One folder, two answers
 //!
 //! The same children come back as an ordered page for a table ([`order`]) and
@@ -42,18 +54,23 @@
 //! ```
 
 pub mod error;
+pub mod links;
 pub mod order;
 pub mod platform;
 pub mod scanner;
 pub mod size;
+pub mod traits;
 pub mod tree;
 pub mod treemap;
 pub mod walk;
 
 pub use error::{Error, Result};
+pub use links::Deduplicated;
 pub use order::{Direction, Sort, SortKey, Span};
+pub use platform::FileIdentity;
 pub use scanner::{Progress, Scanner};
 pub use size::{Size, SizeBasis};
+pub use traits::Traits;
 pub use tree::{Kind, Node, NodeId, ROOT, Skipped, Tree};
 pub use treemap::{Category, Layout, Rect, Tile};
 pub use walk::WalkScanner;

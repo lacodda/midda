@@ -270,14 +270,11 @@ mod tests {
 
     fn entry(name: &str, allocated: u64, logical: u64, modified: Option<SystemTime>, entries: u64) -> Node {
         Node {
-            name: name.into(),
-            parent: ROOT,
-            kind: Kind::File,
             size: Size { logical, allocated },
             modified,
             subtree_modified: modified,
             entries,
-            children: Vec::new(),
+            ..Node::new(name.into(), ROOT, Kind::File)
         }
     }
 

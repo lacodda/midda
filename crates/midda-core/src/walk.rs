@@ -20,9 +20,11 @@ use std::time::SystemTime;
 use rayon::prelude::*;
 
 use crate::error::{Error, Result};
-use crate::platform::{self, ASSUMED_CLUSTER_BYTES};
+use crate::links;
+use crate::platform::{self, ASSUMED_CLUSTER_BYTES, FileIdentity};
 use crate::scanner::{Progress, Scanner};
 use crate::size::Size;
+use crate::traits::Traits;
 use crate::tree::{Kind, Node, NodeId, ROOT, Tree};
 
 /// Reads a tree by walking the filesystem.
@@ -88,14 +90,13 @@ impl Scanner for WalkScanner {
                     let id = tree.push(
                         reading.parent,
                         Node {
-                            name: entry.name,
-                            parent: reading.parent,
-                            kind: entry.kind,
                             size: entry.size,
                             modified: entry.modified,
                             subtree_modified: entry.modified,
-                            entries: 1,
-                            children: Vec::new(),
+                            traits: entry.traits,
+                            links: entry.links,
+                            identity: entry.identity,
+                            ..Node::new(entry.name, reading.parent, entry.kind)
                         },
                     );
                     if is_directory {
@@ -105,6 +106,12 @@ impl Scanner for WalkScanner {
             }
             level = next;
         }
+
+        // Before the roll-up, never after: this moves bytes off second names,
+        // and totals folded upward first would keep the doubling. See
+        // [`links::count_shared_once`].
+        let shared = links::count_shared_once(&mut tree);
+        tree.record_shared(shared);
 
         tree.roll_up();
         Ok(tree)
@@ -124,6 +131,12 @@ struct Entry {
     kind: Kind,
     size: Size,
     modified: Option<SystemTime>,
+    /// Why the two sizes differ, when they do.
+    traits: Traits,
+    /// How many names these bytes have, when the platform said.
+    links: Option<u32>,
+    /// What identifies these bytes, when the platform said.
+    identity: Option<FileIdentity>,
 }
 
 struct Failure {
@@ -190,31 +203,49 @@ fn read_directory(parent: NodeId, path: &Path, cluster: u64, progress: &Progress
                 kind: Kind::File,
                 size: Size::zero(),
                 modified: metadata.modified().ok(),
+                traits: Traits::none(),
+                // A link occupies its own few bytes and shares none: it is not a
+                // second name for its target, it is a pointer at a path.
+                links: None,
+                identity: None,
             });
             counted_entries += 1;
             continue;
         }
 
         let kind = if file_type.is_dir() { Kind::Directory } else { Kind::File };
-        let size = if matches!(kind, Kind::Directory) {
+        let measured = if matches!(kind, Kind::Directory) {
             // A directory's own entry costs something on NTFS, but it is not
             // recoverable by deleting the directory alone and counting it would
             // put bytes in a total that no action returns. A directory's size
-            // is what is inside it.
-            Size::zero()
+            // is what is inside it. Its identity is not asked for either: a
+            // directory is not shareable by a hard link on NTFS.
+            platform::Measured {
+                size: Size::zero(),
+                traits: Traits::none(),
+                links: None,
+                identity: None,
+            }
         } else {
             platform::measure(&child, &metadata, cluster)
         };
 
         counted_entries += 1;
-        counted_bytes += size.allocated;
+        // The running counter is what the window shows, and it is deliberately
+        // the pre-deduplication number: the pass that removes double-counted
+        // bytes runs when the walk is over, so a total that shrank at the end is
+        // honest about when it learnt.
+        counted_bytes += measured.size.allocated;
 
         entries.push(Entry {
             name: entry.file_name().to_string_lossy().into_owned(),
             path: child,
             kind,
-            size,
+            size: measured.size,
             modified: metadata.modified().ok(),
+            traits: measured.traits,
+            links: measured.links,
+            identity: measured.identity,
         });
     }
 
