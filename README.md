@@ -27,7 +27,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.3.0, and the point where it becomes useful. Pick a volume, watch it read, and see the folder two ways at once: a sortable table of any length, and a treemap whose rectangles are shares of what is on disk. Click either and the other highlights the same entry; double-click to go in, Backspace to come back. The picture takes arrow keys, names the full path under the pointer, and copies itself as a PNG. The rules that say *why* something is safe to delete are next — see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.4.0. Pick a volume, watch it read, and see the folder two ways at once: a sortable table of any length, and a treemap whose rectangles are shares of what is on disk. Click either and the other highlights the same entry; double-click to go in, Backspace to come back. The picture takes arrow keys, names the full path under the pointer, and copies itself as a PNG. Sizes are the space a file occupies rather than the space it reads as, so a hard-linked package is counted once however many names it has, a cloud placeholder costs what it costs here, and every entry whose two numbers disagree says why. The rules that name *what* is safe to delete are next — see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
