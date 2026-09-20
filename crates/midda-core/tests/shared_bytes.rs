@@ -34,6 +34,28 @@ fn node_named<'a>(tree: &'a Tree, name: &str) -> &'a midda_core::Node {
         .expect("the fixture has this entry")
 }
 
+/// The one name a set of shared bytes was counted under.
+///
+/// Found rather than assumed. The owner is the first name in node order, and
+/// node order follows the volume's own listing — which is not creation order on
+/// NTFS and not creation order on ext4 either, by a different rule. A test that
+/// named its favourite would be asserting the filesystem's index: it passed on
+/// Windows and failed in CI on Linux, which is how this helper came to exist.
+fn owner(tree: &Tree) -> &midda_core::Node {
+    let owners: Vec<&midda_core::Node> = tree
+        .nodes()
+        .filter(|(_, node)| node.traits.has(Traits::COUNTED_HERE))
+        .map(|(_, node)| node)
+        .collect();
+    assert_eq!(owners.len(), 1, "exactly one name holds the bytes");
+    owners[0]
+}
+
+/// Every name that is a second one for bytes counted elsewhere.
+fn shared_names(tree: &Tree) -> Vec<&midda_core::Node> {
+    tree.nodes().filter(|(_, node)| node.traits.is_shared_name()).map(|(_, node)| node).collect()
+}
+
 /// The measurement this version exists to fix, end to end.
 #[test]
 fn a_file_under_three_names_is_counted_once() {
@@ -53,8 +75,9 @@ fn a_file_under_three_names_is_counted_once() {
     let tree = scan(dir.path());
 
     // What one copy of the payload actually costs here, measured rather than
-    // assumed: the cluster size is the volume's business.
-    let one_copy = node_named(&tree, "data.bin").size.allocated;
+    // assumed: the cluster size is the volume's business, and so is which of
+    // the three names ends up holding it.
+    let one_copy = owner(&tree).size.allocated;
     assert!(one_copy >= 50_000, "a 50000-byte file came back as {one_copy} bytes on disk");
 
     assert_eq!(
@@ -67,6 +90,13 @@ fn a_file_under_three_names_is_counted_once() {
     let shared = tree.shared();
     assert_eq!(shared.shared_names, 2, "three names, two of them second ones");
     assert_eq!(shared.reclaimed.allocated, one_copy * 2, "two payloads' worth of double counting undone");
+
+    // All three names are there, and two of them occupy nothing.
+    for name in ["data.bin", "second.bin", "third.bin"] {
+        let node = node_named(&tree, name);
+        assert!(node.traits.has(Traits::LINKED), "{name} is one of three names for one file");
+    }
+    assert_eq!(shared_names(&tree).len(), 2);
 }
 
 /// The half of the fix a reader can see: which row explains itself.
@@ -83,16 +113,22 @@ fn the_second_names_are_the_ones_marked_as_shared() {
 
     let tree = scan(dir.path());
 
-    let owner = node_named(&tree, "data.bin");
-    let second = node_named(&tree, "second.bin");
+    // Which of the two names holds the bytes is the volume's listing order to
+    // decide; that one of them does, and that the other says so, is midda's.
+    let holder = owner(&tree);
+    assert!(holder.traits.has(Traits::LINKED), "the file really does have two names");
+    assert!(!holder.traits.is_shared_name(), "the row holding the bytes needs no footnote");
+    assert!(holder.size.allocated > 0, "the owner keeps the bytes");
 
-    assert!(owner.traits.has(Traits::LINKED), "the file really does have two names");
-    assert!(owner.traits.has(Traits::COUNTED_HERE), "and this is the name they were counted under");
-    assert!(!owner.traits.is_shared_name());
-    assert!(owner.size.allocated > 0, "the owner keeps the bytes");
+    let others = shared_names(&tree);
+    assert_eq!(others.len(), 1, "two names, one of them a second one");
+    assert_eq!(others[0].size, Size::zero(), "and it occupies nothing, because deleting it returns nothing");
+    assert_ne!(others[0].name, holder.name, "the two are different entries");
 
-    assert!(second.traits.is_shared_name(), "the other name is the one that needs explaining");
-    assert_eq!(second.size, Size::zero(), "and it occupies nothing, because deleting it returns nothing");
+    // Both names really are the two the fixture made, whichever way round.
+    let mut names = vec![holder.name.as_str(), others[0].name.as_str()];
+    names.sort_unstable();
+    assert_eq!(names, ["data.bin", "second.bin"]);
 }
 
 /// The mistake with the worst consequences: deciding two ordinary files are one.
@@ -151,6 +187,9 @@ fn which_name_holds_the_bytes_does_not_change_between_scans() {
         }
     }
 
+    // The path of whichever name holds the bytes — not a particular one, which
+    // is the whole point: the claim is that the answer does not move, not that
+    // it is any given folder.
     let owner_in = |tree: &Tree| -> String {
         tree.nodes()
             .find(|(_, node)| node.traits.has(Traits::COUNTED_HERE))

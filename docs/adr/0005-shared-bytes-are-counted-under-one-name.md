@@ -67,12 +67,23 @@ first is a race, and two scans of one disk would disagree about which folder is
 the large one. That is worse than being unable to say at all — it is the line's
 own rule that a wrong pick beats no pick only when the pick is stated.
 
-Note what this rule does *not* promise. Deterministic is not predictable: `read_dir`
-on NTFS returns a directory in the volume's index order, not in creation order, so
-which of two sibling folders ends up holding the payload cannot be guessed in
-advance. Measured on 2026-09-20: a fixture that created `store` before `project`
-had the walk return `project` first. The rule is safe to rely on across scans and
-must not be described to a reader as "the first one you made".
+Note what this rule does *not* promise. Deterministic is not predictable. `read_dir`
+returns a directory in the filesystem's own order — NTFS by its index, ext4 by a
+hash of the name — and neither is creation order, so which of several names ends
+up holding the payload cannot be guessed in advance and differs between platforms.
+Measured on 2026-09-20: a fixture that created `store` before `project` had the
+walk return `project` first on NTFS, and the same three-name fixture picked a
+different owner on Linux in CI.
+
+So the rule is safe to rely on across repeated scans of one volume, and must never
+be described to a reader — or asserted in a test — as a particular name. A test
+that names its favourite owner is asserting the filesystem's index; the ones here
+find the owner by its mark and assert the shape of the answer instead.
+
+Sorting each directory before the walk would make the owner predictable as well as
+stable, and it is not worth a sort per directory over several million entries for
+a fact no screen shows. If a later version ever needs to *say* which name wins
+before the scan runs, that is the change to make.
 
 ### Why after the walk rather than inside it
 
