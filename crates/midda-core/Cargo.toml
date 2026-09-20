@@ -28,6 +28,10 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# The traits of an entry cross into the window as a number, not as a struct.
+# A test that only checked the Rust side would not notice the representation
+# changing under the bridge.
+serde_json = "1"
 
 [lints]
 workspace = true
