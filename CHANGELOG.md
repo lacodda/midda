@@ -2,10 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] - 2026-09-20
+
+### Documentation
+- Record how shared bytes are charged, and to which name
+
+### Features
+- Learn why a file's two sizes differ
+- Count shared bytes once, and say where
+- Carry the traits and the shared count to the window
+- Account for every size the reader cannot explain
 ## [0.3.0] - 2026-09-19
 
 ### Documentation
 - Record where the treemap is laid out, and why
+- Add the changelog for v0.3.0
 
 ### Features
 - Lay a folder out as a treemap, in fractions
