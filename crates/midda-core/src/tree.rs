@@ -7,6 +7,7 @@
 //! linear pass over contiguous memory, and an index is `u32` where a pointer is
 //! eight bytes and cannot be serialized.
 
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -66,7 +67,11 @@ pub struct Node {
     pub subtree_modified: Option<SystemTime>,
     /// How many entries are in this subtree, this one included.
     pub entries: u64,
-    /// Children, in scan order. Empty for a file.
+    /// Children, in [`listing_order`] of their names. Empty for a file.
+    ///
+    /// Both scanners push children in that order, which is what lets two scans
+    /// of one directory — by the walk and by the MFT reader — come back as the
+    /// same arena, node for node.
     pub children: Vec<NodeId>,
     /// Why this entry's two sizes differ, when they do — and, after
     /// [`crate::links::count_shared_once`], whether its bytes were counted here
@@ -139,6 +144,43 @@ pub struct Tree {
     /// folder whose contents look larger than the folder is one holding second
     /// names, and without this the tree offers no way to say so.
     shared: Deduplicated,
+    /// Which scanner read this tree: `"walk"` or `"mft"`, as
+    /// [`crate::Scanner::name`] says.
+    ///
+    /// Kept on the tree because the window says how its numbers were read — a
+    /// minute's walk and a two-second MFT read are the same answer arrived at
+    /// two ways, and the reader deciding whether to accelerate deserves to know
+    /// which one they are looking at.
+    scanned_by: String,
+    /// Why the scanner that read this is not the one that was asked for, when
+    /// it is not.
+    ///
+    /// The MFT reader can fail where the walk cannot — a volume that is busy, a
+    /// record it does not understand — and the scan then falls back rather than
+    /// failing. A fallback that said nothing would be a slow scan with no
+    /// account of itself.
+    fallback: Option<String>,
+}
+
+/// The order children are listed in: by name, ignoring case, then by the name
+/// exactly as written.
+///
+/// A rule of the tree rather than of either scanner, because the node order is
+/// load-bearing: [`crate::links::count_shared_once`] gives shared bytes to the
+/// first name in it. When that order was whatever `read_dir` returned it was
+/// the volume's index order on NTFS and a hash order on ext4, and the MFT
+/// reader, which sees no directory index at all, could not have reproduced
+/// either. A defined order is one both scanners reach on any filesystem, and
+/// one the window can say out loud.
+///
+/// Case is folded character by character rather than through a lowered copy of
+/// each name: a directory of a hundred thousand entries is sorted with no
+/// allocation per comparison. The exact-name tie-break keeps the order total on
+/// a case-sensitive directory, where `Readme` and `README` are two files.
+#[must_use]
+pub fn listing_order(a: &str, b: &str) -> Ordering {
+    let ignoring_case = a.chars().flat_map(char::to_uppercase).cmp(b.chars().flat_map(char::to_uppercase));
+    ignoring_case.then_with(|| a.cmp(b))
 }
 
 /// Something the scan could not look at.
@@ -167,7 +209,32 @@ impl Tree {
             cluster_bytes,
             skipped: Vec::new(),
             shared: Deduplicated::default(),
+            scanned_by: String::new(),
+            fallback: None,
         }
+    }
+
+    /// Which scanner read this tree. Empty only for a tree built by hand.
+    #[must_use]
+    pub fn scanned_by(&self) -> &str {
+        &self.scanned_by
+    }
+
+    /// Why a slower scanner read this tree than the one asked for, when one
+    /// did.
+    #[must_use]
+    pub fn fallback(&self) -> Option<&str> {
+        self.fallback.as_deref()
+    }
+
+    /// Records which scanner read this tree. Called by scanners.
+    pub fn record_scanner(&mut self, name: &str) {
+        name.clone_into(&mut self.scanned_by);
+    }
+
+    /// Records why the faster scanner gave way. Called by [`crate::scan`].
+    pub fn record_fallback(&mut self, reason: String) {
+        self.fallback = Some(reason);
     }
 
     /// Where the scan started.
@@ -500,5 +567,32 @@ mod tests {
         let mut tree = Tree::new(PathBuf::from("C:/scan"), None);
         tree.skip(PathBuf::from("C:/scan/locked"), "access is denied".into());
         assert_eq!(tree.skipped().len(), 1);
+    }
+
+    #[test]
+    fn names_are_listed_ignoring_case_and_then_exactly() {
+        let mut names = vec!["beta", "Alpha", "alpha", "ALPHA", "a", "Zed", "b.txt", "B"];
+        names.sort_by(|a, b| listing_order(a, b));
+        assert_eq!(names, ["a", "ALPHA", "Alpha", "alpha", "B", "b.txt", "beta", "Zed"]);
+    }
+
+    #[test]
+    fn the_listing_order_is_total_on_names_that_differ_only_in_case() {
+        // A case-sensitive directory can hold both, and an order that called
+        // them equal would leave the node order to whichever the sort met first.
+        assert_ne!(listing_order("Readme", "README"), Ordering::Equal);
+        assert_eq!(listing_order("Readme", "README"), listing_order("README", "Readme").reverse());
+    }
+
+    #[test]
+    fn a_tree_says_which_scanner_read_it_and_why_it_was_not_the_faster_one() {
+        let mut tree = Tree::new(PathBuf::from("C:/scan"), None);
+        assert_eq!(tree.scanned_by(), "");
+        assert_eq!(tree.fallback(), None);
+
+        tree.record_scanner("walk");
+        tree.record_fallback("the volume is busy".into());
+        assert_eq!(tree.scanned_by(), "walk");
+        assert_eq!(tree.fallback(), Some("the volume is busy"));
     }
 }

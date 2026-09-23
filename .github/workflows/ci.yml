@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A branch can be put through the whole matrix before it reaches main — the
+  # one way to see the elevated MFT agreement test run before a release.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -42,6 +45,11 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test
+        env:
+          # The Windows runner is elevated, so the MFT scanner can run there,
+          # and the agreement test must not pass by skipping. Elsewhere the
+          # variable is empty and the test skips out loud.
+          MIDDA_REQUIRE_MFT: ${{ runner.os == 'Windows' && '1' || '' }}
       - name: Build
         run: cargo build --release
 

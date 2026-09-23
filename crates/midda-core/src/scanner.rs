@@ -3,9 +3,8 @@
 //!
 //! midda has two ways to read a volume — a filesystem walk that works without
 //! elevation, and an MFT read that needs administrator rights and finishes in
-//! seconds (ADR 0001). Only the walk exists today; the trait exists anyway,
-//! because the shape of the seam is the decision, and discovering it later
-//! means discovering it against code that already assumed one implementation.
+//! seconds (ADR 0001). Both answer to this trait, and a test holds them to the
+//! same answer.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -25,6 +24,8 @@ use crate::tree::Tree;
 pub struct Progress {
     entries: AtomicU64,
     bytes: AtomicU64,
+    /// MFT records read so far. Zero on the walk, which has no records.
+    records: AtomicU64,
     cancelled: AtomicBool,
 }
 
@@ -56,6 +57,33 @@ impl Progress {
         self.bytes.load(Ordering::Relaxed)
     }
 
+    /// Counts records read from the MFT.
+    ///
+    /// A separate counter rather than entries: the table holds every file on
+    /// the volume, and a scan of one folder reads all of them to find the few
+    /// under it. Counting records as entries would show the window a number the
+    /// finished tree then contradicts by a factor of a thousand.
+    pub fn read_records(&self, records: u64) {
+        self.records.fetch_add(records, Ordering::Relaxed);
+    }
+
+    /// How many MFT records have been read.
+    #[must_use]
+    pub fn records(&self) -> u64 {
+        self.records.load(Ordering::Relaxed)
+    }
+
+    /// Clears the counters, keeping a stop that has been asked for.
+    ///
+    /// Called when the fast scanner gives way to the walk: the walk then counts
+    /// from nothing, and a counter still holding the MFT's partial read would
+    /// finish above the tree it describes.
+    pub fn restart(&self) {
+        self.entries.store(0, Ordering::Relaxed);
+        self.bytes.store(0, Ordering::Relaxed);
+        self.records.store(0, Ordering::Relaxed);
+    }
+
     /// Asks the scan to stop.
     ///
     /// A scan is not killed: it unwinds at the next directory boundary and
@@ -76,18 +104,19 @@ impl Progress {
 /// A way of reading a volume into a [`Tree`].
 ///
 /// Implementations must agree: the same directory scanned two ways produces the
-/// same tree. That is a rule of the project, held by a test rather than by
-/// hope — see `tests/scanners_agree.rs`.
+/// same tree, node for node. That is a rule of the project, held by a test
+/// rather than by hope — see `tests/scanners_agree.rs`.
 pub trait Scanner {
     /// What this scanner is called, for the freshness line in the toolbar.
     fn name(&self) -> &'static str;
 
-    /// Whether this scanner can run here and now.
+    /// Whether this scanner can read `root` here and now.
     ///
-    /// The MFT scanner answers `false` without elevation; the walk always
-    /// answers `true`. The window uses this to decide whether to offer
-    /// "accelerate", rather than offering it and failing.
-    fn available(&self) -> bool;
+    /// Asked of a root, not of the machine: the MFT scanner needs elevation
+    /// *and* an NTFS volume under the path, and one process can hold both
+    /// answers at once — `C:` on NTFS, a USB stick on exFAT. The walk always
+    /// answers `true`.
+    fn available(&self, root: &Path) -> bool;
 
     /// Scans `root`, reporting into `progress`.
     ///
@@ -114,6 +143,17 @@ mod tests {
         progress.advance(1, 4096);
         assert_eq!(progress.entries(), 4);
         assert_eq!(progress.bytes(), 16_384);
+    }
+
+    #[test]
+    fn a_restart_clears_the_counts_but_not_the_stop() {
+        let progress = Progress::new();
+        progress.advance(5, 100);
+        progress.read_records(1000);
+        progress.cancel();
+        progress.restart();
+        assert_eq!((progress.entries(), progress.bytes(), progress.records()), (0, 0, 0));
+        assert!(progress.cancelled(), "a stop asked for during the fast read still stops the walk");
     }
 
     #[test]

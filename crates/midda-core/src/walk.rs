@@ -25,7 +25,7 @@ use crate::platform::{self, ASSUMED_CLUSTER_BYTES, FileIdentity};
 use crate::scanner::{Progress, Scanner};
 use crate::size::Size;
 use crate::traits::Traits;
-use crate::tree::{Kind, Node, NodeId, ROOT, Tree};
+use crate::tree::{Kind, Node, NodeId, ROOT, Tree, listing_order};
 
 /// Reads a tree by walking the filesystem.
 #[derive(Debug, Default, Clone, Copy)]
@@ -45,9 +45,10 @@ impl Scanner for WalkScanner {
         "walk"
     }
 
-    fn available(&self) -> bool {
-        // Reading directories is what every process may do. This is the
-        // scanner that is always there, which is the whole point of it.
+    fn available(&self, _root: &Path) -> bool {
+        // Reading directories is what every process may do, on every
+        // filesystem. This is the scanner that is always there, which is the
+        // whole point of it.
         true
     }
 
@@ -62,6 +63,7 @@ impl Scanner for WalkScanner {
 
         let cluster_bytes = platform::cluster_bytes_of(root);
         let mut tree = Tree::new(root.to_path_buf(), cluster_bytes);
+        tree.record_scanner(self.name());
         let cluster = cluster_bytes.unwrap_or(ASSUMED_CLUSTER_BYTES);
 
         // The root's own timestamp. A subtree mtime that ignored the root would
@@ -194,6 +196,9 @@ fn read_directory(parent: NodeId, path: &Path, cluster: u64, progress: &Progress
         };
 
         let file_type = metadata.file_type();
+        // On Windows this is true of every name-surrogate reparse point —
+        // symbolic links and junctions alike — and the MFT reader draws the same
+        // line by the same bit, so the two scanners stop at the same entries.
         if file_type.is_symlink() {
             // A link is an entry on the volume but its target's bytes are not
             // its own. Counted as an entry costing what the link itself costs.
@@ -252,6 +257,13 @@ fn read_directory(parent: NodeId, path: &Path, cluster: u64, progress: &Progress
     // One update per directory rather than one per file: the counters are read
     // by a repaint, not by a consumer that needs every step.
     progress.advance(counted_entries, counted_bytes);
+
+    // The volume's own order is not the tree's. NTFS lists a directory in its
+    // index order and ext4 in a hash order, and the MFT reader sees neither —
+    // so every scanner pushes children in the one order the tree defines, and
+    // the node order (which decides who keeps shared bytes) is the same however
+    // the volume was read.
+    entries.sort_by(|a, b| listing_order(&a.name, &b.name));
 
     Reading { parent, entries, failures }
 }
@@ -399,8 +411,32 @@ mod tests {
     }
 
     #[test]
+    fn children_come_back_in_the_listing_order_whatever_the_volume_said() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        // Created out of order and in mixed case, so neither the creation order
+        // nor a case-sensitive sort could pass for the listing order.
+        for name in ["delta", "Bravo", "alpha", "Charlie"] {
+            fs::write(dir.path().join(name), b"x").expect("write");
+        }
+
+        let progress = Progress::new();
+        let tree = WalkScanner::new().scan(dir.path(), &progress).expect("the scan succeeds");
+        let names: Vec<&str> = tree.root().children.iter().map(|&id| tree.node(id).name.as_str()).collect();
+        assert_eq!(names, ["alpha", "Bravo", "Charlie", "delta"]);
+    }
+
+    #[test]
+    fn a_walked_tree_says_it_was_walked() {
+        let dir = fixture();
+        let progress = Progress::new();
+        let tree = WalkScanner::new().scan(dir.path(), &progress).expect("the scan succeeds");
+        assert_eq!(tree.scanned_by(), "walk");
+        assert_eq!(tree.fallback(), None);
+    }
+
+    #[test]
     fn the_walk_is_always_available() {
-        assert!(WalkScanner::new().available());
+        assert!(WalkScanner::new().available(Path::new(".")));
         assert_eq!(WalkScanner::new().name(), "walk");
     }
 

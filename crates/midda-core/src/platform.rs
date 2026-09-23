@@ -111,6 +111,12 @@ pub fn measure(path: &Path, metadata: &Metadata, cluster_bytes: u64) -> Measured
         };
     };
 
+    // The handle's length over the directory entry's. On NTFS a file with
+    // several names keeps a copy of its size in each directory that names it,
+    // and only the copy under the name that was written through is brought up
+    // to date: the other names go on reporting the old length until something
+    // opens them. The handle answers from the file itself.
+    let logical = opened.logical.unwrap_or(logical);
     Measured {
         size: Size {
             logical,
@@ -120,6 +126,16 @@ pub fn measure(path: &Path, metadata: &Metadata, cluster_bytes: u64) -> Measured
         links: opened.links,
         identity: opened.identity,
     }
+}
+
+/// What identifies the file or directory at `path`, when the platform says.
+///
+/// The same question [`measure`] asks of every file, asked of one path. The MFT
+/// reader uses it on the scan root to learn which record to start from, and
+/// with it the volume serial every identity in the tree must carry.
+#[must_use]
+pub fn identity_of(path: &Path) -> Option<FileIdentity> {
+    imp::interrogate(path)?.identity
 }
 
 /// What the attribute bits say about why a size is the number it is.
@@ -142,6 +158,57 @@ pub fn traits_of(metadata: &Metadata) -> Traits {
     imp::traits_of(metadata)
 }
 
+/// `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`: the bytes are somewhere else and
+/// opening the file fetches them.
+const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+/// `FILE_ATTRIBUTE_COMPRESSED`.
+const COMPRESSED: u32 = 0x0000_0800;
+/// `FILE_ATTRIBUTE_SPARSE_FILE`.
+const SPARSE_FILE: u32 = 0x0000_0200;
+
+/// What a set of Windows `FILE_ATTRIBUTE_*` bits says about a file's size.
+///
+/// The one reading of those bits both scanners share: the walk gets them from
+/// the directory entry, the MFT reader from `$STANDARD_INFORMATION`, and a
+/// second copy of this mapping would be a second opinion about what a
+/// placeholder is. The numbers are spelled out rather than imported so the
+/// MFT reader's tree assembly — pure arithmetic over records — builds and is
+/// tested on every platform.
+///
+/// A placeholder is reported as a placeholder and not also as sparse. On the
+/// volume it is both: the cloud filter keeps its bytes out by making the file
+/// sparse. But the filter hides that bit from every process that has not
+/// declared itself cloud-aware, so the walk never sees it, and the MFT reader,
+/// which reads the record the filter never touches, always would. Sparseness is
+/// the mechanism of a placeholder, not a second fact about it, and naming both
+/// would make the two scanners disagree about one file.
+#[must_use]
+pub const fn traits_from_attributes(attributes: u32) -> Traits {
+    let mut traits = Traits::none();
+    let placeholder = attributes & RECALL_ON_DATA_ACCESS != 0;
+    if placeholder {
+        traits.insert(Traits::PLACEHOLDER);
+    }
+    if attributes & COMPRESSED != 0 {
+        traits.insert(Traits::COMPRESSED);
+    }
+    if attributes & SPARSE_FILE != 0 && !placeholder {
+        traits.insert(Traits::SPARSE);
+    }
+    traits
+}
+
+/// Whether this process runs with an administrator's token.
+///
+/// Asked of the token rather than inferred from membership of the
+/// Administrators group: under UAC an administrator's ordinary processes carry a
+/// filtered token, and only an elevated one may open a volume for reading. The
+/// question the MFT reader needs answered is "may I", not "could I be allowed".
+#[must_use]
+pub fn is_elevated() -> bool {
+    imp::is_elevated()
+}
+
 /// What one open handle was able to report.
 ///
 /// Each field is separately optional: a volume can answer the size and refuse
@@ -149,6 +216,9 @@ pub fn traits_of(metadata: &Metadata) -> Traits {
 /// ask" into a fact the deduplication then acts on.
 #[derive(Debug, Clone, Copy)]
 struct Opened {
+    /// The length of the file as the file itself reports it, rather than as a
+    /// directory entry remembers it.
+    logical: Option<u64>,
     allocated: Option<u64>,
     links: Option<u32>,
     identity: Option<FileIdentity>,
@@ -167,11 +237,12 @@ mod imp {
     use std::path::Path;
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_SPARSE_FILE, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_128,
-        FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileIdInfo, FileStandardInfo, GetDiskFreeSpaceW,
-        GetFileInformationByHandleEx, OPEN_EXISTING,
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_128, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
+        FileIdInfo, FileStandardInfo, GetDiskFreeSpaceW, GetFileInformationByHandleEx, OPEN_EXISTING,
     };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     use super::{FileIdentity, Opened};
     use crate::traits::Traits;
@@ -261,10 +332,11 @@ mod imp {
             )
         };
 
-        let (allocated, links) = if standard_ok == 0 {
-            (None, None)
+        let (logical, allocated, links) = if standard_ok == 0 {
+            (None, None, None)
         } else {
             (
+                u64::try_from(standard.EndOfFile).ok(),
                 // `AllocationSize` is signed in the header and never negative in
                 // practice; a negative value would mean a corrupt answer, and
                 // guessing is worse than falling back to the cluster rounding.
@@ -298,7 +370,12 @@ mod imp {
             file: u128::from_le_bytes(id.FileId.Identifier),
         });
 
-        Some(Opened { allocated, links, identity })
+        Some(Opened {
+            logical,
+            allocated,
+            links,
+            identity,
+        })
     }
 
     /// What the attribute bits say. See [`super::traits_of`] for why
@@ -306,20 +383,35 @@ mod imp {
     pub(super) fn traits_of(metadata: &Metadata) -> Traits {
         use std::os::windows::fs::MetadataExt as _;
 
-        let attributes = metadata.file_attributes();
-        let mut traits = Traits::none();
+        super::traits_from_attributes(metadata.file_attributes())
+    }
 
-        if attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS != 0 {
-            traits.insert(Traits::PLACEHOLDER);
+    pub(super) fn is_elevated() -> bool {
+        let mut token: HANDLE = std::ptr::null_mut();
+        // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs no
+        // closing; `token` is a valid out-parameter the call writes once.
+        #[allow(unsafe_code, reason = "whether the token is elevated is not exposed by std")]
+        let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) };
+        if opened == 0 {
+            return false;
         }
-        if attributes & FILE_ATTRIBUTE_COMPRESSED != 0 {
-            traits.insert(Traits::COMPRESSED);
-        }
-        if attributes & FILE_ATTRIBUTE_SPARSE_FILE != 0 {
-            traits.insert(Traits::SPARSE);
-        }
+        let token = Handle(token);
 
-        traits
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut written: u32 = 0;
+        // SAFETY: `token` is open for the call, `elevation` is a valid writable
+        // `TOKEN_ELEVATION` and its own size is passed.
+        #[allow(unsafe_code, reason = "whether the token is elevated is not exposed by std")]
+        let asked = unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenElevation,
+                std::ptr::from_mut(&mut elevation).cast(),
+                u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(0),
+                &raw mut written,
+            )
+        };
+        asked != 0 && elevation.TokenIsElevated != 0
     }
 
     pub(super) fn cluster_bytes_of(path: &Path) -> Option<u64> {
@@ -398,6 +490,7 @@ mod imp {
         // name for its target.
         let metadata = std::fs::symlink_metadata(path).ok()?;
         Some(Opened {
+            logical: Some(metadata.len()),
             allocated: Some(metadata.blocks() * 512),
             links: u32::try_from(metadata.nlink()).ok(),
             identity: Some(FileIdentity {
@@ -423,6 +516,11 @@ mod imp {
 
     pub(super) fn cluster_bytes_of(_path: &Path) -> Option<u64> {
         None
+    }
+
+    // There is no MFT to read here, so there is nothing elevation would buy.
+    pub(super) const fn is_elevated() -> bool {
+        false
     }
 }
 
@@ -540,5 +638,48 @@ mod tests {
             (512..=2_097_152).contains(&cluster),
             "a cluster size of {cluster} is outside what NTFS supports"
         );
+    }
+
+    #[test]
+    fn attribute_bits_read_as_the_same_traits_for_both_scanners() {
+        assert_eq!(traits_from_attributes(0x20), Traits::none(), "an archive bit explains nothing");
+        assert_eq!(traits_from_attributes(COMPRESSED), Traits::COMPRESSED);
+        assert_eq!(traits_from_attributes(SPARSE_FILE), Traits::SPARSE);
+        assert_eq!(traits_from_attributes(COMPRESSED | SPARSE_FILE), Traits::COMPRESSED | Traits::SPARSE);
+    }
+
+    #[test]
+    fn a_placeholder_reads_the_same_with_its_hidden_bits_as_without_them() {
+        // Measured 2026-09-20 on real OneDrive files: 0x401620 on the volume,
+        // 0x400020 through the cloud filter. The walk sees the second and the
+        // MFT reader the first; both must come out as one placeholder.
+        assert_eq!(traits_from_attributes(0x0040_1620), Traits::PLACEHOLDER);
+        assert_eq!(traits_from_attributes(0x0040_0020), Traits::PLACEHOLDER);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn nothing_is_elevated_where_there_is_no_mft() {
+        assert!(!is_elevated());
+    }
+
+    #[test]
+    fn a_second_name_reports_the_length_the_file_has_now() {
+        // Written through one name, read through the other: the second name's
+        // directory entry may still hold the length from before the write.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let first = write(dir.path(), "first.bin", 100);
+        let second = dir.path().join("second.bin");
+        std::fs::hard_link(&first, &second).expect("link");
+        std::fs::write(&first, vec![b'y'; 70_000]).expect("grow through the first name");
+
+        let entry = std::fs::read_dir(dir.path())
+            .expect("read the directory")
+            .map(|entry| entry.expect("an entry"))
+            .find(|entry| entry.file_name() == "second.bin")
+            .expect("the second name is listed");
+        let metadata = entry.metadata().expect("the entry's metadata");
+        let size = measure(&second, &metadata, ASSUMED_CLUSTER_BYTES).size;
+        assert_eq!(size.logical, 70_000, "the directory entry said {}", metadata.len());
     }
 }

@@ -24,7 +24,15 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
 ] }
+
+# The NTFS on-disk format: the boot sector, the map of where `$MFT` lives, and
+# the attributes inside a record. Used for the format only — the crate's own
+# `Mft` reads the whole table into memory, and the table is streamed instead
+# (ADR 0006). A niche crate: after updating it, run the agreement test on a real
+# volume, elevated.
+ntfs-reader = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
