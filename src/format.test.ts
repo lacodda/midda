@@ -210,6 +210,7 @@ describe('formatCount', () => {
 
 describe('formatDuration', () => {
   it('keeps tenths only while they matter', () => {
+    expect(formatDuration(16)).toBe('under 0.1 s')
     expect(formatDuration(840)).toBe('0.8 s')
     expect(formatDuration(9_949)).toBe('9.9 s')
     expect(formatDuration(12_400)).toBe('12 s')

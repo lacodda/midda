@@ -164,6 +164,8 @@ export function explainSize(traits: number, links: number | null): string | null
  */
 export function formatDuration(millis: number): string {
   if (!Number.isFinite(millis) || millis < 0) return '—'
+  // "0.0 s" reads as "did not happen"; a scan that fast still happened.
+  if (millis < 100) return 'under 0.1 s'
   const seconds = millis / 1000
   if (seconds < 10) return `${seconds.toFixed(1)} s`
   const whole = Math.round(seconds)
