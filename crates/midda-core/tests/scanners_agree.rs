@@ -241,12 +241,20 @@ fn the_two_scanners_agree_on_a_real_folder() {
     }
 }
 
-/// Every file present in both trees has the same size, traits and link count.
+/// Every file present in both trees and unchanged between the two scans has
+/// the same size, traits and link count.
+///
+/// A live volume moves while it is read twice: on a CI runner's system volume
+/// the registry logs, the event logs and every database's write-ahead log
+/// changed in the minutes the walk took. A file whose write time differs
+/// between the trees was written in between and is listed, not failed; a file
+/// with one write time and two sizes is the scanners disagreeing.
 fn assert_files_agree(walked: &Tree, read: &Tree) {
-    let files = |tree: &Tree| -> std::collections::HashMap<PathBuf, (midda_core::Size, Traits, Option<u32>)> {
+    type Seen = (midda_core::Size, Traits, Option<u32>, Option<std::time::SystemTime>);
+    let files = |tree: &Tree| -> std::collections::HashMap<PathBuf, Seen> {
         tree.nodes()
             .filter(|(_, node)| node.kind == Kind::File)
-            .map(|(id, node)| (tree.path_of(id), (node.size, node.traits, node.links)))
+            .map(|(id, node)| (tree.path_of(id), (node.size, node.traits, node.links, node.modified)))
             .collect()
     };
     let from_walk = files(walked);
@@ -256,14 +264,19 @@ fn assert_files_agree(walked: &Tree, read: &Tree) {
         .iter()
         .filter_map(|(path, walk)| {
             let mft = from_mft.get(path)?;
-            (walk != mft).then_some((path, *walk, *mft))
+            (walk.0 != mft.0 || walk.1 != mft.1 || walk.2 != mft.2).then_some((path, *walk, *mft))
         })
         .collect();
     differ.sort_by_key(|(_, walk, mft)| std::cmp::Reverse(walk.0.allocated.abs_diff(mft.0.allocated)));
 
+    let (changed, disagree): (Vec<_>, Vec<_>) = differ.into_iter().partition(|(_, walk, mft)| walk.3 != mft.3);
     let common = from_walk.keys().filter(|path| from_mft.contains_key(*path)).count();
-    eprintln!("{common} files in both trees, {} measured differently", differ.len());
-    for (path, walk, mft) in differ.iter().take(25) {
+    eprintln!(
+        "{common} files in both trees; {} written between the scans, {} measured differently while unchanged",
+        changed.len(),
+        disagree.len()
+    );
+    for (path, walk, mft) in disagree.iter().chain(changed.iter()).take(25) {
         eprintln!(
             "  {}: walk {:?} traits {:#04x} links {:?} | mft {:?} traits {:#04x} links {:?}",
             path.display(),
@@ -275,5 +288,9 @@ fn assert_files_agree(walked: &Tree, read: &Tree) {
             mft.2
         );
     }
-    assert!(differ.is_empty(), "{} files measured differently by the two scanners", differ.len());
+    assert!(
+        disagree.is_empty(),
+        "{} unchanged files measured differently by the two scanners",
+        disagree.len()
+    );
 }
