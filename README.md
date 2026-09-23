@@ -23,7 +23,7 @@ The name comes from *midden* — the archaeological refuse layer. A disk is stra
 
 Reading the MFT means opening the volume as a device, bypassing the filesystem. Windows grants that to administrators only — otherwise any program could sidestep file permissions.
 
-So `midda` runs both ways: without elevation it walks the filesystem normally and works everywhere; an "accelerate" button requests elevation and switches to the MFT path. You choose.
+So `midda` runs both ways: without elevation it walks the filesystem normally and works everywhere; an "accelerate" button restarts it as an administrator and switches to the MFT path. You choose, and every result says which way it was read and how long that took.
 
 ## Status
 

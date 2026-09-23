@@ -39,9 +39,16 @@ are.**
 
 The owner is the **first name in node order**. The walk reads the tree in levels,
 breadth first, so a lower node id means a shallower name, and within one level it
-means earlier in the volume's own listing. The rule is therefore statable in
-words — *the shallowest name, and among equals the first the volume lists* — and
-identical across two scans of the same disk.
+means earlier in the listing order. The rule is therefore statable in words —
+*the shallowest name, and among equals the first by name* — and identical across
+two scans of the same disk.
+
+*Amended 2026-09-23, v0.5.0.* The listing order was first the volume's own —
+whatever `read_dir` returned, which is the index order on NTFS and a hash order on
+ext4. The MFT scanner sees no directory index and could not reproduce it, and two
+scanners that disagreed on node order would disagree on which name keeps the
+bytes. Both scanners now push children in one defined order, the tree's
+`listing_order`: by name with case folded, then by the exact name. See ADR 0006.
 
 Deduplication runs **after the walk and before the roll-up**, as a pass of its own
 over the arena.
