@@ -169,8 +169,8 @@ fn the_walk_and_the_mft_read_the_same_tree() {
     assert_eq!(read.shared().shared_names, 2);
     assert_eq!(node(&read, "half-outside.bin").links, Some(2));
     assert!(
-        !node(&read, "half-outside.bin").traits.has(Traits::LINKED),
-        "its other name is outside the scan"
+        !node(&read, "half-outside.bin").traits.is_shared_name(),
+        "its other name is outside the scan, so this one keeps the bytes"
     );
     assert_eq!(node(&read, "junction").kind, Kind::File);
     assert!(node(&read, "compressed/data.bin").traits.has(Traits::COMPRESSED));

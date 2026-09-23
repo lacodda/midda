@@ -50,6 +50,14 @@ jobs:
           # and the agreement test must not pass by skipping. Elsewhere the
           # variable is empty and the test skips out loud.
           MIDDA_REQUIRE_MFT: ${{ runner.os == 'Windows' && '1' || '' }}
+      # The fixture is small and synthetic; this is the same agreement on a
+      # real tree — the checkout with its build output — and it prints what
+      # each scanner took, which is the number the MFT mode exists for.
+      - name: Scanners agree on a real folder
+        if: runner.os == 'Windows'
+        run: cargo test -p midda-core --test scanners_agree -- --ignored --nocapture
+        env:
+          MIDDA_AGREE_ON: ${{ github.workspace }}
       - name: Build
         run: cargo build --release
 

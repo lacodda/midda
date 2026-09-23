@@ -115,6 +115,17 @@ pub(super) fn read(located: &Located, progress: &Progress) -> Result<Records> {
         Mft::get_record_fs(&mut reader, volume.file_record_size, volume.mft_position).map_err(|error| unavailable("read the table's first record", &error))?;
     let (table_bytes, runs) = runs_of_the_table(&first, &volume)?;
 
+    drop(reader);
+
+    // The table itself is read straight from the device, not through
+    // `ntfs-reader`'s aligned reader: that one serves at most one 4 KiB block per
+    // call, a seek and a read for every four records, and on a table of
+    // gigabytes the syscalls are the scan. A raw volume read needs its offset
+    // and length on sector boundaries; every read here starts on a cluster and
+    // is a whole number of clusters, which is always a whole number of sectors.
+    let mut device = std::fs::File::open(&located.device).map_err(|error| unavailable("read the volume", &error))?;
+    let cluster = volume.cluster_size;
+
     let record_bytes = usize::try_from(volume.file_record_size).map_err(|_| Error::Unavailable("the record size does not fit in memory".into()))?;
     let total_records = table_bytes / volume.file_record_size;
     let mut records = Records::new();
@@ -131,16 +142,17 @@ pub(super) fn read(located: &Located, progress: &Progress) -> Result<Records> {
             if progress.cancelled() {
                 return Err(Error::Cancelled);
             }
-            let wanted = CHUNK_BYTES
-                .min(length - offset)
-                .min((total_records - number) * volume.file_record_size - pending.len() as u64);
+            // What the table still holds, rounded up to a whole cluster so the
+            // read stays aligned; a record past the table's end is never taken.
+            let left_in_table = (total_records - number) * volume.file_record_size - pending.len() as u64;
+            let wanted = CHUNK_BYTES.min(length - offset).min(left_in_table.div_ceil(cluster) * cluster);
             if wanted == 0 {
                 break;
             }
             chunk.resize(usize::try_from(wanted).unwrap_or(usize::MAX), 0);
-            reader
+            device
                 .seek(SeekFrom::Start(start + offset))
-                .and_then(|_| reader.read_exact(&mut chunk))
+                .and_then(|_| device.read_exact(&mut chunk))
                 .map_err(|error| unavailable("read the table", &error))?;
             offset += wanted;
 
@@ -150,6 +162,9 @@ pub(super) fn read(located: &Located, progress: &Progress) -> Result<Records> {
             let whole = pending.len() / record_bytes * record_bytes;
             let mut read_here = 0_u64;
             for bytes in pending[..whole].chunks_exact_mut(record_bytes) {
+                if number >= total_records {
+                    break;
+                }
                 take(number, bytes, &mut records);
                 number += 1;
                 read_here += 1;
