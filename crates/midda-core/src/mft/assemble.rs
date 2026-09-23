@@ -9,7 +9,7 @@
 use super::{FIRST_USER_RECORD, Record, Records, record_of, sequence_of};
 use crate::error::{Error, Result};
 use crate::links;
-use crate::platform::{FileIdentity, filetime_to_system_time, traits_from_attributes};
+use crate::platform::{FileIdentity, filetime_to_system_time};
 use crate::scanner::Progress;
 use crate::size::Size;
 use crate::tree::{Kind, Node, NodeId, ROOT, Tree, listing_order};
@@ -146,8 +146,8 @@ fn node_for(edge: &Edge<'_>, record: &Record, parent: NodeId, volume: u64) -> No
     }
 
     Node {
-        size: record.size,
-        traits: traits_from_attributes(record.attributes),
+        size: record.occupied(),
+        traits: record.traits(),
         links: Some(u32::try_from(record.names.len()).unwrap_or(u32::MAX)),
         identity: Some(FileIdentity {
             volume,
@@ -190,6 +190,7 @@ mod tests {
     use super::*;
     use crate::mft::{Name, ROOT_RECORD};
     use crate::platform::UNIX_EPOCH_AS_FILETIME;
+    use crate::platform::traits_from_attributes;
     use crate::traits::Traits;
 
     const SERIAL: u64 = 0xABCD;

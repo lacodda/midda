@@ -93,6 +93,12 @@ fn fixture(base: &Path) -> PathBuf {
     write(&root.join("compressed/data.bin"), 400_000);
     run("compact", &["/c", "/q", &root.join("compressed/data.bin").to_string_lossy()]);
 
+    // Windows' own file compression, which keeps the bytes in a named stream
+    // and hides that from everyone but a reader of the MFT. A CompactOS system
+    // volume is made of these.
+    fs::write(root.join("overlaid.bin"), b"abcdefgh".repeat(100_000)).expect("write a compressible file");
+    run("compact", &["/c", "/q", "/exe:xpress4k", &root.join("overlaid.bin").to_string_lossy()]);
+
     // A sparse file: a megabyte long, a few bytes held.
     let sparse = root.join("sparse.bin");
     write(&sparse, 10);
@@ -176,6 +182,11 @@ fn the_walk_and_the_mft_read_the_same_tree() {
     assert!(node(&read, "compressed/data.bin").traits.has(Traits::COMPRESSED));
     assert!(node(&read, "sparse.bin").traits.has(Traits::SPARSE));
     assert_eq!(node(&read, "tiny.txt").size.allocated, 104, "resident: the length rounded to eight");
+    let overlaid = node(&read, "overlaid.bin").size;
+    assert!(
+        overlaid.allocated > 0 && overlaid.allocated < overlaid.logical,
+        "an overlaid file occupies its compressed stream: {overlaid:?}"
+    );
 
     assert_same(&walked, &read);
 }

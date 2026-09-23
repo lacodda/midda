@@ -51,6 +51,8 @@ const ATTRIBUTE_COMPRESSED: u16 = 0x0001;
 const ATTRIBUTE_SPARSE: u16 = 0x8000;
 /// `$REPARSE_POINT`, which `ntfs-reader` does not name.
 const REPARSE_POINT: u32 = 0xC0;
+/// The named stream the Windows Overlay Filter keeps a compressed file in.
+const WOF_STREAM: &str = "WofCompressedData";
 /// Where a compressed or sparse stream's header keeps the bytes it really
 /// occupies, which is what `AllocationSize` reports for such a file.
 const TOTAL_ALLOCATED_AT: usize = 0x40;
@@ -247,6 +249,11 @@ fn read_attribute(attribute: &NtfsAttribute<'_>, record: &mut Record) {
         if let Some(size) = size_of_stream(attribute) {
             record.size = size;
         }
+    } else if type_id == NtfsAttributeType::Data as u32
+        && name_of(attribute).is_some_and(|name| name == WOF_STREAM)
+        && let Some(size) = size_of_stream(attribute)
+    {
+        record.backing = Some(size);
     } else if type_id == REPARSE_POINT
         && let Some(tag) = attribute
             .get_resident()
@@ -255,6 +262,18 @@ fn read_attribute(attribute: &NtfsAttribute<'_>, record: &mut Record) {
     {
         record.reparse_tag = Some(u32::from_le_bytes(tag));
     }
+}
+
+/// The name of a named attribute, when it has one and it can be read.
+fn name_of(attribute: &NtfsAttribute<'_>) -> Option<String> {
+    let length = usize::from(attribute.header.name_length);
+    if length == 0 {
+        return None;
+    }
+    let offset = usize::from(attribute.header.name_offset);
+    let bytes = attribute.data().get(offset..offset + length * 2)?;
+    let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
+    String::from_utf16(&units).ok()
 }
 
 /// The unnamed stream's size, both ways — what `FileStandardInfo` would have

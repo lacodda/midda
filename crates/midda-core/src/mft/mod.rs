@@ -114,7 +114,17 @@ pub struct Record {
     pub modified: Option<u64>,
     /// The reparse tag, when the file is a reparse point.
     pub reparse_tag: Option<u32>,
+    /// The size of the `WofCompressedData` stream, when the file has one.
+    ///
+    /// Windows' own file compression — `compact /exe`, and the whole of a
+    /// CompactOS system volume — keeps a file's bytes in this named stream and
+    /// leaves the unnamed one empty and sparse. See [`Record::occupied`].
+    pub backing: Option<Size>,
 }
+
+/// `IO_REPARSE_TAG_WOF`: a file whose contents the Windows Overlay Filter
+/// keeps compressed in a stream of its own.
+const WOF: u32 = 0x8000_0017;
 
 /// The name-surrogate bit of a reparse tag: set on symbolic links and
 /// junctions, which name another place, and not on the reparse points that
@@ -131,6 +141,49 @@ impl Record {
         match self.reparse_tag {
             Some(tag) => tag & NAME_SURROGATE != 0,
             None => false,
+        }
+    }
+
+    /// Whether the Windows Overlay Filter keeps this file's bytes.
+    #[must_use]
+    pub fn is_overlaid(&self) -> bool {
+        self.reparse_tag == Some(WOF)
+    }
+
+    /// The file's size as every process but this reader is shown it.
+    ///
+    /// For nearly every file that is the unnamed stream. For a WOF-compressed
+    /// one the overlay filter answers instead: it reads as the unnamed stream's
+    /// length and occupies what its compressed stream occupies — measured
+    /// 2026-09-23 through `FileStandardInfo`, an 800 000-byte file reporting
+    /// 53 248 allocated. Reading the unnamed stream's allocation here would
+    /// count it as zero, and on a CompactOS volume that is gigabytes: the first
+    /// whole-volume comparison against the walk came out 17 GB short.
+    #[must_use]
+    pub fn occupied(&self) -> Size {
+        match (self.is_overlaid(), self.backing) {
+            (true, Some(backing)) => Size {
+                logical: self.size.logical,
+                allocated: backing.allocated,
+            },
+            _ => self.size,
+        }
+    }
+
+    /// Why the two sizes differ, as every process but this reader is shown it.
+    ///
+    /// The overlay filter hides the reparse and sparse bits of a file it keeps,
+    /// just as the cloud filter does for a placeholder, so the walk never sees
+    /// them. Sparseness is the filter's mechanism, not a fact about the file,
+    /// and reporting it here would be one scanner explaining what the other
+    /// cannot see.
+    #[must_use]
+    pub fn traits(&self) -> crate::traits::Traits {
+        let traits = crate::platform::traits_from_attributes(self.attributes);
+        if self.is_overlaid() {
+            traits.without(crate::traits::Traits::SPARSE)
+        } else {
+            traits
         }
     }
 }
@@ -298,6 +351,49 @@ mod tests {
         assert!(junction.is_link());
         assert!(!placeholder.is_link());
         assert!(!Record::default().is_link());
+    }
+
+    #[test]
+    fn an_overlaid_file_occupies_its_compressed_stream() {
+        let overlaid = Record {
+            reparse_tag: Some(WOF),
+            attributes: 0x0000_0620,
+            size: Size {
+                logical: 800_000,
+                allocated: 0,
+            },
+            backing: Some(Size {
+                logical: 51_000,
+                allocated: 53_248,
+            }),
+            ..Record::default()
+        };
+        assert_eq!(
+            overlaid.occupied(),
+            Size {
+                logical: 800_000,
+                allocated: 53_248
+            }
+        );
+        assert_eq!(
+            overlaid.traits(),
+            crate::traits::Traits::none(),
+            "the filter hides the sparse bit from the walk"
+        );
+
+        // The same stream on a file the filter does not keep changes nothing.
+        let plain = Record {
+            reparse_tag: None,
+            ..overlaid.clone()
+        };
+        assert_eq!(
+            plain.occupied(),
+            Size {
+                logical: 800_000,
+                allocated: 0
+            }
+        );
+        assert!(plain.traits().has(crate::traits::Traits::SPARSE));
     }
 
     #[test]
