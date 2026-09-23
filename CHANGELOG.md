@@ -2,7 +2,34 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0] - 2026-09-23
+
+### Bug Fixes
+- Take write times from the entry itself, not its directory listing
+- Count a WOF-compressed file by its compressed stream
+- Answer accelerate off the window's thread
+- Say a scan under a tenth of a second took that, not 0.0 s
+- Round a WOF stream kept inside its record up to a cluster
+
+### Documentation
+- Record accelerate by relaunch and the streamed MFT in ADR 0006
+
+### Features
+- Read the MFT as a second scanner
+- Restart elevated on accelerate, and scan where it left off
+- Offer accelerate where it helps, and say how each scan was read
+
+### Performance
+- Read the MFT in 16 MiB reads straight from the device
+
+### Testing
+- Compare every file both scanners saw, not only the totals
+- Tell a file written between two scans from a disagreement
+- Name what the walk could not open and what the system holds open
 ## [0.4.1] - 2026-09-20
+
+### Documentation
+- Add the changelog for v0.4.1
 
 ### Testing
 - Find the owner by its mark, not by its name
