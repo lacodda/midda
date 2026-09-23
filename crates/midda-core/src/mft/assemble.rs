@@ -6,19 +6,13 @@
 //! the same arena node for node. This is that inversion, and nothing in it
 //! touches a volume.
 
-use std::time::{Duration, SystemTime};
-
 use super::{FIRST_USER_RECORD, Record, Records, record_of, sequence_of};
 use crate::error::{Error, Result};
 use crate::links;
-use crate::platform::{FileIdentity, traits_from_attributes};
+use crate::platform::{FileIdentity, filetime_to_system_time, traits_from_attributes};
 use crate::scanner::Progress;
 use crate::size::Size;
 use crate::tree::{Kind, Node, NodeId, ROOT, Tree, listing_order};
-
-/// A `FILETIME` of this value is the Unix epoch: the hundreds of nanoseconds
-/// between 1601-01-01 and 1970-01-01.
-const UNIX_EPOCH_AS_FILETIME: u64 = 116_444_736_000_000_000;
 
 /// One name in one directory, pointing at the record it names.
 struct Edge<'a> {
@@ -166,22 +160,6 @@ fn node_for(edge: &Edge<'_>, record: &Record, parent: NodeId, volume: u64) -> No
     }
 }
 
-/// A Windows `FILETIME` as a `SystemTime`, exactly.
-///
-/// Built by adding to the Unix epoch rather than going through seconds: a
-/// `FILETIME` counts hundreds of nanoseconds, and a conversion that rounded to
-/// anything coarser would make two scanners disagree about a timestamp both of
-/// them read correctly.
-fn filetime_to_system_time(filetime: u64) -> Option<SystemTime> {
-    if filetime >= UNIX_EPOCH_AS_FILETIME {
-        let since = filetime - UNIX_EPOCH_AS_FILETIME;
-        SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(since / 10_000_000) + Duration::from_nanos((since % 10_000_000) * 100))
-    } else {
-        let before = UNIX_EPOCH_AS_FILETIME - filetime;
-        SystemTime::UNIX_EPOCH.checked_sub(Duration::from_secs(before / 10_000_000) + Duration::from_nanos((before % 10_000_000) * 100))
-    }
-}
-
 /// The size a resident stream of `bytes` occupies: inside the record, rounded
 /// to the eight-byte alignment of an attribute.
 ///
@@ -207,8 +185,11 @@ pub const fn resident_size(bytes: u64) -> Size {
 mod tests {
     use std::path::Path;
 
+    use std::time::{Duration, SystemTime};
+
     use super::*;
     use crate::mft::{Name, ROOT_RECORD};
+    use crate::platform::UNIX_EPOCH_AS_FILETIME;
     use crate::traits::Traits;
 
     const SERIAL: u64 = 0xABCD;

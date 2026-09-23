@@ -29,6 +29,7 @@
 
 use std::fs::Metadata;
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +70,8 @@ pub struct Measured {
     /// equal to another unknown one, which is why this is an `Option` rather
     /// than a zero.
     pub identity: Option<FileIdentity>,
+    /// When the file was last written, as the file itself says.
+    pub modified: Option<SystemTime>,
 }
 
 /// What makes a file the same file, whatever it is called.
@@ -108,6 +111,7 @@ pub fn measure(path: &Path, metadata: &Metadata, cluster_bytes: u64) -> Measured
             traits,
             links: None,
             identity: None,
+            modified: metadata.modified().ok(),
         };
     };
 
@@ -125,6 +129,46 @@ pub fn measure(path: &Path, metadata: &Metadata, cluster_bytes: u64) -> Measured
         traits,
         links: opened.links,
         identity: opened.identity,
+        // Like the length, the write time is the file's own rather than the
+        // copy in the directory entry: that copy lags under every name but the
+        // one written through, and for a directory it lags its own contents.
+        // Measured in CI, 2026-09-23: a directory's entry two milliseconds
+        // behind the directory.
+        modified: opened.modified.or_else(|| metadata.modified().ok()),
+    }
+}
+
+/// When the entry at `path` was last written, asked of the entry itself — and,
+/// for a link, of the link, not of what it points at.
+///
+/// The walk asks this of directories and links, which it does not otherwise
+/// open: their directory entries carry a write time that NTFS brings up to
+/// date lazily, and a tree built from them disagrees with the volume's own
+/// record by milliseconds — enough to fail the rule that both scanners read
+/// the same tree, and enough to make "last changed" a guess.
+#[must_use]
+pub fn modified_of(path: &Path) -> Option<SystemTime> {
+    imp::modified_of(path)
+}
+
+/// A `FILETIME` of this value is the Unix epoch: the hundreds of nanoseconds
+/// between 1601-01-01 and 1970-01-01.
+pub(crate) const UNIX_EPOCH_AS_FILETIME: u64 = 116_444_736_000_000_000;
+
+/// A Windows `FILETIME` as a `SystemTime`, exactly.
+///
+/// Built by adding to the Unix epoch rather than going through seconds: a
+/// `FILETIME` counts hundreds of nanoseconds, and a conversion that rounded to
+/// anything coarser would make two scanners disagree about a timestamp both of
+/// them read correctly. Shared by the walk and the MFT reader for that reason.
+#[must_use]
+pub(crate) fn filetime_to_system_time(filetime: u64) -> Option<SystemTime> {
+    if filetime >= UNIX_EPOCH_AS_FILETIME {
+        let since = filetime - UNIX_EPOCH_AS_FILETIME;
+        SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(since / 10_000_000) + Duration::from_nanos((since % 10_000_000) * 100))
+    } else {
+        let before = UNIX_EPOCH_AS_FILETIME - filetime;
+        SystemTime::UNIX_EPOCH.checked_sub(Duration::from_secs(before / 10_000_000) + Duration::from_nanos((before % 10_000_000) * 100))
     }
 }
 
@@ -222,6 +266,7 @@ struct Opened {
     allocated: Option<u64>,
     links: Option<u32>,
     identity: Option<FileIdentity>,
+    modified: Option<SystemTime>,
 }
 
 /// The cluster size of the volume `path` sits on, when it can be determined.
@@ -239,8 +284,8 @@ mod imp {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_128, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
-        FileIdInfo, FileStandardInfo, GetDiskFreeSpaceW, GetFileInformationByHandleEx, OPEN_EXISTING,
+        CreateFileW, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_128, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileBasicInfo, FileIdInfo, FileStandardInfo, GetDiskFreeSpaceW, GetFileInformationByHandleEx, OPEN_EXISTING,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -375,7 +420,57 @@ mod imp {
             allocated,
             links,
             identity,
+            modified: last_written(&handle),
         })
+    }
+
+    /// The write time `FILE_BASIC_INFO` reports through an open handle.
+    fn last_written(handle: &Handle) -> Option<std::time::SystemTime> {
+        let mut basic = FILE_BASIC_INFO {
+            CreationTime: 0,
+            LastAccessTime: 0,
+            LastWriteTime: 0,
+            ChangeTime: 0,
+            FileAttributes: 0,
+        };
+        // SAFETY: `handle` is open for the call, `basic` is a valid writable
+        // `FILE_BASIC_INFO` and its own size is passed.
+        #[allow(unsafe_code, reason = "a file's own write time needs a handle query std does not expose")]
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                handle.0,
+                FileBasicInfo,
+                std::ptr::from_mut(&mut basic).cast(),
+                u32::try_from(size_of::<FILE_BASIC_INFO>()).ok()?,
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+        super::filetime_to_system_time(u64::try_from(basic.LastWriteTime).ok()?)
+    }
+
+    pub(super) fn modified_of(path: &Path) -> Option<std::time::SystemTime> {
+        let wide = wide(path);
+        // SAFETY: as in `open_for_metadata`. `OPEN_REPARSE_POINT` opens a link
+        // itself rather than what it points at, which is the entry the walk
+        // reports.
+        #[allow(unsafe_code, reason = "a directory's own write time needs a handle std will not open")]
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        last_written(&Handle(handle))
     }
 
     /// What the attribute bits say. See [`super::traits_of`] for why
@@ -490,6 +585,7 @@ mod imp {
         // name for its target.
         let metadata = std::fs::symlink_metadata(path).ok()?;
         Some(Opened {
+            modified: metadata.modified().ok(),
             logical: Some(metadata.len()),
             allocated: Some(metadata.blocks() * 512),
             links: u32::try_from(metadata.nlink()).ok(),
@@ -516,6 +612,12 @@ mod imp {
 
     pub(super) fn cluster_bytes_of(_path: &Path) -> Option<u64> {
         None
+    }
+
+    // `lstat` reads the inode, which is the truth already: there is no second
+    // copy in the directory to lag behind it.
+    pub(super) fn modified_of(path: &Path) -> Option<std::time::SystemTime> {
+        std::fs::symlink_metadata(path).and_then(|metadata| metadata.modified()).ok()
     }
 
     // There is no MFT to read here, so there is nothing elevation would buy.

@@ -204,10 +204,10 @@ fn read_directory(parent: NodeId, path: &Path, cluster: u64, progress: &Progress
             // its own. Counted as an entry costing what the link itself costs.
             entries.push(Entry {
                 name: entry.file_name().to_string_lossy().into_owned(),
-                path: child,
                 kind: Kind::File,
                 size: Size::zero(),
-                modified: metadata.modified().ok(),
+                modified: platform::modified_of(&child).or_else(|| metadata.modified().ok()),
+                path: child,
                 traits: Traits::none(),
                 // A link occupies its own few bytes and shares none: it is not a
                 // second name for its target, it is a pointer at a path.
@@ -230,6 +230,7 @@ fn read_directory(parent: NodeId, path: &Path, cluster: u64, progress: &Progress
                 traits: Traits::none(),
                 links: None,
                 identity: None,
+                modified: platform::modified_of(&child).or_else(|| metadata.modified().ok()),
             }
         } else {
             platform::measure(&child, &metadata, cluster)
@@ -247,7 +248,7 @@ fn read_directory(parent: NodeId, path: &Path, cluster: u64, progress: &Progress
             path: child,
             kind,
             size: measured.size,
-            modified: metadata.modified().ok(),
+            modified: measured.modified,
             traits: measured.traits,
             links: measured.links,
             identity: measured.identity,

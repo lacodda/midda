@@ -20,9 +20,9 @@
 //! The owner is the **first name in node order**, which is not an arbitrary
 //! choice dressed up as a rule. The walk reads the tree in levels, breadth
 //! first, so a lower node id means a shallower name, and within one level it
-//! means earlier in the volume's own order. That makes the owner statable in
-//! words — *the shallowest name, and among equals the first the volume lists* —
-//! and identical across two scans of the same disk.
+//! means earlier in [`crate::tree::listing_order`]. That makes the owner
+//! statable in words — *the shallowest name, and among equals the first by
+//! name* — and identical across two scans of the same disk, by either scanner.
 //!
 //! "First seen during the walk" was the obvious cheap answer and it is wrong:
 //! the walk runs on a work-stealing pool, so which name a thread reaches first
