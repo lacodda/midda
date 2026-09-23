@@ -118,12 +118,18 @@ pub fn launch_request(pending: tauri::State<'_, Pending>) -> Result<Option<Strin
 /// Starts this program again as an administrator, scanning `path`, and closes
 /// this window.
 ///
+/// Async so it runs off the main thread: the call returns only once the
+/// administrator's prompt has been answered, which can be minutes, and a
+/// synchronous Tauri command runs on the thread that owns the window. The
+/// window stayed responsive in the live run of 2026-09-23 only because
+/// `ShellExecuteExW` pumps messages while it waits — not a property to lean on.
+///
 /// # Errors
 ///
 /// When the prompt was declined or the process could not be started. The
 /// window stays open and keeps the walk.
 #[tauri::command]
-pub fn accelerate(path: Option<String>, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn accelerate(path: Option<String>, app: tauri::AppHandle) -> Result<(), String> {
     let program = std::env::current_exe().map_err(|error| format!("cannot find this program: {error}"))?;
     let mut args = vec!["--after".to_owned(), std::process::id().to_string()];
     if let Some(path) = path {
