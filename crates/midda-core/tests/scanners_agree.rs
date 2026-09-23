@@ -221,7 +221,48 @@ fn the_two_scanners_agree_on_a_real_folder() {
     if walked.skipped().is_empty() {
         assert_same(&walked, &read);
     } else {
-        eprintln!("the walk skipped {} entries; comparing totals only", walked.skipped().len());
-        assert!(read.root().entries >= walked.root().entries);
+        // The walk was refused somewhere, so the trees cannot match node for
+        // node. Every *file* both of them saw must still match: a total that
+        // differs only because the walk was refused is fine; a file measured
+        // differently is not, and totals alone once hid 17 GB of that.
+        eprintln!("the walk skipped {} entries; comparing the files both saw", walked.skipped().len());
+        assert_files_agree(&walked, &read);
     }
+}
+
+/// Every file present in both trees has the same size, traits and link count.
+fn assert_files_agree(walked: &Tree, read: &Tree) {
+    let files = |tree: &Tree| -> std::collections::HashMap<PathBuf, (midda_core::Size, Traits, Option<u32>)> {
+        tree.nodes()
+            .filter(|(_, node)| node.kind == Kind::File)
+            .map(|(id, node)| (tree.path_of(id), (node.size, node.traits, node.links)))
+            .collect()
+    };
+    let from_walk = files(walked);
+    let from_mft = files(read);
+
+    let mut differ: Vec<_> = from_walk
+        .iter()
+        .filter_map(|(path, walk)| {
+            let mft = from_mft.get(path)?;
+            (walk != mft).then_some((path, *walk, *mft))
+        })
+        .collect();
+    differ.sort_by_key(|(_, walk, mft)| std::cmp::Reverse(walk.0.allocated.abs_diff(mft.0.allocated)));
+
+    let common = from_walk.keys().filter(|path| from_mft.contains_key(*path)).count();
+    eprintln!("{common} files in both trees, {} measured differently", differ.len());
+    for (path, walk, mft) in differ.iter().take(25) {
+        eprintln!(
+            "  {}: walk {:?} traits {:#04x} links {:?} | mft {:?} traits {:#04x} links {:?}",
+            path.display(),
+            walk.0,
+            walk.1.bits(),
+            walk.2,
+            mft.0,
+            mft.1.bits(),
+            mft.2
+        );
+    }
+    assert!(differ.is_empty(), "{} files measured differently by the two scanners", differ.len());
 }
