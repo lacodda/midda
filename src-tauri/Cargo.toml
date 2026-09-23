@@ -33,7 +33,16 @@ tauri-plugin-dialog = "2"
 # The first screen lists drives with their capacity: which letters exist, how
 # full each is, and what it is called. None of that is in std.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+# "Accelerate" starts the window again elevated (`ShellExecuteExW` with the
+# `runas` verb) and the new one waits for the old to close.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -40,6 +40,9 @@ struct State {
     failure: Option<String>,
     /// Whether a scan is running right now.
     running: bool,
+    /// When the running scan started, and how long the last one took.
+    started: Option<std::time::Instant>,
+    took: Option<std::time::Duration>,
 }
 
 /// One row as the table shows it.
@@ -101,6 +104,9 @@ pub struct ScanState {
     pub entries: u64,
     /// Bytes on disk counted so far.
     pub bytes: u64,
+    /// MFT records read so far: the one number that moves while the fast
+    /// scanner reads the table, before any entry is placed in a tree.
+    pub records: u64,
     /// The finished scan, when there is one.
     pub result: Option<ScanResult>,
     /// Why the last scan ended badly, when it did.
@@ -127,6 +133,13 @@ pub struct ScanResult {
     /// midda's total and the one another tool shows, and a reader comparing the
     /// two deserves to know which of them is explaining itself.
     pub shared_reclaimed: u64,
+    /// Which scanner read this: `walk` or `mft`.
+    pub scanned_by: String,
+    /// Why the MFT reader gave way to the walk, when it did.
+    pub fallback: Option<String>,
+    /// How long the scan took, in milliseconds — the number that makes
+    /// "accelerate" worth a prompt, or not.
+    pub elapsed_ms: u64,
 }
 
 /// Starts a scan of `path`.
@@ -149,6 +162,8 @@ pub fn start_scan(path: String, session: tauri::State<'_, Session>) -> Result<()
     state.tree = None;
     state.failure = None;
     state.running = true;
+    state.started = Some(std::time::Instant::now());
+    state.took = None;
     drop(state);
 
     let root = PathBuf::from(path);
@@ -163,6 +178,7 @@ pub fn start_scan(path: String, session: tauri::State<'_, Session>) -> Result<()
             }
             state.running = false;
             state.progress = None;
+            state.took = state.started.take().map(|started| started.elapsed());
         }
     });
 
@@ -178,25 +194,32 @@ pub fn start_scan(path: String, session: tauri::State<'_, Session>) -> Result<()
 pub fn scan_progress(session: tauri::State<'_, Session>) -> Result<ScanState, String> {
     let state = session.shared.lock().map_err(|_| "the scan session is poisoned".to_owned())?;
 
-    let (entries, bytes) = state.progress.as_ref().map_or_else(
+    let (entries, bytes, records) = state.progress.as_ref().map_or_else(
         || {
             // A finished scan reports its own totals: the counters are gone, and
             // a window that showed zeros the moment a scan ended would flicker.
-            state.tree.as_ref().map_or((0, 0), |tree| (tree.root().entries, tree.root().size.allocated))
+            state
+                .tree
+                .as_ref()
+                .map_or((0, 0, 0), |tree| (tree.root().entries, tree.root().size.allocated, 0))
         },
-        |progress| (progress.entries(), progress.bytes()),
+        |progress| (progress.entries(), progress.bytes(), progress.records()),
     );
 
     Ok(ScanState {
         running: state.running,
         entries,
         bytes,
+        records,
         result: state.tree.as_ref().map(|tree| ScanResult {
             root: row(tree, midda_core::ROOT),
             cluster_bytes: tree.cluster_bytes(),
             skipped: tree.skipped().len() as u64,
             shared_names: tree.shared().shared_names,
             shared_reclaimed: tree.shared().reclaimed.allocated,
+            scanned_by: tree.scanned_by().to_owned(),
+            fallback: tree.fallback().map(str::to_owned),
+            elapsed_ms: state.took.map_or(0, |took| u64::try_from(took.as_millis()).unwrap_or(u64::MAX)),
         }),
         error: state.failure.clone(),
     })
