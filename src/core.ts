@@ -102,6 +102,12 @@ export interface ScanResult {
   sharedNames: number
   /** The bytes those second names would have been counted as, and are not. */
   sharedReclaimed: number
+  /** Which scanner read this: `walk` or `mft`. */
+  scannedBy: string
+  /** Why the MFT reader gave way to the walk, when it did. */
+  fallback: string | null
+  /** How long the scan took. */
+  elapsedMs: number
 }
 
 /** What a scan looks like from outside. Mirrors `ScanState`. */
@@ -109,6 +115,8 @@ export interface ScanState {
   running: boolean
   entries: number
   bytes: number
+  /** MFT records read so far; zero on the walk. */
+  records: number
   result: ScanResult | null
   error: string | null
 }
@@ -161,6 +169,32 @@ export interface Volume {
 
 export function listVolumes(): Promise<Volume[]> {
   return invoke<Volume[]>('list_volumes')
+}
+
+/**
+ * Where scans stand with the fast scanner. Mirrors `Acceleration` in
+ * midda-core: `active` reads the MFT, `needs-elevation` could after a restart
+ * as administrator, `unsupported` never can (not NTFS, not Windows).
+ */
+export type Acceleration = 'active' | 'needs-elevation' | 'unsupported'
+
+/** Where `path` — or, with none, the system drive — stands with the fast scanner. */
+export function acceleration(path: string | null): Promise<Acceleration> {
+  return invoke<{ state: Acceleration }>('acceleration', { path }).then((answer) => answer.state)
+}
+
+/**
+ * Restarts midda as an administrator, scanning `path`. Resolves only if the
+ * restart failed to happen — on success this window closes — so a rejection
+ * carries the reason to show.
+ */
+export function accelerate(path: string | null): Promise<void> {
+  return invoke<void>('accelerate', { path })
+}
+
+/** The folder this window was started to scan, once; `null` after that. */
+export function launchRequest(): Promise<string | null> {
+  return invoke<string | null>('launch_request')
 }
 
 export function startScan(path: string): Promise<void> {

@@ -2,7 +2,7 @@ import { EntryTable } from '@/EntryTable'
 import { Treemap } from '@/Treemap'
 import type { Row, ScanResult, SizeBasis, Sort, SortKey } from '@/core'
 import { sizeOf } from '@/core'
-import { describeOverhead, explainSize, formatBytes, formatCount } from '@/format'
+import { describeOverhead, describeScan, explainSize, formatBytes, formatCount } from '@/format'
 
 interface RowsProps {
   result: ScanResult
@@ -61,7 +61,7 @@ export function Rows({
   // only says that something inside is shared. Showing both at the root puts
   // the weaker claim beside the stronger one, saying the same thing twice.
   const showsExplanation = explanation !== null && !showsShared
-  const showsNotes = overhead !== null || showsExplanation || showsSkipped || showsShared
+  const showsNotes = atRoot || overhead !== null || showsExplanation || showsSkipped || showsShared
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -88,6 +88,11 @@ export function Rows({
 
       {showsNotes && (
         <div className="flex shrink-0 flex-wrap gap-x-4 border-b border-line bg-soft/40 px-4 py-1.5 text-xs text-dim">
+          {/* How the numbers were read, at the root: the same answer arrives
+              in minutes or in seconds, and a fallback from the fast way is said
+              rather than left to look like a slow disk. */}
+          {atRoot && <span>{describeScan(result.scannedBy, result.elapsedMs)}</span>}
+          {atRoot && result.fallback !== null && <span className="text-warn">{result.fallback}</span>}
           {overhead !== null && <span>{overhead}</span>}
           {showsExplanation && <span>{explanation}</span>}
           {result.clusterBytes !== null && overhead !== null && <span>cluster {formatBytes(result.clusterBytes)}</span>}

@@ -154,3 +154,33 @@ export function explainSize(traits: number, links: number | null): string | null
   if (has(HOLDS_SHARED)) return 'what is inside is named elsewhere too, and counted there'
   return null
 }
+
+/**
+ * A duration as a person reads it: `0.8 s`, `12 s`, `2 min 5 s`.
+ *
+ * Tenths only under ten seconds. The number exists to compare the two
+ * scanners, and the difference between them is seconds against minutes — a
+ * tenth matters on the fast side and is noise on the slow one.
+ */
+export function formatDuration(millis: number): string {
+  if (!Number.isFinite(millis) || millis < 0) return '—'
+  const seconds = millis / 1000
+  if (seconds < 10) return `${seconds.toFixed(1)} s`
+  const whole = Math.round(seconds)
+  if (whole < 60) return `${whole} s`
+  const minutes = Math.floor(whole / 60)
+  const rest = whole % 60
+  return rest === 0 ? `${minutes} min` : `${minutes} min ${rest} s`
+}
+
+/**
+ * How a finished scan was read, in one line: `read from the MFT in 2.1 s`.
+ *
+ * Said on every result because the two scanners give the same numbers at very
+ * different speeds, and a reader deciding whether "accelerate" is worth an
+ * administrator's prompt needs to see what the slow way cost them.
+ */
+export function describeScan(scannedBy: string, elapsedMs: number): string {
+  const took = elapsedMs > 0 ? ` in ${formatDuration(elapsedMs)}` : ''
+  return scannedBy === 'mft' ? `read from the MFT${took}` : `walked folder by folder${took}`
+}

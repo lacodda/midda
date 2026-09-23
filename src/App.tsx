@@ -6,13 +6,17 @@ import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Progress } from '@/components/ui/progress'
 import {
+  accelerate,
+  acceleration,
   cancelScan,
   DEFAULT_SORT,
+  launchRequest,
   listVolumes,
   scanProgress,
   startScan,
   toggleSort,
   trailTo,
+  type Acceleration,
   type Row,
   type ScanResult,
   type SizeBasis,
@@ -43,7 +47,11 @@ type Stage =
 export default function App() {
   const [volumes, setVolumes] = useState<Volume[] | null>(null)
   const [stage, setStage] = useState<Stage>({ at: 'choosing' })
-  const [counted, setCounted] = useState({ entries: 0, bytes: 0 })
+  const [counted, setCounted] = useState({ entries: 0, bytes: 0, records: 0 })
+  /** Where the folder being looked at stands with the fast scanner. */
+  const [fast, setFast] = useState<Acceleration | null>(null)
+  /** Why "accelerate" did not happen, when it did not. */
+  const [notice, setNotice] = useState<string | null>(null)
   const [basis, setBasis] = useState<SizeBasis>('allocated')
   const [sort, setSort] = useState<Sort>(DEFAULT_SORT)
   /** The path from the scan root down to what is on screen. */
@@ -72,7 +80,8 @@ export default function App() {
   const begin = useCallback(
     async (target: string) => {
       setStage({ at: 'scanning', target })
-      setCounted({ entries: 0, bytes: 0 })
+      setCounted({ entries: 0, bytes: 0, records: 0 })
+      setNotice(null)
       setSort(DEFAULT_SORT)
       setTrail([])
       setSelected(null)
@@ -87,7 +96,7 @@ export default function App() {
       stopPolling()
       polling.current = window.setInterval(() => {
         void scanProgress().then((state) => {
-          setCounted({ entries: state.entries, bytes: state.bytes })
+          setCounted({ entries: state.entries, bytes: state.bytes, records: state.records })
           if (state.running) return
 
           stopPolling()
@@ -102,6 +111,30 @@ export default function App() {
     },
     [stopPolling],
   )
+
+  /* A window started by "accelerate" was given the folder to scan on its
+   * command line: it goes straight to it rather than asking a second time. */
+  useEffect(() => {
+    void launchRequest().then((path) => {
+      if (path !== null) void begin(path)
+    })
+  }, [begin])
+
+  const target = stage.at === 'choosing' ? null : stage.target
+
+  /* Asked per folder, not once: the fast scanner needs NTFS under the path as
+   * well as elevation, and a USB stick on exFAT is not made faster by a
+   * prompt. */
+  useEffect(() => {
+    void acceleration(target).then(setFast)
+  }, [target])
+
+  const speedUp = useCallback(() => {
+    setNotice(null)
+    // On success this window closes and an elevated one takes over; the
+    // promise only settles here when that did not happen.
+    accelerate(target).catch((cause: unknown) => setNotice(String(cause)))
+  }, [target])
 
   const chooseFolder = useCallback(async () => {
     const picked = await open({ directory: true })
@@ -184,6 +217,20 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Offered only where it would help: NTFS under the folder, and this
+              window not already elevated. The prompt is the reader's to ask
+              for, never one sprung on them (ADR 0001). */}
+          {fast === 'needs-elevation' && stage.at !== 'scanning' && (
+            <Button
+              variant="soft"
+              size="sm"
+              onClick={speedUp}
+              title="Restart midda as an administrator to read the volume's Master File Table: seconds instead of minutes. Windows will ask first."
+            >
+              Accelerate
+            </Button>
+          )}
+
           {stage.at === 'done' && (
             <div className="mr-1 flex items-center gap-1 rounded-md border border-line p-0.5 text-xs">
               {(
@@ -221,6 +268,12 @@ export default function App() {
         </div>
       </header>
 
+      {notice !== null && (
+        <div className="shrink-0 border-b border-line px-4 py-2">
+          <Alert tone="warn">{notice}</Alert>
+        </div>
+      )}
+
       <main className="flex min-h-0 flex-1 flex-col">
         {stage.at === 'choosing' && <Volumes volumes={volumes} onPick={(path) => void begin(path)} onBrowse={() => void chooseFolder()} />}
 
@@ -234,10 +287,20 @@ export default function App() {
                 creeps to 90% and waits is a lie the reader learns to
                 distrust. */}
             <Progress className="max-w-md" label="Reading the disk" />
-            <p className="tabular text-sm">
-              <span className="font-medium">{formatCount(counted.entries)}</span> <span className="text-dim">entries ·</span>{' '}
-              <span className="font-medium">{formatBytes(counted.bytes)}</span> <span className="text-dim">on disk</span>
-            </p>
+            {/* The MFT reader reads the whole table before it places a single
+                entry, so for those seconds the moving number is the records
+                read — shown as that, not passed off as entries. */}
+            {counted.records > 0 && counted.entries === 0 ? (
+              <p className="tabular text-sm">
+                <span className="text-dim">Reading the MFT ·</span> <span className="font-medium">{formatCount(counted.records)}</span>{' '}
+                <span className="text-dim">records</span>
+              </p>
+            ) : (
+              <p className="tabular text-sm">
+                <span className="font-medium">{formatCount(counted.entries)}</span> <span className="text-dim">entries ·</span>{' '}
+                <span className="font-medium">{formatBytes(counted.bytes)}</span> <span className="text-dim">on disk</span>
+              </p>
+            )}
           </div>
         )}
 

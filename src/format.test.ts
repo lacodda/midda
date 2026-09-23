@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { describeOverhead, explainSize, formatAge, formatBytes, formatCount, formatShare } from '@/format'
+import { describeOverhead, describeScan, explainSize, formatAge, formatBytes, formatCount, formatDuration, formatShare } from '@/format'
 
 describe('formatBytes', () => {
   it('names the binary steps the way Explorer does', () => {
@@ -205,5 +205,34 @@ describe('explainSize', () => {
 describe('formatCount', () => {
   it('separates thousands', () => {
     expect(formatCount(1_234_567)).toMatch(/1\D?234\D?567/)
+  })
+})
+
+describe('formatDuration', () => {
+  it('keeps tenths only while they matter', () => {
+    expect(formatDuration(840)).toBe('0.8 s')
+    expect(formatDuration(9_949)).toBe('9.9 s')
+    expect(formatDuration(12_400)).toBe('12 s')
+  })
+
+  it('switches to minutes past one', () => {
+    expect(formatDuration(59_600)).toBe('1 min')
+    expect(formatDuration(125_000)).toBe('2 min 5 s')
+  })
+
+  it('refuses a number that is not a duration', () => {
+    expect(formatDuration(-1)).toBe('—')
+    expect(formatDuration(Number.NaN)).toBe('—')
+  })
+})
+
+describe('describeScan', () => {
+  it('names the scanner and what it cost', () => {
+    expect(describeScan('mft', 2_100)).toBe('read from the MFT in 2.1 s')
+    expect(describeScan('walk', 72_000)).toBe('walked folder by folder in 1 min 12 s')
+  })
+
+  it('leaves the time out when it was not measured', () => {
+    expect(describeScan('walk', 0)).toBe('walked folder by folder')
   })
 })
