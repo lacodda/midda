@@ -43,6 +43,7 @@ pub fn assemble(records: &Records, root_record: u64, root: &std::path::Path, vol
     edges.sort_unstable_by(|a, b| a.parent.cmp(&b.parent).then_with(|| listing_order(a.name, b.name)));
 
     let mut tree = Tree::new(root.to_path_buf(), cluster_bytes);
+    let cluster = cluster_bytes.unwrap_or(crate::platform::ASSUMED_CLUSTER_BYTES);
     tree.stamp_root(root_entry.modified.and_then(filetime_to_system_time));
 
     // Breadth-first by level, as the walk does it: the node order is the order
@@ -65,7 +66,7 @@ pub fn assemble(records: &Records, root_record: u64, root: &std::path::Path, vol
                 let Some(record) = records.get(edge.child) else {
                     continue;
                 };
-                let node = node_for(edge, record, parent_id, volume);
+                let node = node_for(edge, record, parent_id, volume, cluster);
                 counted_bytes += node.size.allocated;
                 let is_directory = node.is_directory();
                 let id = tree.push(parent_id, node);
@@ -126,7 +127,7 @@ fn edges(records: &Records) -> Vec<Edge<'_>> {
 }
 
 /// The node the walk would have pushed for this name.
-fn node_for(edge: &Edge<'_>, record: &Record, parent: NodeId, volume: u64) -> Node {
+fn node_for(edge: &Edge<'_>, record: &Record, parent: NodeId, volume: u64, cluster: u64) -> Node {
     let modified = record.modified.and_then(filetime_to_system_time);
     let base = Node {
         modified,
@@ -146,7 +147,7 @@ fn node_for(edge: &Edge<'_>, record: &Record, parent: NodeId, volume: u64) -> No
     }
 
     Node {
-        size: record.occupied(),
+        size: record.occupied(cluster),
         traits: record.traits(),
         links: Some(u32::try_from(record.names.len()).unwrap_or(u32::MAX)),
         identity: Some(FileIdentity {

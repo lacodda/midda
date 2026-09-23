@@ -98,6 +98,10 @@ fn fixture(base: &Path) -> PathBuf {
     // volume is made of these.
     fs::write(root.join("overlaid.bin"), b"abcdefgh".repeat(100_000)).expect("write a compressible file");
     run("compact", &["/c", "/q", "/exe:xpress4k", &root.join("overlaid.bin").to_string_lossy()]);
+    // Small enough that the compressed stream fits inside the record, which
+    // the filter still reports as a whole cluster.
+    fs::write(root.join("overlaid-small.bin"), b"abcdefgh".repeat(1_100)).expect("write a small compressible file");
+    run("compact", &["/c", "/q", "/exe:xpress4k", &root.join("overlaid-small.bin").to_string_lossy()]);
 
     // A sparse file: a megabyte long, a few bytes held.
     let sparse = root.join("sparse.bin");

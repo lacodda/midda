@@ -29,6 +29,16 @@
 //! Volume Information`, another user's profile — it says so by having no
 //! entry in [`Tree::skipped`] where the walk has one; that is the one
 //! disagreement the rule permits, because it is the walk falling short.
+//!
+//! # What the table does not know yet
+//!
+//! A file held open and growing reports, through its handle, the length the
+//! filesystem holds in memory; its record on disk is brought up to date
+//! lazily, and flushing the volume first does not reach every such file. On a
+//! system volume these are the registry's own logs (`*.LOG1`, `*.LOG2`) and a
+//! few system journals — measured on a CI runner, 2026-09-23: 84 files of
+//! 1.2 million, one of them 190 MB by its handle and 7 MB by its record. For
+//! a file nobody is writing, the two are the same number.
 
 mod assemble;
 #[cfg(windows)]
@@ -159,12 +169,18 @@ impl Record {
     /// 53 248 allocated. Reading the unnamed stream's allocation here would
     /// count it as zero, and on a CompactOS volume that is gigabytes: the first
     /// whole-volume comparison against the walk came out 17 GB short.
+    ///
+    /// The filter reports whole clusters even when the compressed stream is
+    /// small enough to live inside the record: a cursor file of 8 774 bytes
+    /// compressed to 312 reads as 4 096 allocated, on a volume of 4 KiB
+    /// clusters. Hence the rounding, which leaves a stream already on clusters
+    /// as it is.
     #[must_use]
-    pub fn occupied(&self) -> Size {
+    pub fn occupied(&self, cluster_bytes: u64) -> Size {
         match (self.is_overlaid(), self.backing) {
             (true, Some(backing)) => Size {
                 logical: self.size.logical,
-                allocated: backing.allocated,
+                allocated: crate::size::round_up_to_cluster(backing.allocated, cluster_bytes),
             },
             _ => self.size,
         }
@@ -369,11 +385,20 @@ mod tests {
             ..Record::default()
         };
         assert_eq!(
-            overlaid.occupied(),
+            overlaid.occupied(4096),
             Size {
                 logical: 800_000,
                 allocated: 53_248
             }
+        );
+        let tiny = Record {
+            backing: Some(Size { logical: 305, allocated: 312 }),
+            ..overlaid.clone()
+        };
+        assert_eq!(
+            tiny.occupied(4096).allocated,
+            4096,
+            "a compressed stream inside the record still reads as a cluster"
         );
         assert_eq!(
             overlaid.traits(),
@@ -387,7 +412,7 @@ mod tests {
             ..overlaid.clone()
         };
         assert_eq!(
-            plain.occupied(),
+            plain.occupied(4096),
             Size {
                 logical: 800_000,
                 allocated: 0
