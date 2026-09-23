@@ -273,14 +273,24 @@ fn assert_files_agree(walked: &Tree, read: &Tree) {
         .collect();
     differ.sort_by_key(|(_, walk, mft)| std::cmp::Reverse(walk.0.allocated.abs_diff(mft.0.allocated)));
 
-    let (changed, disagree): (Vec<_>, Vec<_>) = differ.into_iter().partition(|(_, walk, mft)| walk.3 != mft.3);
+    let (changed, rest): (Vec<_>, Vec<_>) = differ.into_iter().partition(|(_, walk, mft)| walk.3 != mft.3);
+    // The walk could not open these, even elevated — an app execution alias,
+    // a key only SYSTEM may read — so its numbers for them are estimates, not
+    // measurements: the walk falling short, as with what it skips.
+    let (unopened, rest): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(_, walk, _)| walk.2.is_none());
+    // Held open by the system and written without their write time moving —
+    // the registry's logs above all. Their record on disk lags the handle; the
+    // MFT reader's docs say so.
+    let (held, disagree): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(path, _, _)| held_open(path));
     let common = from_walk.keys().filter(|path| from_mft.contains_key(*path)).count();
     eprintln!(
-        "{common} files in both trees; {} written between the scans, {} measured differently while unchanged",
+        "{common} files in both trees; {} written between the scans, {} the walk could not open, {} held open by the system, {} measured differently",
         changed.len(),
+        unopened.len(),
+        held.len(),
         disagree.len()
     );
-    for (path, walk, mft) in disagree.iter().chain(changed.iter()).take(25) {
+    for (path, walk, mft) in disagree.iter().chain(held.iter()).take(25) {
         eprintln!(
             "  {}: walk {:?} traits {:#04x} links {:?} | mft {:?} traits {:#04x} links {:?}",
             path.display(),
@@ -297,4 +307,18 @@ fn assert_files_agree(walked: &Tree, read: &Tree) {
         "{} unchanged files measured differently by the two scanners",
         disagree.len()
     );
+}
+
+/// Whether another process holds `path` open: asking for it with no sharing
+/// at all is refused when anyone else has it.
+fn held_open(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    /// `ERROR_SHARING_VIOLATION`.
+    const SHARING_VIOLATION: i32 = 32;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .is_err_and(|error| error.raw_os_error() == Some(SHARING_VIOLATION))
 }
