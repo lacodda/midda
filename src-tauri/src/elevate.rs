@@ -90,7 +90,11 @@ pub struct AccelerationState {
 /// Whether scans of `path` can read the MFT, could after elevation, or never
 /// can. With no path, the system drive answers: it is where "accelerate" is
 /// offered before anything has been picked.
-#[tauri::command]
+///
+/// Off the window's thread for the reason `list_volumes` is: the answer asks
+/// the volume under `path` for its file system, and a network share can take
+/// its time.
+#[tauri::command(async)]
 pub fn acceleration(path: Option<String>) -> AccelerationState {
     let root = path.map_or_else(system_drive, PathBuf::from);
     AccelerationState {

@@ -23,12 +23,18 @@ pub struct Volume {
 
 /// Every volume this machine can scan.
 ///
+/// Run off the window's thread (`async` in the attribute): a synchronous Tauri
+/// command runs on the thread that owns the window, and asking a disconnected
+/// network drive how full it is can take seconds. On that thread the splash
+/// the window opens on stopped sweeping for as long as the drive took, which
+/// is the frozen window the splash exists to prevent.
+///
 /// # Errors
 ///
 /// Never — a volume that cannot be queried is left out rather than failing the
 /// list, because one unreadable network drive should not empty the first
 /// screen.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_volumes() -> Result<Vec<Volume>, String> {
     Ok(imp::list())
 }
