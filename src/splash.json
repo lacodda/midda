@@ -1,0 +1,6 @@
+{
+  "$comment": "The splash's words, read by both halves of it: index.html before the bundle (filled in by vite.config.ts) and src/Splash.tsx after. One file, so the two cannot say different things and the picture does not jump when React takes over.",
+  "tagline": "Not just what is large, but what is safe to delete.",
+  "status": "Asking each drive how full it is…",
+  "tip": "Accelerate reads a volume's Master File Table: seconds instead of minutes."
+}

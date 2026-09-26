@@ -1,12 +1,12 @@
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/list-row'
-import { Spinner } from '@/components/ui/spinner'
 import type { Volume } from '@/core'
 import { formatBytes, formatShare } from '@/format'
 
 interface VolumesProps {
-  /** `null` while the list is still being read. */
-  volumes: Volume[] | null
+  /** Every volume, once they have answered. While they have not, the window
+   * is still on its splash, so this screen never draws a wait of its own. */
+  volumes: Volume[]
   onPick: (path: string) => void
   onBrowse: () => void
 }
@@ -32,13 +32,6 @@ function usedOf(volume: Volume): { used: number; share: number } | null {
  * can choose before waiting for anything.
  */
 export function Volumes({ volumes, onPick, onBrowse }: VolumesProps) {
-  if (volumes === null) {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <Spinner label="Reading the volumes" />
-      </div>
-    )
-  }
 
   // Fullest first. A volume that would not report its space has no claim on the
   // top of the list, so it sorts last — the same rule the table uses for a row

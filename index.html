@@ -1,12 +1,150 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-density="compact">
+  <!--
+    The whole window is compact: controls stand on 32px rows, 28 for the small
+    size, rather than 36 and 32. midda is a table of a million rows under a
+    40px title bar, and its buttons were 28px before dowel 0.32 gave the small
+    size the default row; kilna made the same choice. On <html> rather than
+    the app's root, because a popup portals to the body and is still the
+    window.
+  -->
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>midda</title>
+    <!--
+      The first thing the window shows, before a line of the application has
+      run: the mark, the name, the promise, the version, what it is doing and
+      one thing worth knowing. It is here and not in React because React is
+      what is still loading; src/Splash.tsx takes over on the first render with
+      the same geometry and removes this one.
+
+      Inline, because the stylesheet arrives with the bundle. Every name in
+      double braces is filled in at build time by vite.config.ts
+      (src/splash-page.ts): colours from dowel's resolved palette for midda,
+      the mark from the line's masters, the words from src/splash.json. None
+      of them is written here, and a brace the filler cannot read fails the
+      build - in a comment too.
+
+      The sizes are Splash's own classes spelled out, so nothing moves when it
+      takes over: gap-2.5, size-14 with mb-1.5, the name at 26px, text-sm,
+      mt-1.5 with text-2xs, mt-4 for the bar, mt-3 with text-xs, text-2xs.
+    -->
+    <style>
+      html {
+        background: {{dark.bg}};
+        color: {{dark.text}};
+        --splash-dim: {{dark.dim}};
+        --splash-faint: {{dark.faint}};
+        --splash-line: {{dark.line}};
+        --splash-accent: {{dark.accent}};
+      }
+      @media (prefers-color-scheme: light) {
+        html {
+          background: {{light.bg}};
+          color: {{light.text}};
+          --splash-dim: {{light.dim}};
+          --splash-faint: {{light.faint}};
+          --splash-line: {{light.line}};
+          --splash-accent: {{light.accent}};
+        }
+      }
+      #splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #splash p {
+        margin: 0;
+      }
+      #splash .mark {
+        width: 56px;
+        height: 56px;
+        margin-bottom: 6px;
+      }
+      #splash .name {
+        font-size: 26px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        line-height: 1;
+      }
+      #splash .tagline {
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--splash-dim);
+      }
+      #splash .version {
+        margin-top: 6px;
+        font-family: ui-monospace, 'Cascadia Code', 'SF Mono', Consolas, monospace;
+        font-size: 10px;
+        line-height: 14px;
+        color: var(--splash-faint);
+      }
+      #splash .bar {
+        position: relative;
+        width: 160px;
+        height: 2px;
+        margin-top: 16px;
+        border-radius: 999px;
+        background: var(--splash-line);
+        overflow: hidden;
+      }
+      #splash .bar::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -40%;
+        width: 40%;
+        height: 100%;
+        border-radius: 999px;
+        background: var(--splash-accent);
+        animation: splash-sweep 1.1s ease-in-out infinite;
+      }
+      @keyframes splash-sweep {
+        to {
+          left: 100%;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #splash .bar::after {
+          animation: none;
+          left: 0;
+          width: 100%;
+        }
+      }
+      #splash .status {
+        margin-top: 12px;
+        font-size: 11px;
+        line-height: 15px;
+        color: var(--splash-dim);
+      }
+      #splash .tip {
+        font-size: 10px;
+        line-height: 14px;
+        color: var(--splash-faint);
+      }
+    </style>
   </head>
   <body>
+    <!-- Hidden from a reader: the React half is the one that speaks, and two
+         status regions saying the same thing would be announced twice. -->
+    <div id="splash" aria-hidden="true">
+      <svg class="mark" viewBox="0 0 100 100">{{mark}}</svg>
+      <div class="name">midda</div>
+      <div class="tagline">{{tagline}}</div>
+      <div class="version">v{{version}}</div>
+      <div class="bar"></div>
+      <p class="status">{{status}}</p>
+      <p class="tip">{{tip}}</p>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

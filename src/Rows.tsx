@@ -16,14 +16,13 @@ interface RowsProps {
   onSortChange: (key: SortKey) => void
   onDescend: (row: Row) => void
   onDescendById: (id: number) => void
-  onClimb: (depth: number) => void
   onSelect: (row: Row | null) => void
   onSelectById: (id: number | null) => void
 }
 
 /**
- * What the scan found: where you are, what it costs, and the two views of what
- * is inside.
+ * What the scan found: what it costs, how it was read, and the two views of
+ * what is inside. Where you are is the title bar's to say.
  *
  * Both at once, deliberately. The table answers "which of these is biggest" one
  * row at a time and can be read; the picture answers "what does this folder
@@ -41,7 +40,6 @@ export function Rows({
   onSortChange,
   onDescend,
   onDescendById,
-  onClimb,
   onSelect,
   onSelectById,
 }: RowsProps) {
@@ -61,61 +59,44 @@ export function Rows({
   // only says that something inside is shared. Showing both at the root puts
   // the weaker claim beside the stronger one, saying the same thing twice.
   const showsExplanation = explanation !== null && !showsShared
-  const showsNotes = atRoot || overhead !== null || showsExplanation || showsSkipped || showsShared
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-line px-4 py-2.5 text-sm">
-        <nav className="flex min-w-0 items-center gap-1" aria-label="Where you are">
-          {trail.map((step, depth) => (
-            <span key={step.id} className="flex min-w-0 items-center gap-1">
-              {depth > 0 && <span className="text-dim">/</span>}
-              {depth === trail.length - 1 ? (
-                <span className="truncate font-medium">{step.name}</span>
-              ) : (
-                <button type="button" onClick={() => onClimb(depth)} className="cursor-pointer truncate text-dim hover:text-text">
-                  {step.name}
-                </button>
-              )}
-            </span>
-          ))}
-        </nav>
-
-        <span className="tabular ml-auto shrink-0 text-dim">
+      {/* One strip: what this folder costs first, then how the numbers were
+          read and anything about them that needs saying. It was two - a trail
+          with the total, and the notes under it - until the trail moved up
+          into the title bar, and a strip holding only a total is a strip of
+          screen spent on one number. */}
+      <div className="flex shrink-0 flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
+        <span className="tabular text-sm">
           <span className="font-medium text-text">{formatBytes(total)}</span> · {formatCount(showing.entries)} entries
         </span>
+        {/* How the numbers were read, at the root: the same answer arrives in
+            minutes or in seconds, and a fallback from the fast way is said
+            rather than left to look like a slow disk. */}
+        {atRoot && <span>{describeScan(result.scannedBy, result.elapsedMs)}</span>}
+        {atRoot && result.fallback !== null && <span className="text-warn">{result.fallback}</span>}
+        {overhead !== null && <span>{overhead}</span>}
+        {showsExplanation && <span>{explanation}</span>}
+        {result.clusterBytes !== null && overhead !== null && <span>cluster {formatBytes(result.clusterBytes)}</span>}
+        {/* The difference between midda's total and a naive one, stated rather
+            than silently applied. A volume holding a package manager's store
+            can double under a scanner that counts every name of a hard-linked
+            file, and a reader comparing two tools should be able to see which
+            of them is explaining itself. */}
+        {showsShared && (
+          <span>
+            {formatCount(result.sharedNames)} {result.sharedNames === 1 ? 'entry is another name' : 'entries are other names'} for bytes counted
+            elsewhere — {formatBytes(result.sharedReclaimed)} not counted twice
+          </span>
+        )}
+        {/* A scan of a system volume always refuses something. Saying so is
+            the difference between a total that is short and a total that is
+            quietly wrong. Only at the scan root: the count is for the whole
+            scan, and repeating it inside every folder would read as a claim
+            about that folder — which nothing here knows. */}
+        {showsSkipped && <span>{formatCount(result.skipped)} entries could not be read in this scan</span>}
       </div>
-
-      {showsNotes && (
-        <div className="flex shrink-0 flex-wrap gap-x-4 border-b border-line bg-soft/40 px-4 py-1.5 text-xs text-dim">
-          {/* How the numbers were read, at the root: the same answer arrives
-              in minutes or in seconds, and a fallback from the fast way is said
-              rather than left to look like a slow disk. */}
-          {atRoot && <span>{describeScan(result.scannedBy, result.elapsedMs)}</span>}
-          {atRoot && result.fallback !== null && <span className="text-warn">{result.fallback}</span>}
-          {overhead !== null && <span>{overhead}</span>}
-          {showsExplanation && <span>{explanation}</span>}
-          {result.clusterBytes !== null && overhead !== null && <span>cluster {formatBytes(result.clusterBytes)}</span>}
-          {/* The difference between midda's total and a naive one, stated
-              rather than silently applied. A volume holding a package
-              manager's store can double under a scanner that counts every name
-              of a hard-linked file, and a reader comparing two tools should be
-              able to see which of them is explaining itself. */}
-          {showsShared && (
-            <span>
-              {formatCount(result.sharedNames)} {result.sharedNames === 1 ? 'entry is another name' : 'entries are other names'} for bytes counted
-              elsewhere — {formatBytes(result.sharedReclaimed)} not counted twice
-            </span>
-          )}
-          {/* A scan of a system volume always refuses something. Saying so is
-              the difference between a total that is short and a total that is
-              quietly wrong.
-              Only at the scan root: the count is for the whole scan, and
-              repeating it inside every folder would read as a claim about that
-              folder — which nothing here knows. */}
-          {showsSkipped && <span>{formatCount(result.skipped)} entries could not be read in this scan</span>}
-        </div>
-      )}
 
       {/* Side by side above 60rem, stacked below it. The split is the shape of
           the product: the list and the picture are two readings of one folder,
