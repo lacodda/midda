@@ -1856,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "midda-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ntfs-reader",
  "rayon",
@@ -1869,7 +1869,7 @@ dependencies = [
 
 [[package]]
 name = "midda-desktop"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "midda-core",
  "serde",

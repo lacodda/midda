@@ -1,6 +1,6 @@
 {
   "name": "midda",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A disk space analyzer for Windows that tells you not just what is large, but what is safe to delete",
   "license": "MIT",
   "private": true,
