@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.0] - 2026-09-26
+
+### Bug Fixes
+- Answer the volume list off the window's thread
+
+### Build
+- Take dowel-ui 0.33.0 and hold every registry copy to it
+
+### Features
+- Draw the window's own frame and open on a splash
 ## [0.5.0] - 2026-09-23
 
 ### Bug Fixes
