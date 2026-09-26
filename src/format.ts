@@ -6,6 +6,8 @@
  * is worse than one not rendered at all.
  */
 
+import { documentLocale } from 'dowel-ui'
+
 /**
  * Bytes as a person reads them: `1.2 GB`.
  *
@@ -41,10 +43,15 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
- * A count with thousands separators, in the reader's own locale.
+ * A count with thousands separators, in the language the interface speaks.
+ *
+ * Not the machine's: a bare `toLocaleString()` asks the browser, and an
+ * English window on a Russian machine then wrote `1 234 567 entries` beside
+ * `1.2 GB` - two conventions on one line. `documentLocale()` reads
+ * `<html lang>`, which is where the page says what it is written in.
  */
 export function formatCount(count: number): string {
-  return count.toLocaleString()
+  return count.toLocaleString(documentLocale())
 }
 
 /**

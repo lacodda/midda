@@ -1,3 +1,34 @@
+/*
+ * How a column is ordered, with no React in it.
+ *
+ * Split out of the Table for the reason `calendar-math` was split out of the
+ * Calendar: these are the sums, and the component is the thing that draws
+ * them. A product sorting its own rows - on the server, in a worker, before
+ * the data ever reaches a component - imports this and nothing else.
+ *
+ * No table library, deliberately. The obvious choice here is TanStack Table,
+ * and it would be the first dependency a product has to install beyond Base
+ * UI. What it offers is a model of columns, pages and sorting state; what the
+ * line's one real table needed was the rule below, which the model does not
+ * have. So the model is the part that is written here, and it is small.
+ *
+ * The rule, and the reason this file exists at all:
+ *
+ *   **Absence sorts last, whichever way the column points.**
+ *
+ * A row with no value in this column is not the smallest - it is unknown, and
+ * the two are different facts. Rank absence with the rest and flip the sign,
+ * and a descending sort floats every empty row to the top: the reader asks for
+ * "highest first" and is handed the rows that have no value at all. This is
+ * measured rather than assumed - it is what the first version of the line's
+ * catalogue did, and the fix is the shape below, where presence is settled
+ * before the direction is applied.
+ *
+ * It is the same fact `RatingScale` is built on: not judged yet is a state,
+ * not a zero. A table that sorts them together loses it on the first click.
+ */
+
+/** Which way a column points. */
 export type SortDirection = 'asc' | 'desc'
 
 /** A column, and which way it points. `column` is the caller's own key - the
@@ -31,9 +62,11 @@ export interface SortOptions<Row> {
    * in a different order, and a column of ties reshuffles under the reader
    * with no click. Pass the row's id. */
   tiebreak?: (row: Row) => SortValue
-  /** The locale text is compared in. Passed to `Intl.Collator`, so `ä` sorts
-   * where the reader expects rather than after `z`. */
-  locale?: string
+  /** The language text is compared in - the application's, from
+   * `useLocale()`. Passed to `Intl.Collator`, so `ä` sorts where the reader
+   * expects rather than after `z`. Required: left out, the collator used the
+   * browser's language, which is not the one the table is written in. */
+  locale: string
 }
 
 /** Order the rows. Returns a new array; the input is not touched, because a
@@ -42,7 +75,7 @@ export function sortRows<Row, Column extends string = string>(
   rows: readonly Row[],
   sort: Sort<Column>,
   accessor: SortAccessor<Row, Column>,
-  options: SortOptions<Row> = {},
+  options: SortOptions<Row>,
 ): Row[] {
   const sign = sort.direction === 'asc' ? 1 : -1
   // One collator for the whole sort rather than one `localeCompare` per

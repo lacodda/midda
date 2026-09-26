@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { describeOverhead, describeScan, explainSize, formatAge, formatBytes, formatCount, formatDuration, formatShare } from '@/format'
 
 describe('formatBytes', () => {
@@ -203,8 +203,20 @@ describe('explainSize', () => {
 })
 
 describe('formatCount', () => {
-  it('separates thousands', () => {
-    expect(formatCount(1_234_567)).toMatch(/1\D?234\D?567/)
+  afterEach(() => {
+    document.documentElement.lang = ''
+  })
+
+  it('separates thousands the way the interface language does', () => {
+    document.documentElement.lang = 'en'
+    expect(formatCount(1_234_567)).toBe('1,234,567')
+  })
+
+  it('follows the page, not the machine', () => {
+    // German is on no machine this runs on by default, so a count that comes
+    // out with dots came from `<html lang>` and nowhere else.
+    document.documentElement.lang = 'de'
+    expect(formatCount(1_234_567)).toBe('1.234.567')
   })
 })
 

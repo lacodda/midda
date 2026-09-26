@@ -362,7 +362,7 @@ export function Treemap({ parentId, parentName, basis, selected, onDescend, onSe
               top: tipBox.y > 80 ? tipBox.y - 8 : tipBox.y + tipBox.height + 8,
               transform: tipBox.y > 80 ? 'translateY(-100%)' : undefined,
             }}
-            className="pointer-events-none absolute z-10 max-w-[260px] rounded-md border border-line bg-raise px-3 py-2 text-xs shadow-lift"
+            className="pointer-events-none absolute z-10 max-w-65 rounded-md border border-line bg-raise px-3 py-2 text-xs shadow-lift"
             role="status"
           >
             {/* The whole path, not the name: a rectangle called `src` is one

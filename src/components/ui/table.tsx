@@ -29,27 +29,29 @@ import { ariaSort, type Sort } from './table-sort'
  * `position: sticky` needs a scroll container to stick inside.
  */
 
-export const tableVariants = cva('w-full border-collapse text-left text-sm', {
-  variants: {
-    density: {
-      /* Comfortable, and the default: a row a finger can hit, for a table a
-       * person reads. */
-      base: '[&_td]:py-2.5 [&_th]:py-2.5',
-      /* For a table a person scans - a log, a ledger, a list of a thousand
-       * things. Half the padding, same font: shrinking the text too is how a
-       * dense table becomes an unreadable one. */
-      dense: '[&_td]:py-1.5 [&_th]:py-1.5',
-    },
-  },
-  defaultVariants: { density: 'base' },
-})
+/*
+ * Row height follows the density of the region, like every other control.
+ *
+ * This had a `density` prop of its own, with its own words - `base` and
+ * `dense` - which made "density" mean two different things in one set: an
+ * attribute on a container for fields, a prop on this one element for rows. A
+ * product wanting a tight screen had to know both and set both, and a table
+ * inside a compact form stayed comfortable unless somebody remembered.
+ *
+ * Now it reads `--row-cell`, so `data-density="compact"` on anything above it
+ * tightens the rows with everything else. The font does not shrink with it:
+ * shrinking the text too is how a dense table becomes an unreadable one.
+ */
+export const tableVariants = cva(
+  'w-full border-collapse text-left text-sm [&_td]:py-row [&_th]:py-row',
+)
 
 export interface TableProps
   extends HTMLAttributes<HTMLTableElement>,
     VariantProps<typeof tableVariants> {}
 
-export function Table({ density, className, ...props }: TableProps) {
-  return <table className={cn(tableVariants({ density }), className)} {...props} />
+export function Table({ className, ...props }: TableProps) {
+  return <table className={cn(tableVariants(), className)} {...props} />
 }
 
 /** The scroll container a table needs, and the one a sticky heading sticks in.

@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button'
+import { RowButton } from '@/components/ui/list-row'
 import { Spinner } from '@/components/ui/spinner'
 import type { Volume } from '@/core'
 import { formatBytes, formatShare } from '@/format'
@@ -70,39 +71,42 @@ export function Volumes({ volumes, onPick, onBrowse }: VolumesProps) {
 
           return (
             <li key={volume.path}>
-              <button
-                type="button"
+              {/* A choice in a list, so dowel's RowButton, in the card the
+                  first screen has always drawn: the border and the room are
+                  what make five drives read as five things to pick from. */}
+              <RowButton
                 onClick={() => onPick(volume.path)}
-                className="flex w-full cursor-pointer items-center gap-4 rounded-lg border border-line px-4 py-3 text-left transition-colors hover:border-line-2 hover:bg-soft"
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">{volume.label}</span>
-                  {space !== null && volume.total !== null && volume.free !== null ? (
-                    <span className="tabular mt-0.5 block text-xs text-dim">
+                className="gap-4 rounded-lg border border-line px-4 py-3 hover:border-line-2"
+                description={
+                  space !== null && volume.total !== null && volume.free !== null ? (
+                    <span className="tabular">
                       {formatBytes(space.used)} used of {formatBytes(volume.total)} · {formatBytes(volume.free)} free
                     </span>
                   ) : (
                     // A drive that is not ready — an empty card reader, a
                     // disconnected share — is offered without numbers rather
                     // than hidden: it is still somewhere a scan could point.
-                    <span className="mt-0.5 block text-xs text-dim">not ready</span>
-                  )}
-                </span>
-
-                {space !== null && (
-                  <>
-                    <span className="tabular w-12 shrink-0 text-right text-xs text-dim">{formatShare(space.used, volume.total ?? 0)}</span>
-                    <span className="h-1.5 w-32 shrink-0 overflow-hidden rounded-full bg-soft" aria-hidden>
-                      <span
-                        className={
-                          space.share > 0.9 ? 'block h-full bg-bad' : space.share > 0.75 ? 'block h-full bg-warn' : 'block h-full bg-accent'
-                        }
-                        style={{ width: `${Math.round(space.share * 100)}%` }}
-                      />
-                    </span>
-                  </>
-                )}
-              </button>
+                    'not ready'
+                  )
+                }
+                end={
+                  space !== null && (
+                    <>
+                      <span className="tabular w-12 text-right">{formatShare(space.used, volume.total ?? 0)}</span>
+                      <span className="h-1.5 w-32 overflow-hidden rounded-full bg-soft" aria-hidden>
+                        <span
+                          className={
+                            space.share > 0.9 ? 'block h-full bg-bad' : space.share > 0.75 ? 'block h-full bg-warn' : 'block h-full bg-accent'
+                          }
+                          style={{ width: `${Math.round(space.share * 100)}%` }}
+                        />
+                      </span>
+                    </>
+                  )
+                }
+              >
+                {volume.label}
+              </RowButton>
             </li>
           )
         })}

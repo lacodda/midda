@@ -17,6 +17,16 @@ export default tseslint.config(
   // The `flat` variant; the top-level one is still in the legacy shape.
   reactHooks.configs.flat['recommended-latest'],
   ...dowel.configs.recommended,
+  // The registry copies are dowel's, held byte for byte to the installed
+  // package by `tools/check-registry.mjs`, and held to the scale by dowel's own
+  // scale test with each exception argued there. The recommended config keeps
+  // `no-raw-button` out of `ui/` but not this one, so dowel's own splash - a
+  // 26px name that is off the scale on purpose - fails here, in a file that
+  // may not be edited. dowel lints its registry the same way.
+  {
+    files: ['src/components/ui/**'],
+    rules: { 'dowel/no-arbitrary-scale': 'off' },
+  },
   {
     files: ['**/*.{ts,tsx}'],
     languageOptions: {

@@ -24,8 +24,8 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       dowel-ui:
-        specifier: ^0.28.1
-        version: 0.28.1(eslint@10.10.0(jiti@2.7.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        specifier: ^0.33.0
+        version: 0.33.0(eslint@10.10.0(jiti@2.7.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       react:
         specifier: ^19.2.8
         version: 19.3.0
@@ -1000,8 +1000,8 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dowel-ui@0.28.1:
-    resolution: {integrity: sha512-W/3ZEK+sygv3WBvBLYGNpASv1KJDW615HZ067gZ6MuZDtvKixxuPYUEaLnrwsB+AULHPNrwYwPGQoZCpRnArdw==}
+  dowel-ui@0.33.0:
+    resolution: {integrity: sha512-vuX9z0PYcwWR5YXAFikIg3/L8PLljy4GjB/tQhwe//4C01CpiVytxbE1XD0Ue/tQrCvDhcCd/tudiapkTEtaWg==}
     hasBin: true
     peerDependencies:
       eslint: ^9.0.0 || ^10.0.0
@@ -2528,7 +2528,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  dowel-ui@0.28.1(eslint@10.10.0(jiti@2.7.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
+  dowel-ui@0.33.0(eslint@10.10.0(jiti@2.7.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
     dependencies:
       clsx: 2.1.1
       react: 19.3.0

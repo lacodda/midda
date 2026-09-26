@@ -9,7 +9,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "lint": "eslint . && tsc --noEmit && pnpm test",
+    "lint": "eslint . && tsc --noEmit && pnpm registry && pnpm test",
+    "registry": "node tools/check-registry.mjs",
     "tauri": "tauri",
     "test": "vitest run"
   },
@@ -19,7 +20,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "dowel-ui": "^0.28.1",
+    "dowel-ui": "^0.33.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tailwind-merge": "^3.6.0"

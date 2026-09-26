@@ -224,6 +224,7 @@ export function EntryTable({ parentId, total, sort, basis, selectedId, onSortCha
                 // otherwise read as a scanner that gave up.
                 const shared = isSharedName(row.traits) || hasTrait(row.traits, TRAIT.holdsShared)
                 return (
+                  // eslint-disable-next-line dowel/no-raw-button -- a row of a six-column grid, windowed from a million: RowButton lays out three slots, and dowel's Table is a <table>, which cannot be windowed
                   <button
                     key={row.id}
                     type="button"
@@ -264,7 +265,7 @@ export function EntryTable({ parentId, total, sort, basis, selectedId, onSortCha
                           ordinary large row, and labelling it too would put a
                           badge on half the list. */}
                       {shared && (
-                        <Badge variant="soft" className="shrink-0 px-1.5 py-0 text-[0.625rem] leading-4" title={explanation ?? undefined}>
+                        <Badge variant="soft" className="shrink-0 px-1.5 py-0 text-2xs leading-4" title={explanation ?? undefined}>
                           linked
                         </Badge>
                       )}
