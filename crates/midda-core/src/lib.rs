@@ -41,6 +41,17 @@
 //! same tree. See `docs/adr/0001-hybrid-scanning.md` and
 //! `docs/adr/0006-accelerate-by-relaunching-elevated.md`.
 //!
+//! # Kept current
+//!
+//! A scan is a picture of a moment; an [`Index`] keeps it current. Whatever
+//! reports a change — the watcher on the folder, the volume's change journal
+//! — is reduced to paths, each path is looked at on the volume again, and the
+//! tree is made to match ([`fresh`]). Between runs the index is saved and read
+//! back before anything else has said a word ([`fresh::store`]). A tree kept up
+//! to date and a fresh scan of the same disk are the same arena once laid out
+//! again — that is what `tests/fresh.rs` holds them to. See
+//! `docs/adr/0009-freshness-without-rescanning.md`.
+//!
 //! ```no_run
 //! use midda_core::{Progress, SizeBasis, scan};
 //!

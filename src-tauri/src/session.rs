@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
-use midda_core::fresh::since::{self, Change, Changes};
+use midda_core::fresh::since::{Change, Changes};
 use midda_core::fresh::store::{self, Unusable};
 use midda_core::order::{self, Sort, Span};
 use midda_core::treemap::{self, Layout, Tile};
@@ -108,6 +108,7 @@ struct Reading {
 /// How the index on screen is kept current.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(not(windows), allow(dead_code, reason = "the journal and the watcher are Windows-only"))]
 pub enum Mode {
     /// Nothing is open.
     #[default]
@@ -523,7 +524,7 @@ fn written_since(shared: &RwLock<State>, hours: u32) -> Result<ChangesSummary, S
 
     let mut state = shared.write().map_err(poisoned)?;
     let index = state.index.as_ref().ok_or_else(|| "nothing has been read yet".to_owned())?;
-    let changes = since::written_since(index.tree(), &records, moment, journal.place());
+    let changes = midda_core::fresh::since::written_since(index, &records, moment, journal.place());
     state.changes_arena += 1;
     let summary = ChangesSummary {
         root: row(&changes.tree, ROOT, Some(&changes)),
@@ -541,7 +542,6 @@ fn written_since(shared: &RwLock<State>, hours: u32) -> Result<ChangesSummary, S
 
 #[cfg(not(windows))]
 fn written_since(_shared: &RwLock<State>, _hours: u32) -> Result<ChangesSummary, String> {
-    let _ = since::written_since;
     Err("the change journal is an NTFS feature".to_owned())
 }
 
@@ -638,7 +638,7 @@ impl Source {
         match self {
             Self::Nothing(why) => Some(why.clone()),
             #[cfg(windows)]
-            _ => None,
+            Self::Journal(_) | Self::Watcher(_) => None,
         }
     }
 }
@@ -694,11 +694,26 @@ impl Source {
     /// Where the journal is now, for a read about to start: everything after
     /// it is applied once the read is done.
     fn position(&self) -> Option<JournalPosition> {
-        match self {
-            #[cfg(windows)]
-            Self::Journal(journal) => Some(journal.position()),
-            _ => None,
+        #[cfg(windows)]
+        if let Self::Journal(journal) = self {
+            return Some(journal.position());
         }
+        None
+    }
+
+    /// Whether a saved index that was up to `journal` can be brought up to
+    /// date from here, or has to be read again — and why.
+    fn catches_up_from(&self, journal: Option<JournalPosition>) -> Due {
+        #[cfg(windows)]
+        if let Self::Journal(reader) = self {
+            return match journal.map(|at| reader.reaches(at)) {
+                Some(Ok(())) => Due::Nothing,
+                Some(Err(gap)) => Due::Read(Some(format!("the saved index was read again: {gap}"))),
+                None => Due::Read(Some("the saved index was made without the change journal, and was read again".to_owned())),
+            };
+        }
+        let _ = journal;
+        Due::Read(None)
     }
 }
 
@@ -732,16 +747,7 @@ fn keep(shared: &RwLock<State>, root: &Path, store: &Path, stop: &AtomicBool, re
                     note: None,
                 };
             }
-            match (&source, journal) {
-                #[cfg(windows)]
-                (Source::Journal(reader), Some(at)) => match reader.reaches(at) {
-                    Ok(()) => Due::Nothing,
-                    Err(gap) => Due::Read(Some(format!("the saved index was read again: {gap}"))),
-                },
-                #[cfg(windows)]
-                (Source::Journal(_), None) => Due::Read(Some("the saved index was made without the change journal, and was read again".to_owned())),
-                _ => Due::Read(None),
-            }
+            source.catches_up_from(journal)
         }
         Err(Unusable::Missing) => Due::Read(None),
         Err(why) => Due::Read(Some(format!("the saved index was not used: {why}"))),

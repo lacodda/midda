@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use super::Index;
 use super::usn::{self, Record};
 use crate::platform::UNIX_EPOCH_AS_FILETIME;
 use crate::tree::{Node, NodeId, ROOT, Tree};
@@ -84,7 +85,8 @@ struct Fate<'a> {
 /// `tree` is the tree as it is now: brought up to date with the same journal,
 /// so that every file the records name is measured as it stands.
 #[must_use]
-pub fn written_since(tree: &Tree, records: &[Record], since: SystemTime, mut place: impl FnMut(&Record) -> Option<PathBuf>) -> Changes {
+pub fn written_since(index: &Index, records: &[Record], since: SystemTime, mut place: impl FnMut(&Record) -> Option<PathBuf>) -> Changes {
+    let tree = index.tree();
     let from = filetime(since);
     let mut fates: HashMap<u64, Fate<'_>> = HashMap::new();
     let mut order = Vec::new();
@@ -133,7 +135,7 @@ pub fn written_since(tree: &Tree, records: &[Record], since: SystemTime, mut pla
         if fate.directory || !(fate.created || fate.written) {
             continue;
         }
-        let Some(id) = fate.last.and_then(&mut place).and_then(|path| find(tree, &path)) else {
+        let Some(id) = fate.last.and_then(&mut place).and_then(|path| find(index, &path)) else {
             continue;
         };
         if tree.node(id).is_directory() {
@@ -151,10 +153,11 @@ pub fn written_since(tree: &Tree, records: &[Record], since: SystemTime, mut pla
     changes
 }
 
-/// The node at `path` in `tree`, when the tree holds it under that name.
-fn find(tree: &Tree, path: &Path) -> Option<NodeId> {
-    let names = super::below(tree.root_path(), path)?;
-    names.iter().try_fold(ROOT, |at, name| tree.child(at, name))
+/// The node at `path` in the index's tree, when the tree holds it under that
+/// name.
+fn find(index: &Index, path: &Path) -> Option<NodeId> {
+    let names = index.below_root(path)?;
+    names.iter().try_fold(ROOT, |at, name| index.tree().child(at, name))
 }
 
 /// Copies the file `id` of `tree` into `into`, with the folders above it,
@@ -283,7 +286,7 @@ mod tests {
             record(4, at - 7 * HOUR, 10, usn::DATA_EXTEND | 0x8000_0000, "big.iso"),
             record(5, at - 2 * HOUR, 20, usn::DATA_EXTEND, "app.log"),
         ];
-        let changes = written_since(&tree(), &records, now - Duration::from_secs(24 * 3600), place);
+        let changes = written_since(&Index::new(tree(), now), &records, now - Duration::from_secs(24 * 3600), place);
 
         assert_eq!((changes.created, changes.written, changes.deleted), (1, 1, 0));
         assert_eq!(changes.tree.root().size.logical, 9_000_050_000, "big.iso and app.log, at their size now");
@@ -304,7 +307,7 @@ mod tests {
             record(2, at - 2 * HOUR, 30, usn::FILE_DELETE, "temp.tmp"),
             record(3, at - HOUR, 31, usn::FILE_DELETE, "was-here.txt"),
         ];
-        let changes = written_since(&tree(), &records, now - Duration::from_secs(24 * 3600), place);
+        let changes = written_since(&Index::new(tree(), now), &records, now - Duration::from_secs(24 * 3600), place);
         assert_eq!((changes.created, changes.written, changes.deleted), (0, 0, 1));
         assert!(changes.tree.is_empty());
     }
@@ -316,7 +319,7 @@ mod tests {
             record(1, at - HOUR, 40, usn::RENAME_OLD_NAME, "draft.txt"),
             record(2, at - HOUR, 40, usn::RENAME_NEW_NAME, "keep.txt"),
         ];
-        let changes = written_since(&tree(), &records, now - Duration::from_secs(24 * 3600), place);
+        let changes = written_since(&Index::new(tree(), now), &records, now - Duration::from_secs(24 * 3600), place);
         assert_eq!((changes.created, changes.written), (0, 0));
     }
 
@@ -329,7 +332,7 @@ mod tests {
             record(2, at - HOUR, 41, usn::RENAME_OLD_NAME, "draft.txt"),
             record(3, at - HOUR, 41, usn::RENAME_NEW_NAME, "keep.txt"),
         ];
-        let changes = written_since(&tree(), &records, now - Duration::from_secs(24 * 3600), place);
+        let changes = written_since(&Index::new(tree(), now), &records, now - Duration::from_secs(24 * 3600), place);
         assert_eq!(changes.created, 1);
         assert!(changes.tree.child(ROOT, "keep.txt").is_some());
     }
@@ -338,7 +341,7 @@ mod tests {
     fn a_journal_shorter_than_the_span_says_so() {
         let (now, at) = now();
         let records = [record(1, at - HOUR, 20, usn::DATA_EXTEND, "app.log")];
-        let changes = written_since(&tree(), &records, now - Duration::from_secs(24 * 3600), place);
+        let changes = written_since(&Index::new(tree(), now), &records, now - Duration::from_secs(24 * 3600), place);
         assert!(!changes.covers(), "the journal reaches back an hour, not a day");
         assert!(changes.reaches_back_to.is_some_and(|oldest| oldest > changes.since));
     }

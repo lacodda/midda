@@ -523,3 +523,45 @@ mod watched {
         assert!(started.elapsed() < Duration::from_secs(5), "dropping a watcher hung");
     }
 }
+
+#[cfg(windows)]
+mod spelled {
+    use std::os::windows::process::CommandExt as _;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::SystemTime;
+
+    use midda_core::{Index, ROOT};
+
+    use super::{scan, write};
+
+    /// The DOS short form of `path`, as the shell spells it, when the volume
+    /// makes short names.
+    fn short_form(path: &Path) -> Option<PathBuf> {
+        let output = Command::new("cmd")
+            .raw_arg(format!("/c for %I in (\"{}\") do @echo %~sI", path.display()))
+            .output()
+            .ok()?;
+        let short = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+        (!short.is_empty() && Path::new(&short) != path).then(|| PathBuf::from(short))
+    }
+
+    #[test]
+    fn a_folder_opened_by_its_short_name_takes_changes_reported_under_its_long_one() {
+        // The change journal reports every path in long names; a folder chosen
+        // as C:\PROGRA~1 would otherwise see every change as outside it.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let long = dir.path().join("a folder with a long name");
+        write(&long.join("kept.txt"), 10);
+        let Some(short) = short_form(&long) else {
+            eprintln!("SKIPPED: this volume makes no short names");
+            return;
+        };
+
+        let mut index = Index::new(scan(&short), SystemTime::now());
+        write(&long.join("arrived.bin"), 5000);
+        let applied = index.apply(index.observe([long.join("arrived.bin")]));
+        assert_eq!(applied.added, 1, "the change under the long name reached the tree opened by the short one");
+        assert!(index.tree().child(ROOT, "arrived.bin").is_some());
+    }
+}

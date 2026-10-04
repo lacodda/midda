@@ -53,6 +53,10 @@ pub struct Index {
     /// Where in the volume's change journal the tree is up to, when it is
     /// following one.
     journal: Option<JournalPosition>,
+    /// The scanned folder as the volume spells it, when that is not how it
+    /// was given: `C:\Users\RUNNER~1` was given, and the change journal
+    /// reports `C:\Users\runneradmin`. A path under either is under the root.
+    spelled: Option<PathBuf>,
 }
 
 /// A place in a volume's change journal.
@@ -72,12 +76,21 @@ impl Index {
     /// An index over a tree just read in full.
     #[must_use]
     pub fn new(tree: Tree, scanned_at: SystemTime) -> Self {
+        let long = platform::long_path(tree.root_path());
         Self {
             groups: Groups::of(&tree),
+            spelled: (long != tree.root_path()).then_some(long),
             tree,
             scanned_at,
             journal: None,
         }
+    }
+
+    /// The names leading from the scanned folder down to `path`, when `path`
+    /// is under it under any spelling of the folder.
+    #[must_use]
+    pub fn below_root(&self, path: &Path) -> Option<Vec<String>> {
+        below(self.tree.root_path(), path).or_else(|| below(self.spelled.as_deref()?, path))
     }
 
     /// The tree as it stands.
@@ -132,7 +145,7 @@ impl Index {
         };
 
         for path in paths {
-            match point_of(tree, &path) {
+            match point_of(tree, self.below_root(&path)) {
                 None => {}
                 Some((parent, None)) => {
                     if seen_parents.insert(parent) {
@@ -346,8 +359,8 @@ enum Seen {
 /// The deepest folder the tree holds on the way: a path under a folder the
 /// tree does not have is a change to that folder's existence, and is looked
 /// at as such.
-fn point_of(tree: &Tree, path: &Path) -> Option<(NodeId, Option<String>)> {
-    let names = below(tree.root_path(), path)?;
+fn point_of(tree: &Tree, names: Option<Vec<String>>) -> Option<(NodeId, Option<String>)> {
+    let names = names?;
     let mut at = ROOT;
     let mut on_disk = tree.root_path().to_path_buf();
     for (index, name) in names.iter().enumerate() {

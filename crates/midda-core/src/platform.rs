@@ -172,6 +172,18 @@ pub fn own(path: &Path) -> Own {
     imp::own(path)
 }
 
+/// `path` with every DOS short name in it spelled out: `C:\Users\RUNNER~1`
+/// as `C:\Users\runneradmin`.
+///
+/// The change journal and every path the volume hands back use the long
+/// names; a folder chosen through a short one would otherwise look like
+/// another folder. `path` itself when it cannot be spelled out — it does not
+/// exist, or the platform has no short names.
+#[must_use]
+pub fn long_path(path: &Path) -> std::path::PathBuf {
+    imp::long_path(path).unwrap_or_else(|| path.to_path_buf())
+}
+
 /// Whether there is an entry at a path, as the volume answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Presence {
@@ -527,6 +539,29 @@ mod imp {
         }
     }
 
+    pub(super) fn long_path(path: &Path) -> Option<std::path::PathBuf> {
+        use std::os::windows::ffi::OsStringExt as _;
+        use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+
+        let wide = wide(path);
+        let mut buffer = vec![0_u16; 1024];
+        loop {
+            // SAFETY: `wide` is NUL-terminated and outlives the call; `buffer`
+            // is writable for the length passed.
+            #[allow(unsafe_code, reason = "a path's long spelling is not exposed by std")]
+            let length = unsafe { GetLongPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), u32::try_from(buffer.len()).ok()?) };
+            let length = usize::try_from(length).ok()?;
+            if length == 0 {
+                return None;
+            }
+            if length < buffer.len() {
+                return Some(std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])));
+            }
+            // Too small: the call said how much it needs, NUL included.
+            buffer.resize(length, 0);
+        }
+    }
+
     pub(super) fn presence(path: &Path) -> super::Presence {
         use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, GetLastError};
         use windows_sys::Win32::Storage::FileSystem::{FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, WIN32_FIND_DATAW};
@@ -775,6 +810,11 @@ mod imp {
 
     #[cfg(not(unix))]
     fn identity(_metadata: &Metadata) -> Option<FileIdentity> {
+        None
+    }
+
+    // No short names: a path is spelled one way.
+    pub(super) const fn long_path(_path: &Path) -> Option<std::path::PathBuf> {
         None
     }
 

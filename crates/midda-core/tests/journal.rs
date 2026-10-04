@@ -119,8 +119,8 @@ fn the_files_written_since_a_moment_are_found_from_the_journal_alone() {
     write(&root.join("old/kept.bin"), 70_000);
 
     let records = journal.read_from(from).expect("the journal reads");
-    let tree = scan(root);
-    let changes = since::written_since(&tree, &records, moment, |record| journal.paths(std::slice::from_ref(record)).into_iter().next());
+    let index = Index::new(scan(root), SystemTime::now());
+    let changes = since::written_since(&index, &records, moment, journal.place());
     assert_eq!((changes.created, changes.written), (1, 1), "the download is new and the old file was written");
     assert_eq!(changes.tree.root().size.logical, 470_000, "both at what they hold now");
 }
