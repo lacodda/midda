@@ -53,61 +53,8 @@ impl Scanner for WalkScanner {
     }
 
     fn scan(&self, root: &Path, progress: &Progress) -> Result<Tree> {
-        let metadata = std::fs::metadata(root).map_err(|source| Error::Unreadable {
-            path: root.to_path_buf(),
-            source,
-        })?;
-        if !metadata.is_dir() {
-            return Err(Error::NotADirectory(root.to_path_buf()));
-        }
-
-        let cluster_bytes = platform::cluster_bytes_of(root);
-        let mut tree = Tree::new(root.to_path_buf(), cluster_bytes);
+        let mut tree = read(root, progress)?;
         tree.record_scanner(self.name());
-        let cluster = cluster_bytes.unwrap_or(ASSUMED_CLUSTER_BYTES);
-
-        // The root's own timestamp. A subtree mtime that ignored the root would
-        // call an empty directory undated rather than as old as it is.
-        tree.stamp_root(metadata.modified().ok());
-
-        // Breadth-first by level: every directory at one depth is read in
-        // parallel, then all of their children are attached in one pass on this
-        // thread, which is what keeps the arena lock-free and its node order
-        // parent-before-child.
-        let mut level = vec![(ROOT, root.to_path_buf())];
-        while !level.is_empty() {
-            if progress.cancelled() {
-                return Err(Error::Cancelled);
-            }
-
-            let readings: Vec<Reading> = level.par_iter().map(|(id, path)| read_directory(*id, path, cluster, progress)).collect();
-
-            let mut next = Vec::new();
-            for reading in readings {
-                for failure in reading.failures {
-                    tree.skip(failure.path, failure.reason);
-                }
-                for entry in reading.entries {
-                    let is_directory = matches!(entry.kind, Kind::Directory);
-                    let id = tree.push(
-                        reading.parent,
-                        Node {
-                            size: entry.size,
-                            modified: entry.modified,
-                            subtree_modified: entry.modified,
-                            traits: entry.traits,
-                            links: entry.links,
-                            identity: entry.identity,
-                            ..Node::new(entry.name, reading.parent, entry.kind)
-                        },
-                    );
-                    if is_directory {
-                        next.push((id, entry.path));
-                    }
-                }
-            }
-            level = next;
-        }
 
         // Before the roll-up, never after: this moves bytes off second names,
         // and totals folded upward first would keep the doubling. See
@@ -118,6 +65,80 @@ impl Scanner for WalkScanner {
         tree.roll_up();
         Ok(tree)
     }
+}
+
+/// Reads the tree under `root` as it is on the volume: every entry measured,
+/// in the listing order, and nothing yet worked out from them — no shared
+/// bytes moved, no totals rolled up.
+///
+/// The half of a scan that touches the volume. A full scan follows it with the
+/// two passes over the whole tree; a tree kept up to date reads a folder that
+/// appeared with this and works the passes out against everything it already
+/// holds, because a second name inside the new folder may belong to bytes
+/// counted outside it.
+///
+/// # Errors
+///
+/// When `root` cannot be read, is not a directory, or the read was cancelled.
+pub fn read(root: &Path, progress: &Progress) -> Result<Tree> {
+    let metadata = std::fs::metadata(root).map_err(|source| Error::Unreadable {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_dir() {
+        return Err(Error::NotADirectory(root.to_path_buf()));
+    }
+
+    let cluster_bytes = platform::cluster_bytes_of(root);
+    let mut tree = Tree::new(root.to_path_buf(), cluster_bytes);
+    let cluster = cluster_bytes.unwrap_or(ASSUMED_CLUSTER_BYTES);
+
+    // The root's own timestamp. A subtree mtime that ignored the root would
+    // call an empty directory undated rather than as old as it is.
+    tree.stamp_root(metadata.modified().ok(), platform::own(root).identity);
+
+    // Breadth-first by level: every directory at one depth is read in
+    // parallel, then all of their children are attached in one pass on this
+    // thread, which is what keeps the arena lock-free and its node order
+    // parent-before-child.
+    let mut level = vec![(ROOT, root.to_path_buf())];
+    while !level.is_empty() {
+        if progress.cancelled() {
+            return Err(Error::Cancelled);
+        }
+
+        let readings: Vec<Reading> = level.par_iter().map(|(id, path)| read_directory(*id, path, cluster, progress)).collect();
+
+        let mut next = Vec::new();
+        for reading in readings {
+            for failure in reading.failures {
+                tree.skip(failure.path, failure.reason);
+            }
+            for entry in reading.entries {
+                let is_directory = matches!(entry.kind, Kind::Directory);
+                let path = entry.path.clone();
+                let id = tree.push(reading.parent, entry.into_node(reading.parent));
+                if is_directory {
+                    next.push((id, path));
+                }
+            }
+        }
+        level = next;
+    }
+    Ok(tree)
+}
+
+/// Measures the one entry at `path` the way the walk measures it inside a
+/// listing: a link at what the link costs, a directory at nothing of its own,
+/// a file both ways.
+///
+/// For a tree kept up to date, which reads one entry rather than a directory.
+/// `None` when the entry cannot be looked at.
+#[must_use]
+pub fn measure_entry(path: &Path, parent: NodeId, cluster: u64) -> Option<Node> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    Some(entry(name, path.to_path_buf(), &metadata, cluster).into_node(parent))
 }
 
 /// What one directory turned out to hold.
@@ -141,9 +162,81 @@ struct Entry {
     identity: Option<FileIdentity>,
 }
 
+impl Entry {
+    /// The node this entry is pushed as.
+    fn into_node(self, parent: NodeId) -> Node {
+        Node {
+            size: self.size,
+            modified: self.modified,
+            subtree_modified: self.modified,
+            traits: self.traits,
+            links: self.links,
+            identity: self.identity,
+            ..Node::new(self.name, parent, self.kind)
+        }
+    }
+}
+
 struct Failure {
     path: PathBuf,
     reason: String,
+}
+
+/// Measures one listed entry, given what its listing already said.
+fn entry(name: String, path: PathBuf, metadata: &std::fs::Metadata, cluster: u64) -> Entry {
+    let file_type = metadata.file_type();
+    // On Windows this is true of every name-surrogate reparse point —
+    // symbolic links and junctions alike — and the MFT reader draws the same
+    // line by the same bit, so the two scanners stop at the same entries.
+    if file_type.is_symlink() {
+        // A link is an entry on the volume but its target's bytes are not
+        // its own. Counted as an entry costing what the link itself costs.
+        return Entry {
+            name,
+            kind: Kind::File,
+            size: Size::zero(),
+            modified: platform::modified_of(&path).or_else(|| metadata.modified().ok()),
+            path,
+            traits: Traits::none(),
+            // A link occupies its own few bytes and shares none: it is not a
+            // second name for its target, it is a pointer at a path.
+            links: None,
+            identity: None,
+        };
+    }
+
+    if file_type.is_dir() {
+        // A directory's own entry costs something on NTFS, but it is not
+        // recoverable by deleting the directory alone and counting it would
+        // put bytes in a total that no action returns. A directory's size is
+        // what is inside it. Its identity is asked for — not because a
+        // directory can be shared, which on NTFS it cannot, but because it is
+        // how a tree kept up to date tells a folder written to from a folder
+        // replaced by another of the same name.
+        let own = platform::own(&path);
+        return Entry {
+            name,
+            kind: Kind::Directory,
+            size: Size::zero(),
+            modified: own.modified.or_else(|| metadata.modified().ok()),
+            path,
+            traits: Traits::none(),
+            links: None,
+            identity: own.identity,
+        };
+    }
+
+    let measured = platform::measure(&path, metadata, cluster);
+    Entry {
+        name,
+        path,
+        kind: Kind::File,
+        size: measured.size,
+        modified: measured.modified,
+        traits: measured.traits,
+        links: measured.links,
+        identity: measured.identity,
+    }
 }
 
 /// Reads one directory. Never fails: what cannot be read is reported as a
@@ -195,64 +288,14 @@ fn read_directory(parent: NodeId, path: &Path, cluster: u64, progress: &Progress
             }
         };
 
-        let file_type = metadata.file_type();
-        // On Windows this is true of every name-surrogate reparse point —
-        // symbolic links and junctions alike — and the MFT reader draws the same
-        // line by the same bit, so the two scanners stop at the same entries.
-        if file_type.is_symlink() {
-            // A link is an entry on the volume but its target's bytes are not
-            // its own. Counted as an entry costing what the link itself costs.
-            entries.push(Entry {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                kind: Kind::File,
-                size: Size::zero(),
-                modified: platform::modified_of(&child).or_else(|| metadata.modified().ok()),
-                path: child,
-                traits: Traits::none(),
-                // A link occupies its own few bytes and shares none: it is not a
-                // second name for its target, it is a pointer at a path.
-                links: None,
-                identity: None,
-            });
-            counted_entries += 1;
-            continue;
-        }
-
-        let kind = if file_type.is_dir() { Kind::Directory } else { Kind::File };
-        let measured = if matches!(kind, Kind::Directory) {
-            // A directory's own entry costs something on NTFS, but it is not
-            // recoverable by deleting the directory alone and counting it would
-            // put bytes in a total that no action returns. A directory's size
-            // is what is inside it. Its identity is not asked for either: a
-            // directory is not shareable by a hard link on NTFS.
-            platform::Measured {
-                size: Size::zero(),
-                traits: Traits::none(),
-                links: None,
-                identity: None,
-                modified: platform::modified_of(&child).or_else(|| metadata.modified().ok()),
-            }
-        } else {
-            platform::measure(&child, &metadata, cluster)
-        };
-
+        let measured = self::entry(entry.file_name().to_string_lossy().into_owned(), child, &metadata, cluster);
         counted_entries += 1;
         // The running counter is what the window shows, and it is deliberately
         // the pre-deduplication number: the pass that removes double-counted
         // bytes runs when the walk is over, so a total that shrank at the end is
         // honest about when it learnt.
         counted_bytes += measured.size.allocated;
-
-        entries.push(Entry {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            path: child,
-            kind,
-            size: measured.size,
-            modified: measured.modified,
-            traits: measured.traits,
-            links: measured.links,
-            identity: measured.identity,
-        });
+        entries.push(measured);
     }
 
     // One update per directory rather than one per file: the counters are read

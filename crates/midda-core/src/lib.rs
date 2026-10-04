@@ -55,6 +55,7 @@
 //! ```
 
 pub mod error;
+pub mod fresh;
 pub mod links;
 pub mod mft;
 pub mod order;
@@ -67,6 +68,7 @@ pub mod treemap;
 pub mod walk;
 
 pub use error::{Error, Result};
+pub use fresh::{Applied, Index, JournalPosition, Observed};
 pub use links::Deduplicated;
 pub use mft::{Acceleration, MftScanner, acceleration};
 pub use order::{Direction, Sort, SortKey, Span};

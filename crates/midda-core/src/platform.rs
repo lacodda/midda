@@ -148,7 +148,53 @@ pub fn measure(path: &Path, metadata: &Metadata, cluster_bytes: u64) -> Measured
 /// the same tree, and enough to make "last changed" a guess.
 #[must_use]
 pub fn modified_of(path: &Path) -> Option<SystemTime> {
-    imp::modified_of(path)
+    own(path).modified
+}
+
+/// What an entry says about itself, asked of the entry and not of what it
+/// points at.
+///
+/// The walk asks this of every directory: its write time (see
+/// [`modified_of`]) and which directory it is. The second is what lets a tree
+/// that is kept up to date tell a folder that was written to from a folder
+/// that was replaced by another of the same name — the first keeps its
+/// contents, the second has to be read again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Own {
+    pub modified: Option<SystemTime>,
+    pub identity: Option<FileIdentity>,
+}
+
+/// Asks the entry at `path` what it says about itself. One open, two
+/// questions.
+#[must_use]
+pub fn own(path: &Path) -> Own {
+    imp::own(path)
+}
+
+/// Whether there is an entry at a path, as the volume answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Presence {
+    /// There is, and this is its name as the volume holds it.
+    ///
+    /// Not always the name asked for. NTFS matches names regardless of case
+    /// and answers to a DOS short name as well as the long one, so
+    /// `C:\PROGRA~1` is there — as `Program Files`. A tree kept up to date by
+    /// name has to know which name it is holding, or it adds a second node for
+    /// one directory.
+    Here(String),
+    /// There is nothing there.
+    Gone,
+    /// The volume would not say — the directory cannot be listed, the path is
+    /// malformed. Not the same as gone: a tree that removed what it could not
+    /// see would shrink every time a protected folder changed.
+    Unknown,
+}
+
+/// Whether the entry at `path` exists, and under which name.
+#[must_use]
+pub fn presence(path: &Path) -> Presence {
+    imp::presence(path)
 }
 
 /// A `FILETIME` of this value is the Unix epoch: the hundreds of nanoseconds
@@ -390,36 +436,11 @@ mod imp {
             )
         };
 
-        let mut id = FILE_ID_INFO {
-            VolumeSerialNumber: 0,
-            FileId: FILE_ID_128 { Identifier: [0; 16] },
-        };
-
-        // SAFETY: as above, with `id` a valid writable `FILE_ID_INFO` and its
-        // own size passed.
-        #[allow(unsafe_code, reason = "the identity that says two names are one file is not exposed by std")]
-        let id_ok = unsafe {
-            GetFileInformationByHandleEx(
-                handle.0,
-                FileIdInfo,
-                std::ptr::from_mut(&mut id).cast(),
-                u32::try_from(size_of::<FILE_ID_INFO>()).ok()?,
-            )
-        };
-
-        let identity = (id_ok != 0).then(|| FileIdentity {
-            volume: id.VolumeSerialNumber,
-            // The 128-bit id is bytes in the header, little-endian on every
-            // Windows target. Read as one number so a comparison is one
-            // instruction rather than a slice walk, four million times over.
-            file: u128::from_le_bytes(id.FileId.Identifier),
-        });
-
         Some(Opened {
             logical,
             allocated,
             links,
-            identity,
+            identity: identity(&handle),
             modified: last_written(&handle),
         })
     }
@@ -450,7 +471,33 @@ mod imp {
         super::filetime_to_system_time(u64::try_from(basic.LastWriteTime).ok()?)
     }
 
-    pub(super) fn modified_of(path: &Path) -> Option<std::time::SystemTime> {
+    /// The identity `FILE_ID_INFO` reports through an open handle.
+    fn identity(handle: &Handle) -> Option<FileIdentity> {
+        let mut id = FILE_ID_INFO {
+            VolumeSerialNumber: 0,
+            FileId: FILE_ID_128 { Identifier: [0; 16] },
+        };
+        // SAFETY: `handle` is open for the call, `id` is a valid writable
+        // `FILE_ID_INFO` and its own size is passed.
+        #[allow(unsafe_code, reason = "the identity that says two names are one file is not exposed by std")]
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                handle.0,
+                FileIdInfo,
+                std::ptr::from_mut(&mut id).cast(),
+                u32::try_from(size_of::<FILE_ID_INFO>()).ok()?,
+            )
+        };
+        (ok != 0).then(|| FileIdentity {
+            volume: id.VolumeSerialNumber,
+            // The 128-bit id is bytes in the header, little-endian on every
+            // Windows target. Read as one number so a comparison is one
+            // instruction rather than a slice walk, four million times over.
+            file: u128::from_le_bytes(id.FileId.Identifier),
+        })
+    }
+
+    pub(super) fn own(path: &Path) -> super::Own {
         let wide = wide(path);
         // SAFETY: as in `open_for_metadata`. `OPEN_REPARSE_POINT` opens a link
         // itself rather than what it points at, which is the entry the walk
@@ -468,9 +515,101 @@ mod imp {
             )
         };
         if handle == INVALID_HANDLE_VALUE {
-            return None;
+            return super::Own {
+                modified: None,
+                identity: None,
+            };
         }
-        last_written(&Handle(handle))
+        let handle = Handle(handle);
+        super::Own {
+            modified: last_written(&handle),
+            identity: identity(&handle),
+        }
+    }
+
+    pub(super) fn presence(path: &Path) -> super::Presence {
+        use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, GetLastError};
+        use windows_sys::Win32::Storage::FileSystem::{FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, WIN32_FIND_DATAW};
+
+        // Verbatim, so a path past MAX_PATH is asked about rather than refused
+        // with an error that reads as "not found".
+        let Some(wide) = verbatim(path) else {
+            return super::Presence::Unknown;
+        };
+        // SAFETY: an all-zero `WIN32_FIND_DATAW` is a valid value of a plain
+        // struct of integers and arrays.
+        #[allow(unsafe_code, reason = "a plain C struct is filled in by the call")]
+        let mut found: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
+        // SAFETY: `wide` is NUL-terminated and outlives the call; `found` is a
+        // valid writable `WIN32_FIND_DATAW`, which is what `FindExInfoBasic`
+        // writes; the null filter and zero flags are the documented defaults.
+        #[allow(unsafe_code, reason = "the name an entry has on the volume is not exposed by std")]
+        let search = unsafe {
+            FindFirstFileExW(
+                wide.as_ptr(),
+                FindExInfoBasic,
+                std::ptr::from_mut(&mut found).cast(),
+                FindExSearchNameMatch,
+                std::ptr::null(),
+                0,
+            )
+        };
+        if search == INVALID_HANDLE_VALUE {
+            // SAFETY: reads the calling thread's last error, nothing else.
+            #[allow(unsafe_code, reason = "the reason a search failed is only in the thread's last error")]
+            let error = unsafe { GetLastError() };
+            return if error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND {
+                super::Presence::Gone
+            } else {
+                super::Presence::Unknown
+            };
+        }
+        // SAFETY: `search` came from a successful `FindFirstFileExW` and is
+        // closed once, here.
+        #[allow(unsafe_code, reason = "a search handle has to be closed by hand")]
+        unsafe {
+            FindClose(search);
+        }
+        let end = found.cFileName.iter().position(|&unit| unit == 0).unwrap_or(found.cFileName.len());
+        super::Presence::Here(String::from_utf16_lossy(&found.cFileName[..end]))
+    }
+
+    /// `path` as a verbatim wide string: `\\?\C:\…`, `\\?\UNC\server\…`.
+    ///
+    /// `None` for a relative path or one with `.` or `..` in it, which a
+    /// verbatim path would take literally.
+    fn verbatim(path: &Path) -> Option<Vec<u16>> {
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::path::{Component, Prefix};
+
+        let mut out: Vec<u16> = Vec::new();
+        let mut components = path.components();
+        match components.next()? {
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(letter) => out.extend(format!("\\\\?\\{}:", char::from(letter)).encode_utf16()),
+                Prefix::UNC(server, share) => {
+                    out.extend("\\\\?\\UNC\\".encode_utf16());
+                    out.extend(server.encode_wide());
+                    out.push(u16::from(b'\\'));
+                    out.extend(share.encode_wide());
+                }
+                // Already verbatim, or a device path: taken as it is.
+                _ => out.extend(prefix.as_os_str().encode_wide()),
+            },
+            _ => return None,
+        }
+        for component in components {
+            match component {
+                Component::RootDir => {}
+                Component::Normal(name) => {
+                    out.push(u16::from(b'\\'));
+                    out.extend(name.encode_wide());
+                }
+                _ => return None,
+            }
+        }
+        out.push(0);
+        Some(out)
     }
 
     /// What the attribute bits say. See [`super::traits_of`] for why
@@ -616,8 +755,38 @@ mod imp {
 
     // `lstat` reads the inode, which is the truth already: there is no second
     // copy in the directory to lag behind it.
-    pub(super) fn modified_of(path: &Path) -> Option<std::time::SystemTime> {
-        std::fs::symlink_metadata(path).and_then(|metadata| metadata.modified()).ok()
+    pub(super) fn own(path: &Path) -> super::Own {
+        let metadata = std::fs::symlink_metadata(path).ok();
+        super::Own {
+            modified: metadata.as_ref().and_then(|metadata| metadata.modified().ok()),
+            identity: metadata.as_ref().and_then(identity),
+        }
+    }
+
+    #[cfg(unix)]
+    fn identity(metadata: &Metadata) -> Option<FileIdentity> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        Some(FileIdentity {
+            volume: metadata.dev(),
+            file: u128::from(metadata.ino()),
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn identity(_metadata: &Metadata) -> Option<FileIdentity> {
+        None
+    }
+
+    // A name is matched exactly here, so the name asked for is the name held.
+    pub(super) fn presence(path: &Path) -> super::Presence {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => path
+                .file_name()
+                .map_or(super::Presence::Unknown, |name| super::Presence::Here(name.to_string_lossy().into_owned())),
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => super::Presence::Gone,
+            Err(_) => super::Presence::Unknown,
+        }
     }
 
     // There is no MFT to read here, so there is nothing elevation would buy.

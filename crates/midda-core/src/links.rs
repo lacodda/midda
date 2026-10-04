@@ -133,6 +133,161 @@ pub fn count_shared_once(tree: &mut Tree) -> Deduplicated {
     outcome
 }
 
+/// Every name of every file that has more than one, by file — what a tree
+/// kept up to date needs to go on counting shared bytes once.
+///
+/// [`count_shared_once`] works over a whole tree in one pass, and a tree kept
+/// up to date cannot run that pass for every file that changes: one package
+/// install writes thousands of second names. So the names are kept by file,
+/// and only the files a change touched are settled again — by the same rule,
+/// the first name in [`Tree::scan_order`], so a tree brought up to date and a
+/// fresh scan of the same disk charge the same name.
+#[derive(Debug, Default, Clone)]
+pub struct Groups {
+    by_file: HashMap<FileIdentity, Group>,
+}
+
+/// The names of one file, and what the file is.
+#[derive(Debug, Default, Clone)]
+struct Group {
+    names: Vec<NodeId>,
+    /// The file's bytes, as last measured through any of its names — all of
+    /// them are the same file.
+    size: Size,
+    /// What its attribute bits say, without the marks this pass adds.
+    traits: Traits,
+    /// How many names the file has on the volume, as last measured.
+    links: Option<u32>,
+}
+
+/// The two marks [`count_shared_once`] adds, which a re-measured file does not
+/// carry until it is settled again.
+const MARKS: Traits = Traits::LINKED.with(Traits::COUNTED_HERE);
+
+impl Groups {
+    /// The groups of a tree whose shared bytes are already counted once — a
+    /// fresh scan, or a saved one.
+    #[must_use]
+    pub fn of(tree: &Tree) -> Self {
+        let mut groups = Self::default();
+        for (id, node) in tree.nodes() {
+            let (Some(identity), Some(links)) = (node.identity, node.links) else {
+                continue;
+            };
+            if links <= 1 {
+                continue;
+            }
+            let group = groups.by_file.entry(identity).or_default();
+            group.names.push(id);
+            // The owner carries the bytes; a second name carries zero, so only
+            // the owner's size is the file's.
+            if node.traits.has(Traits::COUNTED_HERE) {
+                group.size = node.size;
+            }
+            group.traits = node.traits.without(MARKS);
+            group.links = node.links;
+        }
+        groups
+    }
+
+    /// Lets go of `id` as a name of its file, before it is taken out of the
+    /// tree or measured again. Returns the file, for [`Groups::settle`].
+    pub fn forget(&mut self, tree: &Tree, id: NodeId) -> Option<FileIdentity> {
+        let identity = tree.node(id).identity?;
+        let group = self.by_file.get_mut(&identity)?;
+        group.names.retain(|&name| name != id);
+        Some(identity)
+    }
+
+    /// Takes `id`, just measured, as a name of its file when the file has
+    /// more than one. Returns the file, for [`Groups::settle`].
+    ///
+    /// The measurement is the file's newest, whichever name it was taken
+    /// through, so it becomes the group's: a write through one name changes
+    /// the bytes of all of them.
+    pub fn learn(&mut self, tree: &Tree, id: NodeId) -> Option<FileIdentity> {
+        let node = tree.node(id);
+        let identity = node.identity?;
+        let measured = node.links.is_some_and(|links| links > 1);
+        let group = if measured {
+            Some(self.by_file.entry(identity).or_default())
+        } else {
+            // One name now, but other names may still be held as a group: the
+            // file lost its second names since they were read.
+            self.by_file.get_mut(&identity)
+        }?;
+        if !group.names.contains(&id) {
+            group.names.push(id);
+        }
+        group.size = node.size;
+        group.traits = node.traits.without(MARKS);
+        group.links = node.links;
+        Some(identity)
+    }
+
+    /// Charges each of `files` to its first name in scan order and marks the
+    /// rest, as [`count_shared_once`] would have. Returns every node it
+    /// changed, for [`Tree::refresh`].
+    ///
+    /// A file that is down to one name stops being a group: the name keeps
+    /// the bytes and loses the marks, which is how a fresh scan would find it.
+    pub fn settle(&mut self, tree: &mut Tree, files: impl IntoIterator<Item = FileIdentity>) -> Vec<NodeId> {
+        let mut touched = Vec::new();
+        for identity in files {
+            let Some(group) = self.by_file.get_mut(&identity) else {
+                continue;
+            };
+            group.names.retain(|&id| tree.contains(id) && tree.node(id).identity == Some(identity));
+            group.names.sort_by(|&a, &b| tree.scan_order(a, b));
+            group.names.dedup();
+
+            let shared = group.links.is_some_and(|links| links > 1);
+            for (place, &id) in group.names.iter().enumerate() {
+                let (size, traits) = match (shared, place) {
+                    (false, _) => (group.size, group.traits),
+                    (true, 0) => (group.size, group.traits.with(MARKS)),
+                    (true, _) => (Size::zero(), group.traits.with(Traits::LINKED)),
+                };
+                let links = group.links;
+                tree.mark(id, |node| {
+                    node.size = size;
+                    node.traits = traits;
+                    node.links = links;
+                });
+                touched.push(id);
+            }
+            if !shared || group.names.is_empty() {
+                self.by_file.remove(&identity);
+            }
+        }
+        touched
+    }
+
+    /// What the groups add up to: the scan's account of shared bytes.
+    #[must_use]
+    pub fn deduplicated(&self) -> Deduplicated {
+        let mut outcome = Deduplicated::default();
+        for group in self.by_file.values() {
+            let extra = group.names.len().saturating_sub(1) as u64;
+            outcome.shared_names += extra;
+            for _ in 0..extra {
+                outcome.reclaimed.add(group.size);
+            }
+        }
+        outcome
+    }
+
+    /// The names of the file `id` is a name of, `id` included, when it has
+    /// more than one in the tree.
+    #[must_use]
+    pub fn names_of(&self, tree: &Tree, id: NodeId) -> &[NodeId] {
+        tree.node(id)
+            .identity
+            .and_then(|identity| self.by_file.get(&identity))
+            .map_or(&[], |group| group.names.as_slice())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;

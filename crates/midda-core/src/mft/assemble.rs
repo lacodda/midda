@@ -44,7 +44,10 @@ pub fn assemble(records: &Records, root_record: u64, root: &std::path::Path, vol
 
     let mut tree = Tree::new(root.to_path_buf(), cluster_bytes);
     let cluster = cluster_bytes.unwrap_or(crate::platform::ASSUMED_CLUSTER_BYTES);
-    tree.stamp_root(root_entry.modified.and_then(filetime_to_system_time));
+    tree.stamp_root(
+        root_entry.modified.and_then(filetime_to_system_time),
+        Some(identity_of(volume, root_record, root_entry)),
+    );
 
     // Breadth-first by level, as the walk does it: the node order is the order
     // the deduplication hands shared bytes out in, and it has to be the walk's.
@@ -142,22 +145,33 @@ fn node_for(edge: &Edge<'_>, record: &Record, parent: NodeId, volume: u64, clust
     }
     if record.directory {
         // A directory's own index is not recoverable by deleting the directory
-        // alone; the walk counts nothing for it, and neither does this.
-        return Node { kind: Kind::Directory, ..base };
+        // alone; the walk counts nothing for it, and neither does this. Its
+        // identity is the walk's too: it is how a tree kept up to date tells a
+        // folder written to from one replaced under the same name.
+        return Node {
+            kind: Kind::Directory,
+            identity: Some(identity_of(volume, edge.child, record)),
+            ..base
+        };
     }
 
     Node {
         size: record.occupied(cluster),
         traits: record.traits(),
         links: Some(u32::try_from(record.names.len()).unwrap_or(u32::MAX)),
-        identity: Some(FileIdentity {
-            volume,
-            // The 128-bit file id NTFS reports for a file is its 64-bit file
-            // reference, sequence number included, widened with zeroes — which
-            // is what the walk reads through `FileIdInfo`.
-            file: u128::from((u64::from(record.sequence) << 48) | edge.child),
-        }),
+        identity: Some(identity_of(volume, edge.child, record)),
         ..base
+    }
+}
+
+/// The identity the walk reads for the file at `number` through `FileIdInfo`.
+///
+/// The 128-bit file id NTFS reports is the 64-bit file reference, sequence
+/// number included, widened with zeroes.
+fn identity_of(volume: u64, number: u64, record: &Record) -> FileIdentity {
+    FileIdentity {
+        volume,
+        file: u128::from((u64::from(record.sequence) << 48) | number),
     }
 }
 

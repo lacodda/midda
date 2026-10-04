@@ -15,6 +15,10 @@ use std::process::Command;
 
 use midda_core::{Kind, MftScanner, Progress, Scanner, Traits, Tree, WalkScanner};
 
+mod common;
+
+use common::assert_same;
+
 /// Whether this process may run the MFT scanner on `root`; if not, whether that
 /// is allowed to pass.
 fn mft_can_read(root: &Path) -> bool {
@@ -114,38 +118,6 @@ fn fixture(base: &Path) -> PathBuf {
         .expect("extend the sparse file");
 
     root
-}
-
-/// Asserts two trees are the same, node for node, naming the first place they
-/// differ by path rather than by index.
-fn assert_same(walked: &Tree, read: &Tree) {
-    assert_eq!(walked.root_path(), read.root_path());
-    assert_eq!(walked.cluster_bytes(), read.cluster_bytes(), "cluster size");
-    assert!(walked.skipped().is_empty(), "the walk skipped {:?}", walked.skipped());
-    assert!(read.skipped().is_empty(), "the MFT read skipped {:?}", read.skipped());
-
-    let paths_walked: Vec<_> = walked.nodes().map(|(id, _)| walked.path_of(id)).collect();
-    let paths_read: Vec<_> = read.nodes().map(|(id, _)| read.path_of(id)).collect();
-    assert_eq!(
-        paths_walked, paths_read,
-        "the two scanners found different entries, or listed them in a different order"
-    );
-
-    for ((id, a), (_, b)) in walked.nodes().zip(read.nodes()) {
-        let path = walked.path_of(id);
-        let at = path.display();
-        assert_eq!(a.kind, b.kind, "kind of {at}");
-        assert_eq!(a.parent, b.parent, "parent of {at}");
-        assert_eq!(a.children, b.children, "children of {at}");
-        assert_eq!(a.size, b.size, "size of {at}");
-        assert_eq!(a.traits, b.traits, "traits of {at}");
-        assert_eq!(a.links, b.links, "link count of {at}");
-        assert_eq!(a.identity, b.identity, "identity of {at}");
-        assert_eq!(a.entries, b.entries, "entries under {at}");
-        assert_eq!(a.modified, b.modified, "modified time of {at}");
-        assert_eq!(a.subtree_modified, b.subtree_modified, "subtree modified time of {at}");
-    }
-    assert_eq!(walked.shared(), read.shared(), "shared bytes");
 }
 
 fn node<'t>(tree: &'t Tree, path: &str) -> &'t midda_core::Node {

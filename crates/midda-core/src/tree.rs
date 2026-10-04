@@ -28,6 +28,14 @@ pub type NodeId = u32;
 /// The root of every scan, at index 0.
 pub const ROOT: NodeId = 0;
 
+/// The parent of a node that has been taken out of the tree.
+///
+/// A tree kept up to date removes what was deleted from the volume, but the
+/// arena does not shuffle to close the gap: every id the window holds would
+/// shift under it. The slot stays, marked with a parent no node can have,
+/// until [`Tree::compact`] lays the tree out again.
+const DETACHED: NodeId = NodeId::MAX;
+
 /// What a node is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -144,6 +152,9 @@ pub struct Tree {
     /// folder whose contents look larger than the folder is one holding second
     /// names, and without this the tree offers no way to say so.
     shared: Deduplicated,
+    /// How many slots of the arena hold nodes taken out of the tree.
+    #[serde(skip)]
+    detached: usize,
     /// Which scanner read this tree: `"walk"` or `"mft"`, as
     /// [`crate::Scanner::name`] says.
     ///
@@ -209,6 +220,7 @@ impl Tree {
             cluster_bytes,
             skipped: Vec::new(),
             shared: Deduplicated::default(),
+            detached: 0,
             scanned_by: String::new(),
             fallback: None,
         }
@@ -274,27 +286,40 @@ impl Tree {
         self.shared = shared;
     }
 
-    /// Puts the scan root's own timestamp on node 0.
+    /// Puts the scan root's own timestamp and identity on node 0.
     ///
     /// The root is the one node a scanner does not push, so it is the one node
-    /// whose timestamp needs a door of its own. Without it an empty directory
-    /// would come back undated rather than as old as it is.
-    pub fn stamp_root(&mut self, modified: Option<SystemTime>) {
+    /// whose facts need a door of their own. Without the timestamp an empty
+    /// directory would come back undated rather than as old as it is; without
+    /// the identity, a saved tree could not tell the folder it describes from
+    /// another made since at the same path.
+    pub fn stamp_root(&mut self, modified: Option<SystemTime>, identity: Option<FileIdentity>) {
         let root = &mut self.nodes[ROOT as usize];
         root.modified = modified;
         root.subtree_modified = modified;
+        root.identity = identity;
     }
 
     /// How many nodes are in the tree.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.nodes.len()
+        self.nodes.len() - self.detached
     }
 
     /// Whether the tree holds nothing but its root.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.nodes.len() <= 1
+        self.len() <= 1
+    }
+
+    /// Whether `id` names a node in this tree now.
+    ///
+    /// An id the window was handed can outlive its node: the file was deleted
+    /// while the window looked at it. That is a question with an answer, not a
+    /// bug in the caller.
+    #[must_use]
+    pub fn contains(&self, id: NodeId) -> bool {
+        self.nodes.get(id as usize).is_some_and(|node| node.parent != DETACHED)
     }
 
     /// Reads a node.
@@ -317,11 +342,270 @@ impl Tree {
     /// Every node, in the order they were added: a parent always precedes its
     /// children, which is what makes a single reverse pass enough to roll sizes
     /// up.
+    ///
+    /// Fresh from a scan — or after [`Tree::compact`] — the order is also the
+    /// listing order level by level, which is what decides who keeps shared
+    /// bytes. A tree kept up to date appends what arrives, so between
+    /// compactions only the first promise holds.
     pub fn nodes(&self) -> impl Iterator<Item = (NodeId, &Node)> {
         // A tree of four billion nodes is two orders of magnitude past any real
         // volume; the cast cannot lose.
         #[allow(clippy::cast_possible_truncation, reason = "NodeId is u32 and a tree cannot exceed it")]
-        self.nodes.iter().enumerate().map(|(index, node)| (index as NodeId, node))
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.parent != DETACHED)
+            .map(|(index, node)| (index as NodeId, node))
+    }
+
+    /// The child of `parent` called exactly `name`, if there is one.
+    ///
+    /// A binary search: children are held in [`listing_order`], which is total.
+    #[must_use]
+    pub fn child(&self, parent: NodeId, name: &str) -> Option<NodeId> {
+        let children = &self.node(parent).children;
+        children
+            .binary_search_by(|&child| listing_order(&self.node(child).name, name))
+            .ok()
+            .map(|index| children[index])
+    }
+
+    /// How many steps `id` is below the root.
+    #[must_use]
+    pub fn depth(&self, id: NodeId) -> usize {
+        let mut depth = 0;
+        let mut at = id;
+        while at != ROOT {
+            at = self.node(at).parent;
+            depth += 1;
+        }
+        depth
+    }
+
+    /// The order a fresh scan would have put two nodes in: the shallower
+    /// first, and between equals the one whose path comes first, name by name,
+    /// in [`listing_order`].
+    ///
+    /// It is the arena order of a tree fresh from either scanner, stated
+    /// without the arena — which a tree kept up to date no longer has in that
+    /// order. The deduplication of shared bytes decides who keeps them by it,
+    /// so the same disk charges the same name however its tree got here.
+    #[must_use]
+    pub fn scan_order(&self, a: NodeId, b: NodeId) -> Ordering {
+        let trail = |id: NodeId| {
+            let mut trail = Vec::new();
+            let mut at = id;
+            while at != ROOT {
+                trail.push(at);
+                at = self.node(at).parent;
+            }
+            trail.reverse();
+            trail
+        };
+        let (a, b) = (trail(a), trail(b));
+        a.len().cmp(&b.len()).then_with(|| {
+            a.iter()
+                .zip(&b)
+                .map(|(&x, &y)| listing_order(&self.node(x).name, &self.node(y).name))
+                .find(|order| order.is_ne())
+                .unwrap_or(Ordering::Equal)
+        })
+    }
+
+    /// Puts `node` under `parent`, in its place in the listing order, and
+    /// returns its id.
+    ///
+    /// The door a tree kept up to date adds a file through. The node goes at
+    /// the end of the arena — after its parent, as every node is — and into
+    /// the middle of the listing. The totals above it are the caller's to
+    /// bring up to date, with [`Tree::refresh`].
+    ///
+    /// # Panics
+    ///
+    /// If `parent` is not in the tree, or the tree already holds `u32::MAX`
+    /// nodes.
+    pub fn insert(&mut self, parent: NodeId, node: Node) -> NodeId {
+        assert!(self.contains(parent), "a node is inserted under a node in the tree");
+        let id = NodeId::try_from(self.nodes.len()).expect("a tree of more than u32::MAX entries");
+        let at = self.listing_position(parent, &node.name);
+        self.nodes.push(Node { parent, ..node });
+        self.nodes[parent as usize].children.insert(at, id);
+        id
+    }
+
+    /// Where a child called `name` goes among the children of `parent`.
+    fn listing_position(&self, parent: NodeId, name: &str) -> usize {
+        let children = &self.nodes[parent as usize].children;
+        children.partition_point(|&child| listing_order(&self.nodes[child as usize].name, name).is_lt())
+    }
+
+    /// Puts a whole tree read elsewhere under `parent`, as one child, and
+    /// returns the id its root now has.
+    ///
+    /// For a folder that appeared on the volume: it is read with
+    /// [`crate::walk::read`] into a tree of its own and hung here whole. What
+    /// that read could not open is carried over with it.
+    ///
+    /// # Panics
+    ///
+    /// If `parent` is not in the tree, or the two together exceed `u32::MAX`
+    /// nodes.
+    pub fn graft(&mut self, parent: NodeId, branch: Self) -> NodeId {
+        assert!(self.contains(parent), "a branch is grafted onto a node in the tree");
+        let offset = NodeId::try_from(self.nodes.len()).expect("a tree of more than u32::MAX entries");
+        let at = self.listing_position(parent, &branch.root().name);
+        assert!(
+            NodeId::try_from(self.nodes.len() + branch.nodes.len()).is_ok(),
+            "a tree of more than u32::MAX entries"
+        );
+
+        for (index, mut node) in branch.nodes.into_iter().enumerate() {
+            node.parent = if index == ROOT as usize { parent } else { node.parent + offset };
+            for child in &mut node.children {
+                *child += offset;
+            }
+            self.nodes.push(node);
+        }
+        self.detached += branch.detached;
+        self.skipped.extend(branch.skipped);
+        self.nodes[parent as usize].children.insert(at, offset);
+        offset
+    }
+
+    /// Takes `id` and everything beneath it out of the tree.
+    ///
+    /// The slots stay in the arena, marked, so no other id moves; their names
+    /// and child lists are let go, which is most of what a node costs. What
+    /// the scan could not read under it goes too — it is no longer there to
+    /// be unread. The totals above are the caller's to bring up to date, with
+    /// [`Tree::refresh`].
+    ///
+    /// # Panics
+    ///
+    /// If `id` is the root, which a tree cannot be without.
+    pub fn detach(&mut self, id: NodeId) {
+        assert_ne!(id, ROOT, "the root is what the tree is of");
+        if !self.contains(id) {
+            return;
+        }
+        let path = self.path_of(id);
+        self.skipped.retain(|skipped| !skipped.path.starts_with(&path));
+
+        let parent = self.nodes[id as usize].parent;
+        self.nodes[parent as usize].children.retain(|&child| child != id);
+
+        let mut stack = vec![id];
+        while let Some(at) = stack.pop() {
+            let node = &mut self.nodes[at as usize];
+            stack.append(&mut node.children);
+            node.parent = DETACHED;
+            node.name = String::new();
+            node.identity = None;
+            self.detached += 1;
+        }
+    }
+
+    /// Brings the totals of `touched` and of everything above them up to date.
+    ///
+    /// What [`Tree::roll_up`] works out for a whole tree, worked out again
+    /// only where something changed: each touched node and its ancestors,
+    /// deepest first, each recomputed from its children rather than nudged by
+    /// a difference — a total that drifted once would stay wrong for as long
+    /// as the window stayed open. A file's totals are its own; a directory's
+    /// are what is under it.
+    pub fn refresh(&mut self, touched: impl IntoIterator<Item = NodeId>) {
+        let mut seen = std::collections::HashSet::new();
+        let mut order = Vec::new();
+        for id in touched {
+            let mut at = id;
+            loop {
+                if !self.contains(at) || !seen.insert(at) {
+                    break;
+                }
+                order.push((self.depth(at), at));
+                if at == ROOT {
+                    break;
+                }
+                at = self.nodes[at as usize].parent;
+            }
+        }
+        order.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+        for (_, id) in order {
+            let node = &self.nodes[id as usize];
+            if !node.is_directory() {
+                let node = &mut self.nodes[id as usize];
+                node.entries = 1;
+                node.subtree_modified = node.modified;
+                continue;
+            }
+            let mut size = Size::zero();
+            let mut entries = 1_u64;
+            let mut subtree_modified = node.modified;
+            let mut holds_shared = false;
+            for &child in &node.children {
+                let child = &self.nodes[child as usize];
+                size.add(child.size);
+                entries = entries.saturating_add(child.entries);
+                subtree_modified = match (subtree_modified, child.subtree_modified) {
+                    (Some(ours), Some(theirs)) => Some(ours.max(theirs)),
+                    (ours, theirs) => ours.or(theirs),
+                };
+                holds_shared |= child.traits.has(Traits::LINKED) || child.traits.has(Traits::HOLDS_SHARED);
+            }
+            let node = &mut self.nodes[id as usize];
+            node.size = size;
+            node.entries = entries;
+            node.subtree_modified = subtree_modified;
+            node.traits = node.traits.without(Traits::HOLDS_SHARED);
+            if holds_shared {
+                node.traits.insert(Traits::HOLDS_SHARED);
+            }
+        }
+    }
+
+    /// How many slots of the arena hold nodes taken out of the tree.
+    #[must_use]
+    pub const fn detached(&self) -> usize {
+        self.detached
+    }
+
+    /// Lays the arena out again in the order a fresh scan would have: level
+    /// by level, each level in the listing order, with no slots for nodes
+    /// taken out.
+    ///
+    /// Ids change — every one of them may — so a window holding ids finds its
+    /// place again by path. A tree kept up to date is compacted when it is
+    /// saved, which is also what makes a saved tree and a fresh scan of the
+    /// same disk the same arena, node for node.
+    pub fn compact(&mut self) {
+        let mut order: Vec<NodeId> = Vec::with_capacity(self.len());
+        order.push(ROOT);
+        let mut next = 0;
+        while next < order.len() {
+            let id = order[next];
+            order.extend_from_slice(&self.nodes[id as usize].children);
+            next += 1;
+        }
+
+        let mut renumbered = vec![DETACHED; self.nodes.len()];
+        for (new, &old) in order.iter().enumerate() {
+            renumbered[old as usize] = NodeId::try_from(new).expect("fewer live nodes than slots");
+        }
+
+        let mut old = std::mem::take(&mut self.nodes);
+        self.nodes = order
+            .iter()
+            .map(|&id| {
+                let mut node = std::mem::replace(&mut old[id as usize], Node::new(String::new(), DETACHED, Kind::File));
+                node.parent = renumbered[node.parent as usize];
+                for child in &mut node.children {
+                    *child = renumbered[*child as usize];
+                }
+                node
+            })
+            .collect();
+        self.detached = 0;
     }
 
     /// Rebuilds the absolute path of a node by walking up to the root.
@@ -377,6 +661,9 @@ impl Tree {
     /// complete by the time it is folded into the one above.
     pub fn roll_up(&mut self) {
         for index in (1..self.nodes.len()).rev() {
+            if self.nodes[index].parent == DETACHED {
+                continue;
+            }
             let (size, subtree_modified, entries, traits, parent) = {
                 let node = &self.nodes[index];
                 (node.size, node.subtree_modified, node.entries, node.traits, node.parent as usize)
