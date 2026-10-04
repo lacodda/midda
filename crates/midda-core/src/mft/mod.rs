@@ -13,7 +13,8 @@
 //!   [`Records`] — one small summary per file, not the table itself. The table
 //!   of a busy system volume is gigabytes; the summaries are what the tree is
 //!   built from, and holding the raw table to build them would double the
-//!   memory a scan needs for nothing. See ADR 0006.
+//!   memory a scan needs for nothing. See ADR 0006. What the bytes of a record
+//!   mean is [`format`]'s to say, which builds and is tested everywhere.
 //! - [`assemble`] turns records into a [`Tree`] — pure arithmetic over names
 //!   and parents, with no volume in sight. It builds and is tested on every
 //!   platform, including the Linux runner in CI.
@@ -41,6 +42,7 @@
 //! a file nobody is writing, the two are the same number.
 
 mod assemble;
+mod format;
 #[cfg(windows)]
 mod volume;
 
