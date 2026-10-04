@@ -44,7 +44,7 @@
 mod assemble;
 mod format;
 #[cfg(windows)]
-mod volume;
+pub(crate) mod volume;
 
 use std::path::Path;
 

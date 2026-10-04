@@ -23,7 +23,11 @@
 //! [`Index::apply`], because the first reads the disk and the second holds the
 //! tree: a window reading the tree waits only for the second.
 
+#[cfg(windows)]
+pub mod journal;
+pub mod since;
 pub mod store;
+pub mod usn;
 #[cfg(windows)]
 pub mod watch;
 

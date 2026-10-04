@@ -39,9 +39,12 @@ const BOOT_READ: usize = 4096;
 
 /// Where a scan root sits, as the MFT reader needs to know it.
 #[derive(Debug, Clone)]
-pub(super) struct Located {
+pub(crate) struct Located {
     /// The volume as a device: `\\?\Volume{…}`, no trailing separator.
-    device: PathBuf,
+    pub(crate) device: PathBuf,
+    /// Where the volume is mounted: a drive's root, or a folder it is mounted
+    /// into.
+    pub(crate) mount: PathBuf,
     /// The record of the directory being scanned.
     pub(super) root_record: u64,
     /// The volume serial the walk's file identities carry.
@@ -55,7 +58,7 @@ pub(super) struct Located {
 /// nothing. Asked through the volume mount point rather than the drive letter,
 /// so a volume mounted into a folder is read as itself, not as the drive the
 /// folder happens to be on.
-pub(super) fn locate(root: &Path) -> Option<Located> {
+pub(crate) fn locate(root: &Path) -> Option<Located> {
     let root = std::path::absolute(root).ok()?;
     let mount = volume_path_of(&root)?;
     if filesystem_of(&mount)?.as_str() != "NTFS" {
@@ -69,6 +72,7 @@ pub(super) fn locate(root: &Path) -> Option<Located> {
     let reference = identity.file as u64;
     Some(Located {
         device,
+        mount,
         root_record: record_of(reference),
         serial: identity.volume,
     })
