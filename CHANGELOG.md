@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.7.0] - 2026-10-04
+
+### Bug Fixes
+- Know the scanned folder under its long spelling too
+- Save the index without holding up the changes waiting for it
+
+### Documentation
+- Record how the picture is kept current in ADR 0009
+
+### Features
+- Keep a scanned tree current by looking again where it changed
+- Save the index between runs and read it back
+- Watch the scanned folder while the window is open
+- Read the change journal, and what was written since a moment
+- Keep the open folder current, and show what changed lately
+
+### Refactoring
+- Read the NTFS format in the core, without ntfs-reader
 ## [0.6.0] - 2026-09-26
 
 ### Bug Fixes
@@ -9,6 +27,9 @@ All notable changes to this project are documented in this file.
 
 ### Build
 - Take dowel-ui 0.33.0 and hold every registry copy to it
+
+### Documentation
+- Add the changelog for v0.6.0
 
 ### Features
 - Draw the window's own frame and open on a splash
@@ -23,6 +44,7 @@ All notable changes to this project are documented in this file.
 
 ### Documentation
 - Record accelerate by relaunch and the streamed MFT in ADR 0006
+- Add the changelog for v0.5.0
 
 ### Features
 - Read the MFT as a second scanner
