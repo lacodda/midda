@@ -23,6 +23,8 @@
 //! [`Index::apply`], because the first reads the disk and the second holds the
 //! tree: a window reading the tree waits only for the second.
 
+pub mod store;
+
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;

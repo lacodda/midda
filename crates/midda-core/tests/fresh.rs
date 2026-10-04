@@ -331,3 +331,100 @@ fn a_rename_that_only_changes_case_is_one_entry_not_two() {
         vec![root.join("keep.txt"), root.join("Keep.TXT")]
     });
 }
+
+mod saved {
+    use std::fs;
+    use std::time::SystemTime;
+
+    use midda_core::fresh::store::{self, Unusable};
+    use midda_core::{Index, JournalPosition};
+
+    use super::{assert_same, fixture, hard_link, scan, write};
+
+    #[test]
+    fn a_saved_index_reads_back_as_the_scan_it_was() {
+        let dir = fixture();
+        write(&dir.path().join("pair/one.bin"), 30_000);
+        let _ = hard_link(&dir.path().join("pair/one.bin"), &dir.path().join("pair/two.bin"));
+        let place = tempfile::tempdir().expect("a place to save");
+
+        let mut index = Index::new(scan(dir.path()), SystemTime::now());
+        index.follow(Some(JournalPosition { journal: 7, next: 123_456 }));
+        let saved_at = SystemTime::now();
+        store::save(&index, place.path(), saved_at).expect("the index is saved");
+
+        let back = store::load(place.path(), dir.path()).expect("the index is read back");
+        assert_same(index.tree(), back.index.tree());
+        assert_eq!(back.saved_at, saved_at);
+        assert_eq!(back.index.scanned_at(), index.scanned_at());
+        assert_eq!(back.index.journal(), Some(JournalPosition { journal: 7, next: 123_456 }));
+        assert_eq!(back.index.tree().scanned_by(), "walk");
+    }
+
+    #[test]
+    fn an_index_kept_up_to_date_is_saved_in_scan_order_without_moving_its_ids() {
+        let dir = fixture();
+        let place = tempfile::tempdir().expect("a place to save");
+        let mut index = Index::new(scan(dir.path()), SystemTime::now());
+        write(&dir.path().join("aaa/first.bin"), 100);
+        fs::remove_dir_all(dir.path().join("project/target")).expect("delete");
+        index.apply(index.observe([dir.path().join("aaa/first.bin"), dir.path().join("project/target")]));
+        let ids_before: Vec<_> = index.tree().nodes().map(|(id, _)| id).collect();
+
+        store::save(&index, place.path(), SystemTime::now()).expect("saved");
+        let ids_after: Vec<_> = index.tree().nodes().map(|(id, _)| id).collect();
+        assert_eq!(ids_before, ids_after, "saving does not renumber the live tree");
+
+        let back = store::load(place.path(), dir.path()).expect("read back");
+        assert_same(&scan(dir.path()), back.index.tree());
+    }
+
+    #[test]
+    fn nothing_saved_is_said_as_much() {
+        let dir = fixture();
+        let place = tempfile::tempdir().expect("a place to save");
+        assert_eq!(store::load(place.path(), dir.path()).err(), Some(Unusable::Missing));
+    }
+
+    #[test]
+    fn a_file_cut_short_is_refused_rather_than_read_as_a_smaller_disk() {
+        let dir = fixture();
+        let place = tempfile::tempdir().expect("a place to save");
+        let index = Index::new(scan(dir.path()), SystemTime::now());
+        let path = store::save(&index, place.path(), SystemTime::now()).expect("saved");
+        let bytes = fs::read(&path).expect("read");
+        for keep in [bytes.len() - 1, bytes.len() / 2, 9] {
+            fs::write(&path, &bytes[..keep]).expect("cut");
+            assert!(
+                matches!(store::load(place.path(), dir.path()), Err(Unusable::Damaged(_))),
+                "a file cut to {keep} of {} bytes was read",
+                bytes.len()
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_from_another_version_is_not_read() {
+        let dir = fixture();
+        let place = tempfile::tempdir().expect("a place to save");
+        let index = Index::new(scan(dir.path()), SystemTime::now());
+        let path = store::save(&index, place.path(), SystemTime::now()).expect("saved");
+        let mut bytes = fs::read(&path).expect("read");
+        bytes[4..8].copy_from_slice(&(store::FORMAT + 1).to_le_bytes());
+        fs::write(&path, &bytes).expect("rewrite");
+        assert_eq!(store::load(place.path(), dir.path()).err(), Some(Unusable::OtherFormat));
+    }
+
+    #[test]
+    fn a_folder_made_again_at_the_same_path_is_not_the_saved_one() {
+        let dir = fixture();
+        let place = tempfile::tempdir().expect("a place to save");
+        let root = dir.path().join("project");
+        let index = Index::new(scan(&root), SystemTime::now());
+        store::save(&index, place.path(), SystemTime::now()).expect("saved");
+
+        fs::remove_dir_all(&root).expect("delete");
+        write(&root.join("other.txt"), 10);
+        assert_eq!(store::load(place.path(), &root).err(), Some(Unusable::Replaced));
+    }
+}

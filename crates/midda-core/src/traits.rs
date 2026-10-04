@@ -97,6 +97,12 @@ impl Traits {
         self.0
     }
 
+    /// The traits a number written by [`Self::bits`] stands for.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
     /// Whether this entry is a second name for bytes counted elsewhere.
     ///
     /// This is the one combination worth a name of its own: it is the answer to
