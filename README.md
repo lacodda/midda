@@ -15,7 +15,7 @@ The name comes from *midden* — the archaeological refuse layer. A disk is stra
 
 **Speed.** Reading the NTFS Master File Table directly scans a full volume in seconds instead of minutes — one sequential read instead of a syscall per directory.
 
-**Freshness without rescanning.** The USN change journal updates the index incrementally. Open the app and the picture is already current. Neither WizTree nor TreeSize does this.
+**Freshness without rescanning.** The index is kept current as the disk changes and saved between runs; with elevation, the USN change journal brings it up to date with everything that changed while midda was closed. Open the app and the picture is already current. Neither WizTree nor TreeSize does this.
 
 **Domain knowledge.** Not "here are big folders" but "here are 40 GB that a build regenerates": `node_modules`, `target/`, `.next`, `__pycache__`, Docker layers, package manager caches. Every finding explains itself — what recreates it, what is lost.
 
@@ -27,7 +27,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.6.0. Pick a volume and see the folder two ways at once: a sortable table of any length and a treemap of what is on disk. Click either and the other highlights the same entry; double-click to go in, Backspace to come back. Sizes are the space a file occupies, so a hard-linked package is counted once and every entry whose two numbers disagree says why. "Accelerate" restarts midda as an administrator to read the volume's Master File Table — the same tree, checked entry for entry against the walk on every build. The window is the line's own: one title bar holds where you are and what you can do, and it opens on a splash rather than a blank frame. The rules that name *what* is safe to delete are next — see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.7.0. Pick a volume and see it two ways at once: a sortable table and a treemap of what is on disk. The picture stays current while the window is open, is saved for the next start, and the title bar says how fresh it is. "Accelerate" restarts midda as an administrator to read the Master File Table in seconds and follow the change journal, which also answers what was written in the last day or week. Rules for *what* is safe to delete are next: see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
