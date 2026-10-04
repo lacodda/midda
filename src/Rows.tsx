@@ -1,11 +1,21 @@
 import { EntryTable } from '@/EntryTable'
 import { Treemap } from '@/Treemap'
-import type { Row, ScanResult, SizeBasis, Sort, SortKey } from '@/core'
+import type { ChangesSummary, Row, ScanResult, SizeBasis, Sort, SortKey, View } from '@/core'
 import { sizeOf } from '@/core'
-import { describeOverhead, describeScan, explainSize, formatBytes, formatCount } from '@/format'
+import { describeChanges, describeOverhead, describeScan, explainSize, formatBytes, formatCount } from '@/format'
 
 interface RowsProps {
+  /** Which tree is shown: the folder as it is, or what was written lately. */
+  view: View
+  /** Which reading of that tree the ids are from. */
+  arena: number
+  /** Moves whenever the tree changed. */
+  version: number
   result: ScanResult
+  /** What was written lately, when that is the view. */
+  changes: ChangesSummary | null
+  /** The span the view of what changed covers, in hours. */
+  hours: number
   /** The scan root down to what is on screen. */
   trail: Row[]
   showing: Row
@@ -31,7 +41,12 @@ interface RowsProps {
  * answer.
  */
 export function Rows({
+  view,
+  arena,
+  version,
   result,
+  changes,
+  hours,
   trail,
   showing,
   sort,
@@ -53,8 +68,9 @@ export function Rows({
   // are only true of the scan root. Repeating them inside every folder would
   // read as a claim about that folder, which nothing here knows.
   const atRoot = trail.length === 1
-  const showsSkipped = atRoot && result.skipped > 0
-  const showsShared = atRoot && result.sharedNames > 0
+  const lately = view === 'changes' && changes !== null
+  const showsSkipped = !lately && atRoot && result.skipped > 0
+  const showsShared = !lately && atRoot && result.sharedNames > 0
   // The scan-level sentence counts the names and the bytes; the entry-level one
   // only says that something inside is shared. Showing both at the root puts
   // the weaker claim beside the stronger one, saying the same thing twice.
@@ -74,8 +90,13 @@ export function Rows({
         {/* How the numbers were read, at the root: the same answer arrives in
             minutes or in seconds, and a fallback from the fast way is said
             rather than left to look like a slow disk. */}
-        {atRoot && <span>{describeScan(result.scannedBy, result.elapsedMs)}</span>}
-        {atRoot && result.fallback !== null && <span className="text-warn">{result.fallback}</span>}
+        {/* In the view of what changed, the strip says what the numbers are:
+            what was written, what it holds now, and how far back the
+            journal reaches. Said at every depth - it is true of every
+            folder in this view, not only of its root. */}
+        {lately && describeChanges(changes, hours).map((part) => <span key={part}>{part}</span>)}
+        {!lately && atRoot && <span>{describeScan(result.scannedBy, result.elapsedMs)}</span>}
+        {!lately && atRoot && result.fallback !== null && <span className="text-warn">{result.fallback}</span>}
         {overhead !== null && <span>{overhead}</span>}
         {showsExplanation && <span>{explanation}</span>}
         {result.clusterBytes !== null && overhead !== null && <span>cluster {formatBytes(result.clusterBytes)}</span>}
@@ -108,7 +129,10 @@ export function Rows({
               row held meaningless, and a fresh component says that better than
               clearing five pieces of state by hand. */}
           <EntryTable
-            key={`${showing.id}:${sort.key}:${sort.direction}`}
+            key={`${view}:${arena}:${showing.id}:${sort.key}:${sort.direction}`}
+            view={view}
+            arena={arena}
+            version={version}
             parentId={showing.id}
             total={total}
             sort={sort}
@@ -124,7 +148,10 @@ export function Rows({
           <Treemap
             // Same reasoning as the table: a new folder or a new basis makes
             // every rectangle held meaningless.
-            key={`${showing.id}:${basis}`}
+            key={`${view}:${arena}:${showing.id}:${basis}`}
+            view={view}
+            arena={arena}
+            version={version}
             parentId={showing.id}
             parentName={showing.name}
             basis={basis}

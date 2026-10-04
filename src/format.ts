@@ -193,3 +193,135 @@ export function describeScan(scannedBy: string, elapsedMs: number): string {
   const took = elapsedMs > 0 ? ` in ${formatDuration(elapsedMs)}` : ''
   return scannedBy === 'mft' ? `read from the MFT${took}` : `walked folder by folder${took}`
 }
+
+/**
+ * How long ago a moment was, in the words a status line uses.
+ *
+ * Coarse on purpose: "saved 2 h ago" is what decides whether the picture is
+ * worth trusting, and the minute it was saved is in the tooltip.
+ */
+export function formatAgo(millis: number, now: number = Date.now()): string {
+  const minutes = Math.floor((now - millis) / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} h ago`
+  const days = Math.floor(hours / 24)
+  return days === 1 ? 'yesterday' : `${days} days ago`
+}
+
+/**
+ * A moment as a status line names it: the time alone today, the date and the
+ * time before that.
+ */
+export function formatMoment(millis: number, now: number = Date.now()): string {
+  const moment = new Date(millis)
+  const time = moment.toLocaleTimeString(documentLocale(), { hour: '2-digit', minute: '2-digit' })
+  if (moment.toDateString() === new Date(now).toDateString()) return time
+  return `${moment.toLocaleDateString(documentLocale(), { day: 'numeric', month: 'short' })} ${time}`
+}
+
+/** The tone of a freshness line: a picture kept current, one being brought
+ * up to date, or one nothing is keeping. */
+export type FreshnessTone = 'good' | 'info' | 'neutral'
+
+/** What the title bar says about how current the picture is. */
+export interface FreshnessLine {
+  tone: FreshnessTone
+  label: string
+  /** The whole story, for the tooltip. */
+  detail: string
+}
+
+/** The parts of the session the line is written from. Mirrors `Freshness`
+ * and the two facts beside it, without importing the bridge. */
+export interface FreshnessFacts {
+  mode: 'none' | 'journal' | 'watching' | 'still'
+  savedAt: number | null
+  catchingUp: boolean
+  note: string | null
+  /** A full read is running under the picture on screen. */
+  reading: boolean
+  /** When the folder was last read in full. */
+  readAt: number | null
+}
+
+/**
+ * The freshness line: how current the picture is, said honestly.
+ *
+ * Every state names its source, because the same picture can be seconds old
+ * or a day old and look identical. A saved index on screen says how old it
+ * is; a picture nothing is keeping says when it was read; a watched or
+ * journalled one says what keeps it, and the tooltip says how far that
+ * reaches - the watcher ends with the window, the journal does not.
+ */
+export function describeFreshness(facts: FreshnessFacts, now: number = Date.now()): FreshnessLine | null {
+  const why = facts.note !== null && facts.note !== '' ? ` ${capitalise(facts.note)}.` : ''
+  if (facts.catchingUp) {
+    return {
+      tone: 'info',
+      label: 'catching up · USN',
+      detail: 'Applying what changed while midda was closed, from the NTFS change journal.',
+    }
+  }
+  if (facts.reading && facts.savedAt !== null) {
+    return {
+      tone: 'info',
+      label: `saved ${formatAgo(facts.savedAt, now)} · reading again`,
+      detail: `The index saved ${formatMoment(facts.savedAt, now)}, shown while the folder is read again.${why}`,
+    }
+  }
+  if (facts.reading) {
+    return { tone: 'info', label: 'reading again', detail: `The folder is being read again; the picture stays until the new one is ready.${why}` }
+  }
+  switch (facts.mode) {
+    case 'journal':
+      return {
+        tone: 'good',
+        label: 'fresh · USN',
+        detail:
+          'Every change on this volume is applied as it happens, from the NTFS change journal. The next start picks up where this one left off.',
+      }
+    case 'watching':
+      return {
+        tone: 'good',
+        label: 'watching',
+        detail: `Changes under this folder are applied while midda is open. The next start reads the folder again; Accelerate keeps the index fresh across restarts.${why}`,
+      }
+    case 'still': {
+      const read = facts.readAt === null ? 'read once' : `scanned at ${formatMoment(facts.readAt, now)}`
+      return { tone: 'neutral', label: read, detail: `Nothing is keeping this picture current.${why}` }
+    }
+    case 'none':
+      return null
+  }
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+/** The spans the view of what changed offers, in hours. */
+export const CHANGE_SPANS = { day: 24, week: 24 * 7 } as const
+
+/**
+ * What the view of recent changes says above its table: what was written,
+ * what it holds now, and what the numbers cannot say.
+ */
+export function describeChanges(
+  summary: { created: number; written: number; deleted: number; reachesBackTo: number | null; covers: boolean },
+  hours: number,
+  now: number = Date.now(),
+): string[] {
+  const span = hours === CHANGE_SPANS.day ? 'the last day' : hours === CHANGE_SPANS.week ? 'the last week' : `the last ${hours} h`
+  const files = (count: number, what: string) => `${formatCount(count)} ${count === 1 ? 'file' : 'files'} ${what}`
+  const parts = [`Written in ${span}: ${files(summary.created, 'new')}, ${files(summary.written, 'written to')}`]
+  if (summary.deleted > 0) parts.push(`${formatCount(summary.deleted)} deleted`)
+  // The one thing a reader would assume and must not: that a file written
+  // to grew by all of what it holds.
+  parts.push('sizes are what the files hold now, not what they grew by')
+  if (!summary.covers && summary.reachesBackTo !== null) {
+    parts.push(`the change journal reaches back only to ${formatMoment(summary.reachesBackTo, now)}`)
+  }
+  return parts
+}

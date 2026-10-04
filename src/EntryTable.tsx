@@ -3,7 +3,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { TableSortHeader } from '@/components/ui/table'
 import { windowFor } from '@/components/ui/virtual-list'
-import { hasTrait, isSharedName, listChildren, sizeOf, TRAIT, type Page, type Row, type SizeBasis, type Sort, type SortKey } from '@/core'
+import {
+  hasTrait,
+  isSharedName,
+  isStale,
+  listChildren,
+  sizeOf,
+  TRAIT,
+  type Page,
+  type Row,
+  type SizeBasis,
+  type Sort,
+  type SortKey,
+  type View,
+} from '@/core'
 import { explainSize, formatAge, formatBytes, formatCount, formatShare } from '@/format'
 
 /**
@@ -49,6 +62,13 @@ const COLUMNS: Column[] = [
 ]
 
 interface EntryTableProps {
+  /** Which tree the rows come from. */
+  view: View
+  /** Which reading of that tree the ids are from. */
+  arena: number
+  /** Moves whenever the tree changed: the rows on screen are asked for again,
+   * where they are, without losing the place. */
+  version: number
   /** The folder whose children are shown. */
   parentId: number
   /** That folder's total on the current basis, for the share column. */
@@ -78,7 +98,7 @@ interface EntryTableProps {
  * hand — a cascading render, and one more place for the scroll position to
  * survive a change it should not have survived.
  */
-export function EntryTable({ parentId, total, sort, basis, selectedId, onSortChange, onDescend, onSelect }: EntryTableProps) {
+export function EntryTable({ view, arena, version, parentId, total, sort, basis, selectedId, onSortChange, onDescend, onSelect }: EntryTableProps) {
   const viewport = useRef<HTMLDivElement>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
@@ -90,6 +110,11 @@ export function EntryTable({ parentId, total, sort, basis, selectedId, onSortCha
   // Which request is current. A reader who clicks two headers quickly has two
   // pages in flight, and the slower one must not land on top of the newer.
   const generation = useRef(0)
+  // Which version of the tree the rows held are from. A change to the tree
+  // asks for the rows on screen again; until they land, the old ones stay
+  // drawn rather than blinking out, and when they land they replace every
+  // row held - the ones off screen are as old as the ones on it.
+  const heldVersion = useRef(version)
 
   const measure = useCallback(() => {
     const element = viewport.current
@@ -124,32 +149,38 @@ export function EntryTable({ parentId, total, sort, basis, selectedId, onSortCha
     const to = count === 0 ? OVERSCAN * 4 : end
     if (to <= from && count !== 0) return
 
-    let missing = false
-    for (let index = from; index < to; index += 1) {
-      if (!rows.has(index)) {
-        missing = true
-        break
-      }
+    const outdated = heldVersion.current !== version
+    let missing = outdated
+    for (let index = from; index < to && !missing; index += 1) {
+      if (!rows.has(index)) missing = true
     }
     if (!missing && count !== 0) return
 
+    // Pages of the old tree still in flight are worthless once it changed;
+    // pages of the same tree for another stretch of the list are not.
+    if (outdated) generation.current += 1
     const mine = generation.current
-    void listChildren(parentId, sort, { offset: from, limit: Math.max(to - from, 1) })
+    void listChildren(view, arena, parentId, sort, { offset: from, limit: Math.max(to - from, 1) })
       .then((page: Page) => {
         // A page from a folder or an order the reader has already left.
         if (mine !== generation.current) return
         setCount(page.total)
+        const replacing = heldVersion.current !== version
+        heldVersion.current = version
         setRows((held) => {
-          const next = new Map(held)
+          const next = replacing ? new Map<number, Row>() : new Map(held)
           page.rows.forEach((row, at) => next.set(page.offset + at, row))
           return next
         })
       })
       .catch((cause: unknown) => {
         if (mine !== generation.current) return
+        // The tree was read again, or this folder deleted: the window is
+        // finding its place again, and this table is about to be replaced.
+        if (isStale(cause)) return
         setFailure(String(cause))
       })
-  }, [parentId, sort, start, end, count, rows])
+  }, [view, arena, version, parentId, sort, start, end, count, rows])
 
   if (failure !== null) {
     return <p className="p-4 text-sm text-bad">{failure}</p>
@@ -267,6 +298,18 @@ export function EntryTable({ parentId, total, sort, basis, selectedId, onSortCha
                       {shared && (
                         <Badge variant="soft" className="shrink-0 px-1.5 py-0 text-2xs leading-4" title={explanation ?? undefined}>
                           linked
+                        </Badge>
+                      )}
+                      {/* In the view of what changed, the word that keeps a
+                          size honest: a file written to holds this much now,
+                          and grew by an amount nothing recorded. */}
+                      {row.change !== null && (
+                        <Badge
+                          variant="soft"
+                          className="shrink-0 px-1.5 py-0 text-2xs leading-4"
+                          title={row.change === 'created' ? 'Did not exist at the start of the span' : 'Existed before, and was written to since'}
+                        >
+                          {row.change === 'created' ? 'new' : 'written'}
                         </Badge>
                       )}
                     </span>

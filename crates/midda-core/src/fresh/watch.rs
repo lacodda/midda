@@ -75,6 +75,11 @@ pub struct Drained {
 impl Watcher {
     /// Starts watching `root` and everything under it.
     ///
+    /// Returns once the watch is in place, not merely asked for: a change made
+    /// after this returns is reported. Windows records changes only from the
+    /// first read on, and a thread that had not reached it yet would let the
+    /// first changes through unseen — on a slow machine, measurably so.
+    ///
     /// # Errors
     ///
     /// When the folder cannot be opened for watching.
@@ -84,15 +89,21 @@ impl Watcher {
         let wake = Event::new()?;
         let pending = Arc::new(Mutex::new(Pending::default()));
 
+        let (armed, ready) = std::sync::mpsc::channel();
         let thread = {
             let signal = Stop(stop.0);
             let pending = Arc::clone(&pending);
             let root = root.to_path_buf();
             std::thread::Builder::new()
                 .name("midda-watch".into())
-                .spawn(move || watch(&directory, &wake, &signal, &root, &pending))
+                .spawn(move || watch(&directory, &wake, &signal, &root, &pending, Some(armed)))
                 .map_err(|error| Error::Unavailable(format!("could not start watching: {error}")))?
         };
+        match ready.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(why)) => return Err(Error::Unavailable(format!("could not watch {}: {why}", root.display()))),
+            Err(_) => return Err(Error::Unavailable("the watcher stopped before it started".into())),
+        }
 
         Ok(Self {
             stop,
@@ -221,7 +232,14 @@ fn open(root: &Path) -> Result<Directory> {
 }
 
 /// The watching thread: read changes until told to stop or the watch ends.
-fn watch(directory: &Directory, wake: &Event, stop: &Stop, root: &Path, pending: &Mutex<Pending>) {
+fn watch(
+    directory: &Directory,
+    wake: &Event,
+    stop: &Stop,
+    root: &Path,
+    pending: &Mutex<Pending>,
+    mut armed: Option<std::sync::mpsc::Sender<std::result::Result<(), String>>>,
+) {
     let mut size = BUFFER_BYTES;
     // `u64`s, so the buffer is aligned for the records in it.
     let mut buffer = vec![0_u64; size / 8];
@@ -261,11 +279,17 @@ fn watch(directory: &Directory, wake: &Event, stop: &Stop, root: &Path, pending:
                 buffer.truncate(size / 8);
                 continue;
             }
-            end(
-                pending,
-                &std::io::Error::from_raw_os_error(i32::try_from(error).unwrap_or(i32::MAX)).to_string(),
-            );
+            let why = std::io::Error::from_raw_os_error(i32::try_from(error).unwrap_or(i32::MAX)).to_string();
+            if let Some(armed) = armed.take() {
+                let _ = armed.send(Err(why));
+                return;
+            }
+            end(pending, &why);
             return;
+        }
+        // The first read is in place: from here on, every change is kept.
+        if let Some(armed) = armed.take() {
+            let _ = armed.send(Ok(()));
         }
 
         let events = [wake.0, stop.0];

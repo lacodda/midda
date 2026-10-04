@@ -65,7 +65,16 @@ export function isSharedName(traits: number): boolean {
   return hasTrait(traits, TRAIT.linked) && !hasTrait(traits, TRAIT.countedHere)
 }
 
-/** One row of the table. Mirrors `Row` in src-tauri/src/scan.rs. */
+/** How a file came to be in the view of what changed. Mirrors `Change`. */
+export type Change = 'created' | 'written'
+
+/**
+ * Which tree a question is about: the folder as it is, or what was written
+ * in it lately. Mirrors `View` in src-tauri/src/session.rs.
+ */
+export type View = 'index' | 'changes'
+
+/** One row of the table. Mirrors `Row` in src-tauri/src/session.rs. */
 export interface Row {
   id: number
   name: string
@@ -82,6 +91,8 @@ export interface Row {
   traits: number
   /** How many names these bytes have, or `null` when it could not be asked. */
   links: number | null
+  /** In the view of what changed, whether the file is new or was written to. */
+  change: Change | null
 }
 
 /** One page of an ordered list. Mirrors `Page`. */
@@ -93,7 +104,13 @@ export interface Page {
   total: number
 }
 
-/** A finished scan. Mirrors `ScanResult`. */
+/** The way down to one entry, and the ids it was given in. Mirrors `Trail`. */
+export interface Trail {
+  arena: number
+  rows: Row[]
+}
+
+/** A picture on screen. Mirrors `ScanResult`. */
 export interface ScanResult {
   root: Row
   clusterBytes: number | null
@@ -106,19 +123,57 @@ export interface ScanResult {
   scannedBy: string
   /** Why the MFT reader gave way to the walk, when it did. */
   fallback: string | null
-  /** How long the scan took. */
+  /** How long the last full read took; zero for an index read back from disk. */
   elapsedMs: number
+  /** When the folder was last read in full, as milliseconds since the epoch. */
+  readAt: number | null
 }
 
-/** What a scan looks like from outside. Mirrors `ScanState`. */
-export interface ScanState {
-  running: boolean
+/** How the picture on screen is kept current. Mirrors `Mode`. */
+export type Mode = 'none' | 'journal' | 'watching' | 'still'
+
+/** What the window says about how current its picture is. Mirrors `Freshness`. */
+export interface Freshness {
+  mode: Mode
+  /** The picture is the index saved at this moment, not yet brought up to date. */
+  savedAt: number | null
+  /** The change journal is being read from where the saved index left off. */
+  catchingUp: boolean
+  /** Why the picture is as current as it is, when that needs saying. */
+  note: string | null
+}
+
+/** The open folder from outside. Mirrors `SessionState`. */
+export interface SessionState {
+  /** A full read is running — the first, or one under the picture on screen. */
+  reading: boolean
   entries: number
   bytes: number
   /** MFT records read so far; zero on the walk. */
   records: number
   result: ScanResult | null
   error: string | null
+  freshness: Freshness
+  /** When a change was last applied. */
+  appliedAt: number | null
+  /** Moves with every change to what is on screen. */
+  version: number
+  /** Moves when the tree was read anew and every id held before means something else. */
+  arena: number
+}
+
+/** What was written lately. Mirrors `ChangesSummary`. */
+export interface ChangesSummary {
+  root: Row
+  arena: number
+  created: number
+  written: number
+  deleted: number
+  since: number | null
+  /** The oldest change the journal holds. */
+  reachesBackTo: number | null
+  /** Whether the journal covers the whole span asked about. */
+  covers: boolean
 }
 
 /** A rectangle in fractions of the box being drawn. Mirrors `Rect`. */
@@ -197,28 +252,53 @@ export function launchRequest(): Promise<string | null> {
   return invoke<string | null>('launch_request')
 }
 
+/** Opens `path`: its saved index at once if there is one, then kept current. */
 export function startScan(path: string): Promise<void> {
   return invoke<void>('start_scan', { path })
 }
 
-export function scanProgress(): Promise<ScanState> {
-  return invoke<ScanState>('scan_progress')
+export function scanProgress(): Promise<SessionState> {
+  return invoke<SessionState>('scan_progress')
 }
 
 export function cancelScan(): Promise<void> {
   return invoke<void>('cancel_scan')
 }
 
-export function listChildren(id: number, sort: Sort, span: Span): Promise<Page> {
-  return invoke<Page>('list_children', { id, sort, span })
+/** Reads the open folder again in full, keeping the picture until the new one is ready. */
+export function rescan(): Promise<void> {
+  return invoke<void>('rescan')
 }
 
-export function trailTo(id: number): Promise<Row[]> {
-  return invoke<Row[]>('trail_to', { id })
+/**
+ * Whether a refusal means the ids asked about are from a tree read before this
+ * one, or name an entry since deleted. Not a failure to show: the window finds
+ * its place again by path.
+ */
+export function isStale(cause: unknown): boolean {
+  return cause === 'stale'
 }
 
-export function treemap(id: number, layout: Layout): Promise<Tile[]> {
-  return invoke<Tile[]>('treemap', { id, layout })
+export function listChildren(view: View, arena: number, id: number, sort: Sort, span: Span): Promise<Page> {
+  return invoke<Page>('list_children', { view, arena, id, sort, span })
+}
+
+export function trailTo(view: View, arena: number, id: number): Promise<Row[]> {
+  return invoke<Row[]>('trail_to', { view, arena, id })
+}
+
+/** The way down to `path`, or to the deepest folder above it still there. */
+export function trailToPath(view: View, path: string): Promise<Trail> {
+  return invoke<Trail>('trail_to_path', { view, path })
+}
+
+export function treemap(view: View, arena: number, id: number, layout: Layout): Promise<Tile[]> {
+  return invoke<Tile[]>('treemap', { view, arena, id, layout })
+}
+
+/** What was written in the last `hours`, from the change journal. */
+export function changesSince(hours: number): Promise<ChangesSummary> {
+  return invoke<ChangesSummary>('changes_since', { hours })
 }
 
 /** Picks the size a basis names out of a row. */

@@ -139,6 +139,16 @@ impl Journal {
         }
     }
 
+    /// The oldest position the journal still holds: from here, it says
+    /// everything it knows.
+    #[must_use]
+    pub const fn oldest(&self) -> JournalPosition {
+        JournalPosition {
+            journal: self.id,
+            next: self.first,
+        }
+    }
+
     /// Whether the journal still holds every change since `at`.
     ///
     /// # Errors
@@ -227,22 +237,28 @@ impl Journal {
     /// otherwise — a folder that went is reported by its own record.
     #[must_use]
     pub fn paths(&self, records: &[Record]) -> Vec<PathBuf> {
-        let mut folders: HashMap<u64, Option<PathBuf>> = HashMap::new();
+        let mut place = self.place();
         let mut paths = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for record in records {
-            let folder = folders.entry(record.parent).or_insert_with(|| self.path_of(record.parent)).clone();
-            let path = match folder {
-                Some(folder) => Some(folder.join(&record.name)),
-                None => self.path_of(record.file),
-            };
-            if let Some(path) = path
+            if let Some(path) = place(record)
                 && seen.insert(path.clone())
             {
                 paths.push(path);
             }
         }
         paths
+    }
+
+    /// Where a record's file is, as [`Journal::paths`] finds it, one record at
+    /// a time — remembering every folder already looked up, which is most of
+    /// the cost: a busy folder is named by thousands of records.
+    pub fn place(&self) -> impl FnMut(&Record) -> Option<PathBuf> + '_ {
+        let mut folders: HashMap<u64, Option<PathBuf>> = HashMap::new();
+        move |record| match folders.entry(record.parent).or_insert_with(|| self.path_of(record.parent)) {
+            Some(folder) => Some(folder.join(&record.name)),
+            None => self.path_of(record.file),
+        }
     }
 
     /// The path of the file or folder with this reference, now.

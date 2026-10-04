@@ -1,5 +1,18 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { describeOverhead, describeScan, explainSize, formatAge, formatBytes, formatCount, formatDuration, formatShare } from '@/format'
+import {
+  CHANGE_SPANS,
+  describeChanges,
+  describeFreshness,
+  describeOverhead,
+  describeScan,
+  explainSize,
+  formatAge,
+  formatAgo,
+  formatBytes,
+  formatCount,
+  formatDuration,
+  formatShare,
+} from '@/format'
 
 describe('formatBytes', () => {
   it('names the binary steps the way Explorer does', () => {
@@ -247,5 +260,67 @@ describe('describeScan', () => {
 
   it('leaves the time out when it was not measured', () => {
     expect(describeScan('walk', 0)).toBe('walked folder by folder')
+  })
+})
+
+describe('formatAgo', () => {
+  const now = Date.UTC(2026, 9, 4, 12, 0, 0)
+
+  it('names the age a status line needs, coarsely', () => {
+    expect(formatAgo(now - 20_000, now)).toBe('just now')
+    expect(formatAgo(now - 5 * 60_000, now)).toBe('5 min ago')
+    expect(formatAgo(now - 3 * 3_600_000, now)).toBe('3 h ago')
+    expect(formatAgo(now - 30 * 3_600_000, now)).toBe('yesterday')
+    expect(formatAgo(now - 5 * 86_400_000, now)).toBe('5 days ago')
+  })
+})
+
+describe('describeFreshness', () => {
+  const now = Date.UTC(2026, 9, 4, 12, 0, 0)
+  const facts = { mode: 'watching' as const, savedAt: null, catchingUp: false, note: null, reading: false, readAt: now - 60_000 }
+
+  it('names the source that keeps the picture current, and how far it reaches', () => {
+    expect(describeFreshness({ ...facts, mode: 'journal' }, now)).toMatchObject({ tone: 'good', label: 'fresh · USN' })
+    const watching = describeFreshness(facts, now)
+    expect(watching).toMatchObject({ tone: 'good', label: 'watching' })
+    expect(watching?.detail).toContain('next start reads the folder again')
+  })
+
+  it('says how old a saved picture is while it is read again', () => {
+    const line = describeFreshness({ ...facts, reading: true, savedAt: now - 2 * 3_600_000 }, now)
+    expect(line).toMatchObject({ tone: 'info', label: 'saved 2 h ago · reading again' })
+  })
+
+  it('says when a picture nothing keeps was read, and why nothing keeps it', () => {
+    const line = describeFreshness({ ...facts, mode: 'still', note: 'the watcher stopped: the folder was deleted' }, now)
+    expect(line?.tone).toBe('neutral')
+    expect(line?.label).toMatch(/^scanned at /)
+    expect(line?.detail).toContain('The watcher stopped: the folder was deleted.')
+  })
+
+  it('puts catching up before everything else', () => {
+    expect(describeFreshness({ ...facts, mode: 'journal', catchingUp: true, savedAt: now }, now)?.label).toBe('catching up · USN')
+  })
+
+  it('says nothing when nothing is open', () => {
+    expect(describeFreshness({ ...facts, mode: 'none' }, now)).toBeNull()
+  })
+})
+
+describe('describeChanges', () => {
+  const now = Date.UTC(2026, 9, 4, 12, 0, 0)
+
+  it('says what was written and what the sizes mean', () => {
+    const parts = describeChanges({ created: 1204, written: 1, deleted: 0, reachesBackTo: null, covers: true }, CHANGE_SPANS.day, now)
+    expect(parts[0]).toBe(`Written in the last day: ${formatCount(1204)} files new, 1 file written to`)
+    expect(parts).toContain('sizes are what the files hold now, not what they grew by')
+    expect(parts.some((part) => part.includes('deleted'))).toBe(false)
+  })
+
+  it('says when the journal does not reach back as far as asked', () => {
+    const parts = describeChanges({ created: 1, written: 0, deleted: 3, reachesBackTo: now - 3_600_000, covers: false }, CHANGE_SPANS.week, now)
+    expect(parts[0]).toContain('the last week')
+    expect(parts).toContain('3 deleted')
+    expect(parts.at(-1)).toMatch(/^the change journal reaches back only to /)
   })
 })

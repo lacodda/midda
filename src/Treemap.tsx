@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { treemap, type Row, type SizeBasis, type Tile } from '@/core'
+import { isStale, treemap, type Row, type SizeBasis, type Tile, type View } from '@/core'
 import { formatBytes, formatCount } from '@/format'
 import { boxOf, CATEGORY_LABELS, minAreaFor, neighbourOf, paletteOf, tileAt, type Box } from '@/treemap-layout'
 
@@ -10,6 +10,12 @@ const LABEL_MIN_WIDTH = 56
 const LABEL_MIN_HEIGHT = 24
 
 interface TreemapProps {
+  /** Which tree the folder is in. */
+  view: View
+  /** Which reading of that tree the ids are from. */
+  arena: number
+  /** Moves whenever the tree changed: the picture is laid out again. */
+  version: number
   /** The folder being drawn. */
   parentId: number
   /** Its name, for the picture's own label. */
@@ -41,7 +47,7 @@ interface TreemapProps {
  * canvas size and paints. That split is why the arithmetic can be tested at all
  * — a canvas cannot be asked what it drew.
  */
-export function Treemap({ parentId, parentName, basis, selected, onDescend, onSelect }: TreemapProps) {
+export function Treemap({ view, arena, version, parentId, parentName, basis, selected, onDescend, onSelect }: TreemapProps) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const frame = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -56,6 +62,10 @@ export function Treemap({ parentId, parentName, basis, selected, onDescend, onSe
   // Which request is current: a reader who descends twice quickly has two
   // layouts in flight, and the slower one must not land on the newer picture.
   const generation = useRef(0)
+  // What the picture was last laid out for. A new layout of the same folder -
+  // the tree changed under it - keeps the hover and the keyboard where they
+  // are; only a new folder or a new basis starts them over.
+  const laidOutFor = useRef('')
 
   useEffect(() => {
     const element = frame.current
@@ -78,7 +88,8 @@ export function Treemap({ parentId, parentName, basis, selected, onDescend, onSe
     generation.current += 1
     const mine = generation.current
 
-    void treemap(parentId, {
+    const subject = `${view}:${arena}:${parentId}:${basis}`
+    void treemap(view, arena, parentId, {
       basis,
       aspect: size.width / size.height,
       minArea: minAreaFor(size.width, size.height),
@@ -88,14 +99,18 @@ export function Treemap({ parentId, parentName, basis, selected, onDescend, onSe
         if (mine !== generation.current) return
         setTiles(laid)
         setFailure(null)
-        setHovered(null)
-        setFocused(null)
+        if (laidOutFor.current !== subject) {
+          setHovered(null)
+          setFocused(null)
+          laidOutFor.current = subject
+        }
       })
       .catch((cause: unknown) => {
         if (mine !== generation.current) return
+        if (isStale(cause)) return
         setFailure(String(cause))
       })
-  }, [parentId, basis, size.width, size.height])
+  }, [view, arena, version, parentId, basis, size.width, size.height])
 
   const boxes = useMemo<Box[]>(() => tiles.map((tile) => boxOf(tile.rect, size.width, size.height)), [tiles, size])
 
