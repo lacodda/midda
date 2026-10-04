@@ -79,6 +79,8 @@ struct Keeper {
 
 #[derive(Default)]
 struct State {
+    /// The folder open, for the change journal to be asked about.
+    #[cfg_attr(not(windows), allow(dead_code, reason = "only the change journal, which is Windows-only, asks"))]
     root: Option<PathBuf>,
     /// The index on screen, when there is one.
     index: Option<Index>,
@@ -259,6 +261,7 @@ pub struct ScanResult {
 
 /// What was written since a moment, as the window shows it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(not(windows), allow(dead_code, reason = "only the change journal, which is Windows-only, answers it"))]
 #[serde(rename_all = "camelCase")]
 pub struct ChangesSummary {
     pub root: Row,
@@ -644,6 +647,10 @@ impl Source {
 }
 
 /// What the keeper's source said since it was last asked.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "only the journal and the watcher, which are Windows-only, lose track or end")
+)]
 enum News {
     /// These paths changed.
     Paths(Vec<PathBuf>),
@@ -730,6 +737,7 @@ fn keep(shared: &RwLock<State>, root: &Path, store: &Path, stop: &AtomicBool, re
     let mut source = Source::open(root);
     let mut saved_at = Instant::now();
     let mut dirty = false;
+    let mut saver = Saver::default();
 
     // The saved index first, if there is one: on screen at once.
     let mut due = match store::load(store, root) {
@@ -783,9 +791,15 @@ fn keep(shared: &RwLock<State>, root: &Path, store: &Path, stop: &AtomicBool, re
             }
             match read_in_full(shared, root, &mut source, why) {
                 Read::Done => {
-                    save(shared, store);
+                    saver.save(shared, store);
                     saved_at = Instant::now();
                     dirty = false;
+                }
+                Read::Again(why) => {
+                    saver.save(shared, store);
+                    saved_at = Instant::now();
+                    dirty = false;
+                    due = Due::Read(Some(why));
                 }
                 Read::Stopped => {}
                 Read::Failed => break,
@@ -801,7 +815,7 @@ fn keep(shared: &RwLock<State>, root: &Path, store: &Path, stop: &AtomicBool, re
             }
         }
         if dirty && saved_at.elapsed() >= SAVE_EVERY {
-            save(shared, store);
+            saver.save(shared, store);
             saved_at = Instant::now();
             dirty = false;
         }
@@ -809,8 +823,10 @@ fn keep(shared: &RwLock<State>, root: &Path, store: &Path, stop: &AtomicBool, re
     }
 
     if dirty {
-        save(shared, store);
+        saver.save(shared, store);
     }
+    // The window is closing: the last save is finished before it does.
+    saver.finish();
 }
 
 /// Applies what the source has to say. `Ok(true)` when the picture changed;
@@ -872,6 +888,9 @@ fn advance(shared: &RwLock<State>, source: &mut Source) -> Result<bool, String> 
 
 enum Read {
     Done,
+    /// Done, but the source lost track of changes made during the read: the
+    /// picture is up, and is to be read again.
+    Again(String),
     Stopped,
     Failed,
 }
@@ -907,13 +926,14 @@ fn read_in_full(shared: &RwLock<State>, root: &Path, source: &mut Source, why: O
             if at.is_some() {
                 index.follow(at);
             }
-            let lost = match news {
+            let (lost, again) = match news {
                 News::Paths(paths) => {
                     let observed = index.observe(paths);
                     index.apply(observed);
-                    None
+                    (None, None)
                 }
-                News::Lost(why) | News::Ended(why) => Some(why),
+                News::Lost(why) => (Some(why.clone()), Some(why)),
+                News::Ended(why) => (Some(why), None),
             };
             set(shared, |state| {
                 state.index = Some(index);
@@ -928,7 +948,7 @@ fn read_in_full(shared: &RwLock<State>, root: &Path, source: &mut Source, why: O
                     note: lost.or_else(|| source.note()),
                 };
             });
-            Read::Done
+            again.map_or(Read::Done, Read::Again)
         }
         Err(midda_core::Error::Cancelled) => {
             set(shared, |state| {
@@ -963,13 +983,43 @@ fn read_in_full(shared: &RwLock<State>, root: &Path, source: &mut Source, why: O
     }
 }
 
-/// Saves the index on screen. A save that fails costs only the next start's
-/// head start, and is not worth stopping for.
-fn save(shared: &RwLock<State>, store: &Path) {
-    if let Ok(state) = shared.read()
-        && let Some(index) = state.index.as_ref()
-    {
-        let _ = store::save(index, store, SystemTime::now());
+/// Saves the index on screen without holding up the keeper.
+///
+/// The index is written into memory under the lock — a fraction of a second
+/// — and put on disk by a thread of its own, which can take seconds for a
+/// large one. One write at a time: a save asked for while the last is still
+/// on its way waits for it, so files never land out of order. A save that
+/// fails costs only the next start's head start, and is not worth stopping
+/// for.
+#[derive(Default)]
+struct Saver {
+    writing: Option<JoinHandle<()>>,
+}
+
+impl Saver {
+    fn save(&mut self, shared: &RwLock<State>, store: &Path) {
+        let Some(encoded) = shared
+            .read()
+            .ok()
+            .and_then(|state| state.index.as_ref().map(|index| store::encode(index, SystemTime::now())))
+        else {
+            return;
+        };
+        self.finish();
+        let store = store.to_path_buf();
+        self.writing = std::thread::Builder::new()
+            .name("midda-save".into())
+            .spawn(move || {
+                let _ = encoded.write(&store);
+            })
+            .ok();
+    }
+
+    /// Waits for the write on its way, if there is one.
+    fn finish(&mut self) {
+        if let Some(writing) = self.writing.take() {
+            let _ = writing.join();
+        }
     }
 }
 

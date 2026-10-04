@@ -237,6 +237,17 @@ fn a_folder_total_follows_a_change_deep_below_it() {
     );
 }
 
+#[test]
+fn what_went_is_counted_once_however_it_was_reported() {
+    // The folder and a file in it, reported together: the file goes first,
+    // and the folder's total is not brought up to date until the end.
+    let dir = fixture();
+    let mut index = Index::new(scan(dir.path()), SystemTime::now());
+    fs::remove_dir_all(dir.path().join("project/target")).expect("delete");
+    let applied = index.apply(index.observe([dir.path().join("project/target/debug/app.bin"), dir.path().join("project/target")]));
+    assert_eq!(applied.removed, 6, "target, debug, deps, app.bin, a.rlib and b.rlib: {applied:?}");
+}
+
 /// Makes `link` a second name for `target`, when the filesystem allows it.
 fn hard_link(target: &Path, link: &Path) -> bool {
     fs::hard_link(target, link).is_ok()
@@ -560,7 +571,10 @@ mod spelled {
 
         let mut index = Index::new(scan(&short), SystemTime::now());
         write(&long.join("arrived.bin"), 5000);
-        let applied = index.apply(index.observe([long.join("arrived.bin")]));
+        // As the journal reports it: every component long, the user's own
+        // folder included - which on a CI runner is itself a short name.
+        let reported = midda_core::platform::long_path(&long).join("arrived.bin");
+        let applied = index.apply(index.observe([reported]));
         assert_eq!(applied.added, 1, "the change under the long name reached the tree opened by the short one");
         assert!(index.tree().child(ROOT, "arrived.bin").is_some());
     }

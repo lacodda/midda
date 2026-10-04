@@ -21,7 +21,7 @@
 //! On a system volume of three million entries the file is around 130 MB.
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -84,17 +84,53 @@ fn fnv(text: &str) -> u64 {
 ///
 /// When the directory cannot be created or the file cannot be written.
 pub fn save(index: &Index, directory: &Path, saved_at: SystemTime) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(directory)?;
-    let path = file_for(directory, index.tree().root_path());
-    let partial = path.with_extension("midx.partial");
-    {
-        let mut out = BufWriter::with_capacity(1 << 20, File::create(&partial)?);
-        write(&mut out, index, saved_at)?;
-        out.flush()?;
-        out.get_ref().sync_all()?;
+    encode(index, saved_at).write(directory)
+}
+
+/// An index written into memory, ready to be put on disk.
+///
+/// The two halves of [`save`], apart: writing into memory needs the tree and
+/// takes a fraction of a second; putting the bytes on disk needs only the
+/// bytes, and can take seconds — a file of a hundred megabytes, flushed, and
+/// read through by an antivirus on its way. Holding the tree for the second
+/// half would hold up every change waiting to be applied.
+#[derive(Debug)]
+pub struct Encoded {
+    root: PathBuf,
+    bytes: Vec<u8>,
+}
+
+/// Writes `index` into memory. See [`Encoded`].
+#[must_use]
+pub fn encode(index: &Index, saved_at: SystemTime) -> Encoded {
+    let mut bytes = Vec::new();
+    // Writing into a `Vec` cannot fail.
+    let _ = write(&mut bytes, index, saved_at);
+    Encoded {
+        root: index.tree().root_path().to_path_buf(),
+        bytes,
     }
-    std::fs::rename(&partial, &path)?;
-    Ok(path)
+}
+
+impl Encoded {
+    /// Puts the index on disk where [`file_for`] says, replacing what was
+    /// there only once the new file is whole.
+    ///
+    /// # Errors
+    ///
+    /// When the directory cannot be created or the file cannot be written.
+    pub fn write(&self, directory: &Path) -> std::io::Result<PathBuf> {
+        std::fs::create_dir_all(directory)?;
+        let path = file_for(directory, &self.root);
+        let partial = path.with_extension("midx.partial");
+        {
+            let mut out = File::create(&partial)?;
+            out.write_all(&self.bytes)?;
+            out.sync_all()?;
+        }
+        std::fs::rename(&partial, &path)?;
+        Ok(path)
+    }
 }
 
 /// Why a saved index was not used.

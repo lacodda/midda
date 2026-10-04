@@ -204,8 +204,7 @@ impl Index {
                     if self.tree.contains(parent)
                         && let Some(id) = self.tree.child(parent, &name)
                     {
-                        applied.removed += self.tree.node(id).entries;
-                        self.take_out(id, &mut files);
+                        applied.removed += self.take_out(id, &mut files);
                         touched.push(parent);
                     }
                 }
@@ -230,8 +229,7 @@ impl Index {
                         }
                         held => {
                             if let Some(directory) = held {
-                                applied.removed += self.tree.node(directory).entries;
-                                self.take_out(directory, &mut files);
+                                applied.removed += self.take_out(directory, &mut files);
                             }
                             applied.added += 1;
                             self.tree.insert(parent, node)
@@ -245,8 +243,7 @@ impl Index {
                         continue;
                     }
                     if let Some(held) = self.tree.child(parent, &branch.root().name) {
-                        applied.removed += self.tree.node(held).entries;
-                        self.take_out(held, &mut files);
+                        applied.removed += self.take_out(held, &mut files);
                     }
                     branch.roll_up();
                     applied.added += branch.root().entries;
@@ -277,14 +274,21 @@ impl Index {
     }
 
     /// Takes `id` and what is under it out of the tree, letting go of every
-    /// shared name in it first.
-    fn take_out(&mut self, id: NodeId, files: &mut HashSet<FileIdentity>) {
+    /// shared name in it first. Returns how many entries went.
+    ///
+    /// Counted by walking them rather than read off the folder's total: within
+    /// one application a file may have gone from the folder already, and the
+    /// total is brought up to date only at the end.
+    fn take_out(&mut self, id: NodeId, files: &mut HashSet<FileIdentity>) -> u64 {
+        let mut gone = 0;
         let mut stack = vec![id];
         while let Some(at) = stack.pop() {
             stack.extend_from_slice(&self.tree.node(at).children);
             files.extend(self.groups.forget(&self.tree, at));
+            gone += 1;
         }
         self.tree.detach(id);
+        gone
     }
 }
 
