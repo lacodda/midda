@@ -11,7 +11,7 @@ repository = "https://github.com/lacodda/midda"
 # Measured against the crates actually resolved, not copied from the toolchain.
 # Raised only when a dependency or a feature needs it; the CI `msrv` job reads
 # this number and builds on it, so it cannot silently rot.
-rust-version = "1.88"
+rust-version = "1.90"
 
 # Declared once. A path dependency still needs a version for publishing, and a
 # version written in each member is one that goes stale at the next release —
