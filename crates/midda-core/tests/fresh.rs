@@ -428,3 +428,98 @@ mod saved {
         assert_eq!(store::load(place.path(), &root).err(), Some(Unusable::Replaced));
     }
 }
+
+#[cfg(windows)]
+mod watched {
+    use std::collections::HashSet;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant, SystemTime};
+
+    use midda_core::Index;
+    use midda_core::fresh::watch::Watcher;
+
+    use super::{assert_same, fixture, scan, write};
+
+    /// Drains `watcher` until every one of `expected` has been reported, and
+    /// a little after, so the tail of a burst is not left behind.
+    fn reported(watcher: &Watcher, expected: &[PathBuf]) -> Vec<PathBuf> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut paths = Vec::new();
+        let mut seen = HashSet::new();
+        loop {
+            std::thread::sleep(Duration::from_millis(50));
+            let drained = watcher.drain();
+            assert!(!drained.lost, "the watcher lost track of a handful of changes");
+            assert_eq!(drained.ended, None);
+            for path in drained.paths {
+                if seen.insert(path.clone()) {
+                    paths.push(path);
+                }
+            }
+            if expected.iter().all(|path| seen.contains(path)) {
+                std::thread::sleep(Duration::from_millis(200));
+                paths.extend(watcher.drain().paths);
+                return paths;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "not reported within ten seconds: {:?}",
+                expected.iter().filter(|path| !seen.contains(*path)).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn what_the_watcher_reports_is_enough_to_keep_the_tree_true() {
+        let dir = fixture();
+        let root = dir.path();
+        let mut index = Index::new(scan(root), SystemTime::now());
+        let watcher = Watcher::start(root).expect("watching starts");
+
+        write(&root.join("project/src/lib.rs"), 2500);
+        fs::remove_file(root.join("docs/readme.md")).expect("delete");
+        fs::rename(root.join("project/target"), root.join("project/build")).expect("rename");
+        write(&root.join("node_modules/pkg/lib/index.js"), 4000);
+        write(&root.join("keep.txt"), 70_000);
+
+        let paths = reported(
+            &watcher,
+            &[
+                root.join(r"project\src\lib.rs"),
+                root.join(r"docs\readme.md"),
+                root.join(r"project\build"),
+                root.join("node_modules"),
+                root.join("keep.txt"),
+            ],
+        );
+        index.apply(index.observe(paths));
+        index.compact();
+        assert_same(&scan(root), index.tree());
+    }
+
+    #[test]
+    fn a_watch_whose_folder_goes_says_it_ended() {
+        let dir = fixture();
+        let watched = dir.path().join("docs");
+        let watcher = Watcher::start(&watched).expect("watching starts");
+        fs::remove_dir_all(&watched).expect("delete the watched folder");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            std::thread::sleep(Duration::from_millis(50));
+            if watcher.drain().ended.is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the watch did not notice its folder go");
+        }
+    }
+
+    #[test]
+    fn a_watcher_stops_when_dropped() {
+        let dir = fixture();
+        let watcher = Watcher::start(dir.path()).expect("watching starts");
+        let started = Instant::now();
+        drop(watcher);
+        assert!(started.elapsed() < Duration::from_secs(5), "dropping a watcher hung");
+    }
+}

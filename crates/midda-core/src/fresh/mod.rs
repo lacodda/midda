@@ -24,6 +24,8 @@
 //! tree: a window reading the tree waits only for the second.
 
 pub mod store;
+#[cfg(windows)]
+pub mod watch;
 
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
