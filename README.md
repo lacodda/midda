@@ -17,6 +17,8 @@ The name comes from *midden* — the archaeological refuse layer. A disk is stra
 
 **Freshness without rescanning.** The index is kept current as the disk changes and saved between runs; with elevation, the USN change journal brings it up to date with everything that changed while midda was closed. Open the app and the picture is already current. Neither WizTree nor TreeSize does this.
 
+**Growth, not only size.** Every time a folder is opened, midda keeps the picture it had last time. What grew since then is one press away: a treemap sized by how much changed, red where it grew, green where it was freed. Take a snapshot before a cleanup, and afterwards one page says how much came back and from where.
+
 **Domain knowledge.** Not "here are big folders" but "here are 40 GB that a build regenerates": `node_modules`, `target/`, `.next`, `__pycache__`, Docker layers, package manager caches. Every finding explains itself — what recreates it, what is lost.
 
 ## Privileges
@@ -27,7 +29,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.7.0. Pick a volume and see it two ways at once: a sortable table and a treemap of what is on disk. The picture stays current while the window is open, is saved for the next start, and the title bar says how fresh it is. "Accelerate" restarts midda as an administrator to read the Master File Table in seconds and follow the change journal, which also answers what was written in the last day or week. Rules for *what* is safe to delete are next: see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.8.0. Pick a volume and see it as a sortable table and a treemap of what is on disk. The picture stays current while the window is open and is saved for the next start. "Grown" compares the folder with the last time it was open; snapshots compare any two moments, with a one-page report of what a cleanup gave back. "Accelerate" restarts midda as an administrator to read the Master File Table in seconds and follow the change journal. Rules for *what* is safe to delete are next: see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 

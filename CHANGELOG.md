@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.8.0] - 2026-10-08
+
+### Bug Fixes
+- Paint treemap labels in a colour the canvas accepts
+
+### Documentation
+- Add the changelog for v0.7.0
+
+### Features
+- Keep pictures of a folder and compare two of them
+- Show what grew since last time and what a cleanup freed
 ## [0.7.0] - 2026-10-04
 
 ### Bug Fixes
