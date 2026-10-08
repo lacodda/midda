@@ -2,6 +2,15 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   CHANGE_SPANS,
   describeChanges,
+  describeComparison,
+  describePlace,
+  describeSnapshot,
+  formatSigned,
+  relativeTo,
+  reportMarkdown,
+  wayOf,
+  type ComparisonFacts,
+  type ReportFacts,
   describeFreshness,
   describeOverhead,
   describeScan,
@@ -322,5 +331,129 @@ describe('describeChanges', () => {
     expect(parts[0]).toContain('the last week')
     expect(parts).toContain('3 deleted')
     expect(parts.at(-1)).toMatch(/^the change journal reaches back only to /)
+  })
+})
+
+describe('formatSigned', () => {
+  it('signs growth and shrinkage with a plus and a true minus', () => {
+    expect(formatSigned(1.2 * 1024 ** 3)).toBe('+1.2 GB')
+    expect(formatSigned(-300 * 1024 ** 2)).toBe('−300 MB')
+    expect(formatSigned(0)).toBe('0 B')
+    expect(formatSigned(Number.NaN)).toBe('—')
+  })
+})
+
+describe('wayOf', () => {
+  it('reads the balance, not the movement', () => {
+    expect(wayOf(10, 20)).toBe('grew')
+    expect(wayOf(20, 10)).toBe('freed')
+    // A folder where as much went as came is even on balance, however much
+    // happened in it: its tile is large and neutral, not red or green.
+    expect(wayOf(500, 500)).toBe('even')
+  })
+})
+
+const GB = 1024 ** 3
+const size = (gigabytes: number) => ({ logical: gigabytes * GB, allocated: gigabytes * GB })
+
+const comparison: ComparisonFacts = {
+  then: Date.UTC(2026, 9, 5, 9, 12),
+  now: Date.UTC(2026, 9, 8, 14, 30),
+  toNow: true,
+  totals: { before: size(147), now: size(106), grown: size(1.2), freed: size(42.2), new: 3, gone: 31_376, changed: 1 },
+}
+
+describe('describeComparison', () => {
+  const now = Date.UTC(2026, 9, 8, 15, 0)
+
+  it('says what grew and what was freed before it says the net', () => {
+    const parts = describeComparison(comparison, 'allocated', now)
+    expect(parts[0]).toMatch(/^Since .+: 1\.2 GB grew, 42 GB freed$/)
+    expect(parts[1]).toBe('net −41 GB')
+    expect(parts[2]).toBe(`3 new · ${formatCount(31_376)} gone · 1 file resized`)
+  })
+
+  it('names both ends when the later picture is a snapshot too', () => {
+    const parts = describeComparison({ ...comparison, toNow: false }, 'allocated', now)
+    expect(parts[0]).toContain('→')
+  })
+
+  it('says plainly when nothing changed size', () => {
+    const still = { ...comparison, totals: { ...comparison.totals, grown: size(0), freed: size(0), new: 0, gone: 0, changed: 0 } }
+    expect(describeComparison(still, 'allocated', now)).toEqual([expect.stringMatching(/^Nothing changed size since /)])
+  })
+
+  it('does not tell a folder below the root, whose counts it does not know, that nothing changed', () => {
+    // Found on screen: inside a build folder that went whole, the strip said
+    // "Nothing changed size" above seventy megabytes gone.
+    const inside = { ...comparison, totals: { ...comparison.totals, grown: size(0), freed: size(0.07), new: 0, gone: 0, changed: 0 } }
+    expect(describeComparison(inside, 'allocated', now)[0]).toMatch(/^Since .+: 0 B grew, 72 MB freed$/)
+  })
+})
+
+describe('describeSnapshot', () => {
+  it('names the kind of picture and its moment', () => {
+    const now = Date.UTC(2026, 9, 8, 15, 0)
+    expect(describeSnapshot({ kind: 'last', at: now - 3_600_000 }, now)).toMatch(/^Last time · /)
+    expect(describeSnapshot({ kind: 'taken', at: null }, now)).toBe('Taken · an unknown moment')
+  })
+})
+
+describe('describePlace', () => {
+  it('says whether a place went whole or held loose files', () => {
+    expect(describePlace({ kind: 'gone', isDirectory: true, entries: 31_376 })).toBe(`folder gone · ${formatCount(31_376)} entries`)
+    expect(describePlace({ kind: 'new', isDirectory: true, entries: 1 })).toBe('new folder · 1 entry')
+    expect(describePlace({ kind: 'files', isDirectory: true, entries: 12 })).toBe('files here · 12 changed')
+    expect(describePlace({ kind: 'replaced', isDirectory: false, entries: 1 })).toBe('a file where a folder was')
+  })
+})
+
+describe('reportMarkdown', () => {
+  const report: ReportFacts = {
+    ...comparison,
+    root: 'D:/work',
+    freed: [
+      { path: 'D:/work/app/node_modules', isDirectory: true, kind: 'gone', freed: size(30), grown: size(0), entries: 31_000 },
+      { path: 'D:/work/odd|name', isDirectory: true, kind: 'files', freed: size(2), grown: size(0.5), entries: 4 },
+    ],
+    freedRest: { places: 12, bytes: 10.2 * GB },
+    grown: [{ path: 'D:/work/downloads', isDirectory: true, kind: 'new', freed: size(0), grown: size(0.7), entries: 2 }],
+    grownRest: { places: 0, bytes: 0 },
+  }
+  const now = Date.UTC(2026, 9, 8, 15, 0)
+
+  it('heads the page with what came back, what was written and the net', () => {
+    const text = reportMarkdown(report, 'allocated', now)
+    expect(text.split('\n')[0]).toBe('# What changed in D:/work')
+    expect(text).toContain('| Came back | 42 GB |')
+    expect(text).toContain('| Written meanwhile | 1.2 GB |')
+    expect(text).toContain('| Net | −41 GB (147 GB → 106 GB) |')
+  })
+
+  it('lists each place once, with the rest added up', () => {
+    const text = reportMarkdown(report, 'allocated', now)
+    expect(text).toContain(`| 30 GB | ${'`'}app/node_modules${'`'} | folder gone · ${formatCount(31_000)} entries |`)
+    expect(text).toContain('| 10 GB | 12 more places | |')
+    expect(text).toContain('## What grew meanwhile')
+  })
+
+  it('keeps a pipe in a path from ending the cell', () => {
+    const text = reportMarkdown(report, 'allocated', now)
+    expect(text).toContain(String.raw`${'`'}odd\|name${'`'}`)
+    expect(text).not.toContain('odd|name')
+  })
+})
+
+describe('relativeTo', () => {
+  it('reads a path inside the folder from the folder', () => {
+    expect(relativeTo('C:\\work', 'C:\\work\\app\\target')).toBe('app\\target')
+    expect(relativeTo('C:\\work\\', 'C:\\work\\app')).toBe('app')
+    expect(relativeTo('/home/me', '/home/me/a/b')).toBe('a/b')
+  })
+
+  it('names the folder itself by its name, and leaves a path outside alone', () => {
+    expect(relativeTo('C:\\work', 'C:\\work')).toBe('work')
+    expect(relativeTo('C:\\', 'C:\\')).toBe('C:')
+    expect(relativeTo('C:\\work', 'C:\\workshop\\a')).toBe('C:\\workshop\\a')
   })
 })

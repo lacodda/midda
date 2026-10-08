@@ -16,9 +16,12 @@ import {
   acceleration,
   cancelScan,
   changesSince,
+  compareSnapshots,
   DEFAULT_SORT,
+  GROWTH_SORT,
   isStale,
   launchRequest,
+  listSnapshots,
   listVolumes,
   rescan,
   scanProgress,
@@ -28,6 +31,7 @@ import {
   trailToPath,
   type Acceleration,
   type ChangesSummary,
+  type ComparisonSummary,
   type Row,
   type SessionState,
   type SizeBasis,
@@ -37,7 +41,8 @@ import {
   type Volume,
 } from '@/core'
 import { CHANGE_SPANS, describeFreshness, formatBytes, formatCount } from '@/format'
-import { Rows } from '@/Rows'
+import { Rows, type CompareMode } from '@/Rows'
+import { SnapshotMenu } from '@/SnapshotMenu'
 import { Splash } from '@/Splash'
 import { Volumes } from '@/Volumes'
 
@@ -73,8 +78,12 @@ function Brand() {
 /** Where the user is: choosing, opening a folder, or looking at one. */
 type Stage = { at: 'choosing' } | { at: 'opening'; target: string } | { at: 'open'; target: string } | { at: 'failed'; target: string; message: string }
 
-/** What the span control says: everything, or what was written lately. */
-type Span = 'all' | 'day' | 'week'
+/** What the span control says: everything, what grew since an earlier
+ * picture, or what was written lately. */
+type Span = 'all' | 'grown' | 'day' | 'week'
+
+/** The order each view opens in. A comparison's is its own question. */
+const SORTS: Record<View, Sort> = { index: DEFAULT_SORT, changes: DEFAULT_SORT, compare: GROWTH_SORT }
 
 /** One trail and the ids it is in, per view. */
 interface Place {
@@ -93,7 +102,9 @@ export default function App() {
   /** Why "accelerate" did not happen, when it did not. */
   const [notice, setNotice] = useState<string | null>(null)
   const [basis, setBasis] = useState<SizeBasis>('allocated')
-  const [sort, setSort] = useState<Sort>(DEFAULT_SORT)
+  /** The order of each view, kept apart: a comparison sorted by growth and
+   * the folder sorted by size are two questions, not one order. */
+  const [sorts, setSorts] = useState<Record<View, Sort>>(SORTS)
   /** Which tree is on screen. */
   const [view, setView] = useState<View>('index')
   /** The span the view of what changed covers. */
@@ -101,8 +112,11 @@ export default function App() {
   const [changes, setChanges] = useState<ChangesSummary | null>(null)
   /** The journal is being read for the view of what changed. */
   const [gathering, setGathering] = useState(false)
+  /** Two pictures of the folder compared, once asked. */
+  const [comparison, setComparison] = useState<ComparisonSummary | null>(null)
+  const [compareMode, setCompareMode] = useState<CompareMode>('tree')
   /** Where the reader is in each view. */
-  const [places, setPlaces] = useState<Record<View, Place>>({ index: NOWHERE, changes: NOWHERE })
+  const [places, setPlaces] = useState<Record<View, Place>>({ index: NOWHERE, changes: NOWHERE, compare: NOWHERE })
   /** The version of the folder's tree the screen was last drawn from. */
   const [version, setVersion] = useState(0)
   /** The one entry both the table and the picture are pointing at. */
@@ -176,10 +190,11 @@ export default function App() {
       setStage({ at: 'opening', target })
       setSession(null)
       setNotice(null)
-      setSort(DEFAULT_SORT)
+      setSorts(SORTS)
       setView('index')
       setChanges(null)
-      setPlaces({ index: NOWHERE, changes: NOWHERE })
+      setComparison(null)
+      setPlaces({ index: NOWHERE, changes: NOWHERE, compare: NOWHERE })
       setSelected(null)
 
       try {
@@ -260,9 +275,14 @@ export default function App() {
     [view],
   )
 
-  const changeSort = useCallback((key: SortKey) => {
-    setSort((sort) => toggleSort(sort, key))
-  }, [])
+  const sort = sorts[view]
+
+  const changeSort = useCallback(
+    (key: SortKey) => {
+      setSorts((sorts) => ({ ...sorts, [view]: toggleSort(sorts[view], key) }))
+    },
+    [view],
+  )
 
   /* The switch moves the sort with it when the sort is on the other size.
    * Showing "on disk" while ordering by what files read as is two answers to
@@ -270,8 +290,61 @@ export default function App() {
    * on name, date or item count is left alone: it is not about size at all. */
   const changeBasis = useCallback((next: SizeBasis) => {
     setBasis(next)
-    setSort((sort) => (sort.key === 'allocated' || sort.key === 'logical' ? { key: next, direction: sort.direction } : sort))
+    const moved = (sort: Sort): Sort => (sort.key === 'allocated' || sort.key === 'logical' ? { key: next, direction: sort.direction } : sort)
+    setSorts((sorts) => ({ index: moved(sorts.index), changes: moved(sorts.changes), compare: moved(sorts.compare) }))
   }, [])
+
+  /** Puts a comparison on screen, at its root, as its tree. */
+  const showComparison = useCallback((summary: ComparisonSummary) => {
+    setComparison(summary)
+    setPlaces((places) => ({ ...places, compare: { trail: [summary.root], arena: summary.arena } }))
+    setCompareMode('tree')
+    setSelected(null)
+    setView('compare')
+  }, [])
+
+  /* "Grown": the picture of last time against now, in one press - or, when
+   * there is none, the newest snapshot taken. Asked again on every press, so
+   * the answer is as of the click. */
+  const compareWithEarlier = useCallback(async () => {
+    setSelected(null)
+    setGathering(true)
+    try {
+      const listed = await listSnapshots()
+      const usable = listed.snapshots.filter((snapshot) => snapshot.unusable === null)
+      const earlier = usable.find((snapshot) => snapshot.kind === 'last') ?? usable[0]
+      if (earlier === undefined) {
+        setNotice(
+          'There is no earlier picture of this folder to compare with yet. midda keeps one each time the folder is opened; Snapshots takes one now, to compare with later.',
+        )
+        return
+      }
+      showComparison(await compareSnapshots(earlier.name, null))
+    } catch (cause) {
+      setNotice(`The comparison could not be made: ${String(cause)}`)
+    } finally {
+      setGathering(false)
+    }
+  }, [showComparison])
+
+  /* A place chosen in the report: its folder in the comparison's tree, with
+   * a file selected rather than entered - a file has nothing inside. */
+  const openPlace = useCallback(
+    (id: number) => {
+      void trailTo('compare', places.compare.arena, id)
+        .then((steps) => {
+          const last = steps.at(-1)
+          const folder = last !== undefined && !last.isDirectory ? steps.slice(0, -1) : steps
+          setPlaces((places) => ({ ...places, compare: { ...places.compare, trail: folder } }))
+          setSelected(last !== undefined && !last.isDirectory ? last : null)
+          setCompareMode('tree')
+        })
+        .catch((cause: unknown) => {
+          if (!isStale(cause)) setNotice(String(cause))
+        })
+    },
+    [places.compare.arena],
+  )
 
   /* The span control. "All" is the folder as it is; the others ask the
    * journal what was written lately and show that as a tree of its own, with
@@ -281,6 +354,10 @@ export default function App() {
     setSelected(null)
     if (next === 'all') {
       setView('index')
+      return
+    }
+    if (next === 'grown') {
+      await compareWithEarlier()
       return
     }
     const span = next === 'day' ? CHANGE_SPANS.day : CHANGE_SPANS.week
@@ -297,7 +374,7 @@ export default function App() {
     } finally {
       setGathering(false)
     }
-  }, [])
+  }, [compareWithEarlier])
 
   const descend = useCallback(
     (row: Row) => {
@@ -375,7 +452,10 @@ export default function App() {
       ? null
       : describeFreshness({ ...session.freshness, reading, readAt: result?.readAt ?? null })
   const journalled = session?.freshness.mode === 'journal'
-  const span: Span = view === 'index' ? 'all' : hours === CHANGE_SPANS.day ? 'day' : 'week'
+  // The picture on screen is last time's, not yet brought up to date:
+  // comparing it with last time would find nothing, and say so wrongly.
+  const settling = session !== null && (session.freshness.savedAt !== null || session.freshness.catchingUp)
+  const span: Span = view === 'index' ? 'all' : view === 'compare' ? 'grown' : hours === CHANGE_SPANS.day ? 'day' : 'week'
   const counted = { entries: session?.entries ?? 0, bytes: session?.bytes ?? 0, records: session?.records ?? 0 }
 
   return (
@@ -423,25 +503,47 @@ export default function App() {
                   </Button>
                 )}
 
-                {/* What changed lately is the journal's to say: without it
-                    there is nothing to ask, and the control says why rather
+                {/* What to show: everything; what grew since an earlier
+                    picture, which needs no elevation; or what was written
+                    lately, which is the journal's to say - without it those
+                    two are there and say why they cannot be pressed rather
                     than hiding. */}
                 {stage.at === 'open' && (
-                  <span title={journalled ? 'What was written lately, from the NTFS change journal' : 'What changed lately comes from the NTFS change journal, which midda reads after Accelerate.'}>
-                    <SegmentedControl
-                      aria-label="What to show"
-                      value={span}
-                      disabled={!journalled && view === 'index'}
-                      onValueChange={(next) => {
-                        if (next === 'all' || next === 'day' || next === 'week') void changeSpan(next)
-                      }}
+                  <SegmentedControl
+                    aria-label="What to show"
+                    value={span}
+                    onValueChange={(next) => {
+                      if (next === 'all' || next === 'grown' || next === 'day' || next === 'week') void changeSpan(next)
+                    }}
+                  >
+                    <Segment value="all">All</Segment>
+                    <span
+                      className="inline-flex"
+                      title={
+                        settling
+                          ? 'Once the picture is current: it is the one saved last time, still being brought up to date.'
+                          : 'What grew and what was freed since the last time this folder was open, or since a snapshot.'
+                      }
                     >
-                      <Segment value="all">All</Segment>
-                      <Segment value="day">Last day</Segment>
-                      <Segment value="week">Last week</Segment>
-                    </SegmentedControl>
-                  </span>
+                      <Segment value="grown" disabled={settling}>
+                        Grown
+                      </Segment>
+                    </span>
+                    <span
+                      className="inline-flex gap-0.5"
+                      title={journalled ? 'What was written lately, from the NTFS change journal' : 'What was written lately comes from the NTFS change journal, which midda reads after Accelerate.'}
+                    >
+                      <Segment value="day" disabled={!journalled}>
+                        Last day
+                      </Segment>
+                      <Segment value="week" disabled={!journalled}>
+                        Last week
+                      </Segment>
+                    </span>
+                  </SegmentedControl>
                 )}
+
+                {stage.at === 'open' && <SnapshotMenu onCompared={showComparison} />}
 
                 {stage.at === 'open' && (
                   <SegmentedControl
@@ -538,7 +640,14 @@ export default function App() {
             </div>
           )}
 
-          {stage.at === 'open' && result !== null && showing !== null && !(view === 'changes' && gathering) && (
+          {stage.at === 'open' && view !== 'changes' && gathering && (
+            <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8">
+              <p className="text-sm text-dim">Comparing with an earlier picture</p>
+              <Progress className="max-w-md" label="Comparing with an earlier picture" />
+            </div>
+          )}
+
+          {stage.at === 'open' && result !== null && showing !== null && !gathering && (
             <Rows
               view={view}
               arena={place.arena}
@@ -546,6 +655,10 @@ export default function App() {
               result={result}
               changes={changes}
               hours={hours}
+              comparison={comparison}
+              compareMode={compareMode}
+              onCompareMode={setCompareMode}
+              onOpenPlace={openPlace}
               trail={place.trail}
               showing={showing}
               sort={sort}

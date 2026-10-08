@@ -325,3 +325,179 @@ export function describeChanges(
   }
   return parts
 }
+
+/**
+ * A change in bytes, with its sign: `+1.2 GB`, `−300 MB`.
+ *
+ * The minus is the minus sign rather than a hyphen: it lines up with the plus
+ * in a column of figures, and a hyphen before a number reads as a dash.
+ */
+export function formatSigned(bytes: number): string {
+  if (!Number.isFinite(bytes)) return '—'
+  if (bytes === 0) return '0 B'
+  return `${bytes > 0 ? '+' : '−'}${formatBytes(Math.abs(bytes))}`
+}
+
+/** Which way an entry went between two moments, on balance. */
+export type Way = 'grew' | 'freed' | 'even'
+
+/** Which way something holding `before` then and `now` now went. */
+export function wayOf(before: number, now: number): Way {
+  return now > before ? 'grew' : now < before ? 'freed' : 'even'
+}
+
+/** The marks a row of a comparison carries, as the words on it. `changed`
+ * has none: the change column says it, and a badge on half the rows would
+ * say nothing. */
+export const MARK_WORDS = { new: 'new', gone: 'gone', replaced: 'replaced', changed: null } as const
+
+/** The totals of a comparison, as `describeComparison` reads them. Mirrors
+ * `Totals` without importing the bridge. */
+export interface ComparisonFacts {
+  then: number | null
+  now: number | null
+  toNow: boolean
+  totals: {
+    before: { logical: number; allocated: number }
+    now: { logical: number; allocated: number }
+    grown: { logical: number; allocated: number }
+    freed: { logical: number; allocated: number }
+    new: number
+    gone: number
+    changed: number
+  }
+}
+
+/** The span of a comparison in words: `since Oct 5 09:12`, or both ends
+ * when the later one is a snapshot too. */
+export function describeSpan(facts: Pick<ComparisonFacts, 'then' | 'now' | 'toNow'>, now: number = Date.now()): string {
+  const then = facts.then === null ? 'an earlier picture' : formatMoment(facts.then, now)
+  if (facts.toNow || facts.now === null) return `since ${then}`
+  return `${then} → ${formatMoment(facts.now, now)}`
+}
+
+/**
+ * What the strip above a comparison says: over what span, what grew, what
+ * went, and the two together.
+ *
+ * Grown and freed are said apart before the net is: a folder that netted
+ * zero may be where everything happened, and a net alone hides it.
+ */
+export function describeComparison(facts: ComparisonFacts, basis: 'allocated' | 'logical', now: number = Date.now()): string[] {
+  const of = (size: { logical: number; allocated: number }) => (basis === 'allocated' ? size.allocated : size.logical)
+  const { totals } = facts
+  const span = describeSpan(facts, now)
+  // Below the root a folder's own counts are not known, only its bytes: what
+  // decides "nothing" is both, so a folder that lost seventy megabytes is
+  // never told it did not change.
+  if (of(totals.grown) === 0 && of(totals.freed) === 0 && totals.new + totals.gone + totals.changed === 0) return [`Nothing changed size ${span}`]
+  const parts = [
+    `${capitalise(span)}: ${formatBytes(of(totals.grown))} grew, ${formatBytes(of(totals.freed))} freed`,
+    `net ${formatSigned(of(totals.now) - of(totals.before))}`,
+  ]
+  const counted = [
+    totals.new > 0 ? `${formatCount(totals.new)} new` : null,
+    totals.gone > 0 ? `${formatCount(totals.gone)} gone` : null,
+    totals.changed > 0 ? `${formatCount(totals.changed)} ${totals.changed === 1 ? 'file' : 'files'} resized` : null,
+  ].filter((part) => part !== null)
+  if (counted.length > 0) parts.push(counted.join(' · '))
+  return parts
+}
+
+/** How a snapshot is named in a list: what kind of picture, of when. */
+export function describeSnapshot(snapshot: { kind: 'last' | 'taken'; at: number | null }, now: number = Date.now()): string {
+  const when = snapshot.at === null ? 'an unknown moment' : formatMoment(snapshot.at, now)
+  return snapshot.kind === 'last' ? `Last time · ${when}` : `Taken · ${when}`
+}
+
+/** What a place in a report is, in words. */
+export function describePlace(place: { kind: 'gone' | 'new' | 'replaced' | 'files'; isDirectory: boolean; entries: number }): string {
+  const entries = `${formatCount(place.entries)} ${place.entries === 1 ? 'entry' : 'entries'}`
+  switch (place.kind) {
+    case 'gone':
+      return place.isDirectory ? `folder gone · ${entries}` : 'gone'
+    case 'new':
+      return place.isDirectory ? `new folder · ${entries}` : 'new'
+    case 'replaced':
+      return place.isDirectory ? 'a folder where a file was' : 'a file where a folder was'
+    case 'files':
+      return `files here · ${formatCount(place.entries)} changed`
+  }
+}
+
+/** What the size a report is in is called. */
+function basisWords(basis: 'allocated' | 'logical'): string {
+  return basis === 'allocated' ? 'on disk' : 'by size'
+}
+
+/** A report's inputs, without importing the bridge. */
+export interface ReportFacts extends ComparisonFacts {
+  root: string
+  freed: ReportPlace[]
+  freedRest: { places: number; bytes: number }
+  grown: ReportPlace[]
+  grownRest: { places: number; bytes: number }
+}
+
+export interface ReportPlace {
+  path: string
+  isDirectory: boolean
+  kind: 'gone' | 'new' | 'replaced' | 'files'
+  freed: { logical: number; allocated: number }
+  grown: { logical: number; allocated: number }
+  entries: number
+}
+
+/**
+ * The report of a comparison as Markdown, for a note or an issue: what came
+ * back, what was written meanwhile, and the places each came from.
+ *
+ * Paths go in code spans, so a folder called `*` or `_build_` stays a name;
+ * a pipe would end a table cell, and is escaped.
+ */
+export function reportMarkdown(facts: ReportFacts, basis: 'allocated' | 'logical', now: number = Date.now()): string {
+  const of = (size: { logical: number; allocated: number }) => (basis === 'allocated' ? size.allocated : size.logical)
+  const { totals } = facts
+  const cell = (text: string) => text.replaceAll('|', String.raw`\|`)
+  const code = (path: string) => (path.includes('`') ? `\`\` ${cell(path)} \`\`` : `\`${cell(path)}\``)
+  const lines = [
+    `# What changed in ${facts.root}`,
+    '',
+    `${capitalise(describeSpan(facts, now))} · ${basisWords(basis)}`,
+    '',
+    '| | |',
+    '| --- | ---: |',
+    `| Came back | ${formatBytes(of(totals.freed))} |`,
+    `| Written meanwhile | ${formatBytes(of(totals.grown))} |`,
+    `| Net | ${formatSigned(of(totals.now) - of(totals.before))} (${formatBytes(of(totals.before))} → ${formatBytes(of(totals.now))}) |`,
+  ]
+  const section = (title: string, places: ReportPlace[], rest: { places: number; bytes: number }, side: 'freed' | 'grown') => {
+    if (places.length === 0) return
+    lines.push('', `## ${title}`, '', `| ${side === 'freed' ? 'Freed' : 'Grew'} | Where | What |`, '| ---: | --- | --- |')
+    for (const place of places) {
+      lines.push(`| ${formatBytes(of(place[side]))} | ${code(relativeTo(facts.root, place.path))} | ${describePlace(place)} |`)
+    }
+    if (rest.places > 0) {
+      lines.push(`| ${formatBytes(rest.bytes)} | ${formatCount(rest.places)} more ${rest.places === 1 ? 'place' : 'places'} | |`)
+    }
+  }
+  section('Where it came back from', facts.freed, facts.freedRest, 'freed')
+  section('What grew meanwhile', facts.grown, facts.grownRest, 'grown')
+  return `${lines.join('\n')}\n`
+}
+
+/**
+ * `path` as it reads inside `root`: `app\target` for `C:\work\app\target`
+ * inside `C:\work`. The root itself reads as its own name, and a path
+ * outside it as itself.
+ *
+ * A report is about one folder, named in its title; repeating that prefix on
+ * every line pushed what each line is about past the edge of the page, where
+ * it was cut off - the part a reader needed.
+ */
+export function relativeTo(root: string, path: string): string {
+  const trimmed = root.replace(/[\\/]+$/, '')
+  if (path === root || path === trimmed) return trimmed.split(/[\\/]/).at(-1) || trimmed
+  if (path.startsWith(trimmed) && /^[\\/]/.test(path.slice(trimmed.length))) return path.slice(trimmed.length + 1)
+  return path
+}

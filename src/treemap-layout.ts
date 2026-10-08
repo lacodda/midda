@@ -14,6 +14,7 @@
  */
 
 import type { Category, Rect } from '@/core'
+import type { Way } from '@/format'
 
 /** A rectangle in pixels, as the canvas wants it. */
 export interface Box {
@@ -223,4 +224,31 @@ export function neighbourOf(boxes: readonly Box[], from: number, direction: 'up'
   })
 
   return best
+}
+
+/**
+ * The fills of a comparison's picture, by which way a tile went on balance.
+ *
+ * Growth takes `--bad` and what was freed `--good`: the mockup's "grows red,
+ * cleaned goes green", in the design system's own pairs, so a label on
+ * either reads in both themes. A tile that went neither way — as much came as
+ * went, or the gathered remainder — is the neutral panel, like `other` in a
+ * picture of one moment: no hue, because it claims no direction.
+ */
+export function wayPaletteOf(read: TokenReader, way: Way): Palette {
+  switch (way) {
+    case 'grew':
+      return { fill: read('--bad'), label: read('--on-bad') }
+    case 'freed':
+      return { fill: read('--good'), label: read('--on-good') }
+    default:
+      return { fill: read('--raise'), label: read('--text') }
+  }
+}
+
+/** What each way is called in the legend of a comparison. */
+export const WAY_LABELS: Record<Way, string> = {
+  grew: 'grew',
+  freed: 'freed',
+  even: 'as much came as went',
 }

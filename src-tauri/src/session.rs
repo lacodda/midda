@@ -14,6 +14,13 @@
 //! Polling rather than events, deliberately: the window repaints a counter a
 //! few times a second, and an event per directory read would push hundreds of
 //! thousands of messages through the bridge to draw the same digit.
+//!
+//! Beside the folder the window can hold two other trees, each asked for and
+//! then kept as of the asking: what the change journal says was written
+//! lately, and a comparison of two pictures of the folder — a snapshot and
+//! now, or two snapshots (ADR 0010). Opening a folder keeps the index saved
+//! last time as the picture of last time before anything brings it up to
+//! date.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,11 +28,13 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
+use midda_core::compare::{Comparison, Mark, PlaceKind};
 use midda_core::fresh::since::{Change, Changes};
 use midda_core::fresh::store::{self, Unusable};
 use midda_core::order::{self, Sort, Span};
+use midda_core::snapshot::{self, Kind, Snapshot};
 use midda_core::treemap::{self, Layout, Tile};
-use midda_core::{Index, JournalPosition, NodeId, Progress, ROOT, Tree};
+use midda_core::{Index, JournalPosition, NodeId, Progress, ROOT, Size, SizeBasis, Tree, compare};
 use serde::{Deserialize, Serialize};
 
 /// How often the keeper asks the watcher or the journal what changed.
@@ -41,17 +50,27 @@ pub struct Session {
     keeper: Mutex<Option<Keeper>>,
     /// Where indexes are saved between runs.
     store: PathBuf,
+    /// Where snapshots are kept, a folder per scanned folder.
+    snapshots: PathBuf,
 }
 
 impl Session {
-    /// A session saving its indexes under `store`.
+    /// A session keeping what it saves under `data`: indexes in `index`,
+    /// snapshots in `snapshots`.
     #[must_use]
-    pub fn new(store: PathBuf) -> Self {
+    pub fn new(data: &Path) -> Self {
         Self {
             shared: Arc::new(RwLock::new(State::default())),
             keeper: Mutex::new(None),
-            store,
+            store: data.join("index"),
+            snapshots: data.join("snapshots"),
         }
+    }
+
+    /// Where the snapshots of the open folder are kept.
+    fn snapshot_folder(&self) -> Result<(PathBuf, PathBuf), String> {
+        let root = self.shared.read().map_err(poisoned)?.root.clone().ok_or_else(|| "nothing is open".to_owned())?;
+        Ok((snapshot::folder_for(&self.snapshots, &root), root))
     }
 
     /// Stops keeping the open folder, saving its index first. Called when
@@ -79,8 +98,7 @@ struct Keeper {
 
 #[derive(Default)]
 struct State {
-    /// The folder open, for the change journal to be asked about.
-    #[cfg_attr(not(windows), allow(dead_code, reason = "only the change journal, which is Windows-only, asks"))]
+    /// The folder open.
     root: Option<PathBuf>,
     /// The index on screen, when there is one.
     index: Option<Index>,
@@ -101,6 +119,20 @@ struct State {
     changes: Option<Changes>,
     /// Moves when the answer above is replaced.
     changes_arena: u64,
+    /// Two pictures of the folder compared, once asked.
+    comparison: Option<Compared>,
+    /// Moves when the comparison above is replaced.
+    comparison_arena: u64,
+    /// Why the picture of last time was not kept when the folder was opened,
+    /// when it was not.
+    last_note: Option<String>,
+}
+
+/// A comparison, and the two moments it is between.
+struct Compared {
+    comparison: Comparison,
+    then: SystemTime,
+    now: SystemTime,
 }
 
 struct Reading {
@@ -175,6 +207,23 @@ pub struct Row {
     /// In the view of what changed: whether this file is new or was written
     /// to. `null` everywhere else.
     pub change: Option<Change>,
+    /// In a comparison: what this held then and how much moved under it.
+    /// `null` everywhere else.
+    pub compared: Option<ComparedRow>,
+}
+
+/// What a row of a comparison carries beyond a row: the other moment.
+///
+/// Both sizes, as a row carries both: the switch between them is a click and
+/// should not be a round trip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComparedRow {
+    /// What it held then. What it holds now is the row's own size.
+    pub before: Size,
+    /// How many bytes moved under it: grown and freed, added.
+    pub moved: Size,
+    pub mark: Mark,
 }
 
 /// One page of an ordered list of rows.
@@ -206,6 +255,8 @@ pub enum View {
     Index,
     /// What was written since a moment.
     Changes,
+    /// Two pictures of the folder compared.
+    Compare,
 }
 
 /// What the window draws: how the read is going, the result, and how
@@ -279,6 +330,98 @@ pub struct ChangesSummary {
     pub covers: bool,
 }
 
+/// One snapshot of the open folder, as the window lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotRow {
+    /// Its file name: what the window asks for it by.
+    pub name: String,
+    pub kind: Kind,
+    /// The moment it is a picture of, as milliseconds since the epoch.
+    pub at: Option<i64>,
+    /// What it takes on disk.
+    pub bytes: u64,
+    /// Why it cannot be compared, when it cannot.
+    pub unusable: Option<String>,
+}
+
+impl From<Snapshot> for SnapshotRow {
+    fn from(snapshot: Snapshot) -> Self {
+        Self {
+            name: snapshot.name,
+            kind: snapshot.kind,
+            at: millis(snapshot.at),
+            bytes: snapshot.bytes,
+            unusable: snapshot.unusable,
+        }
+    }
+}
+
+/// The snapshots of the open folder, and what they take together.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snapshots {
+    pub snapshots: Vec<SnapshotRow>,
+    pub bytes: u64,
+    /// Why there is no picture of last time from this opening, when there is
+    /// not one for a reason worth saying.
+    pub last_note: Option<String>,
+    /// Why a snapshot cannot be taken or compared with now, when it cannot:
+    /// the picture on screen is not current yet.
+    pub not_now: Option<String>,
+}
+
+/// A comparison, as the window shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComparisonSummary {
+    pub root: Row,
+    pub arena: u64,
+    /// The earlier moment, as milliseconds since the epoch.
+    pub then: Option<i64>,
+    /// The later one.
+    pub now: Option<i64>,
+    /// Whether the later picture is the folder as it is, rather than a
+    /// snapshot.
+    pub to_now: bool,
+    pub totals: midda_core::Totals,
+}
+
+/// One place in the report of a comparison.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaceRow {
+    /// The entry in the comparison's tree, for the window to go to.
+    pub id: u32,
+    pub path: String,
+    pub is_directory: bool,
+    pub kind: PlaceKind,
+    pub freed: Size,
+    pub grown: Size,
+    pub entries: u64,
+}
+
+/// The places past the ones listed, added up.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rest {
+    pub places: u64,
+    pub bytes: u64,
+}
+
+/// The report of a comparison: where it came back from, and where it went.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Report {
+    pub arena: u64,
+    /// The places bytes went from, the most first.
+    pub freed: Vec<PlaceRow>,
+    pub freed_rest: Rest,
+    /// The places bytes came to, the most first.
+    pub grown: Vec<PlaceRow>,
+    pub grown_rest: Rest,
+}
+
 fn poisoned<T>(_: T) -> String {
     "the session is poisoned".to_owned()
 }
@@ -297,10 +440,12 @@ pub fn start_scan(path: String, session: tauri::State<'_, Session>) -> Result<()
         let mut state = session.shared.write().map_err(poisoned)?;
         let arena = state.arena + 1;
         let changes_arena = state.changes_arena + 1;
+        let comparison_arena = state.comparison_arena + 1;
         *state = State {
             root: Some(root.clone()),
             arena,
             changes_arena,
+            comparison_arena,
             ..State::default()
         };
     }
@@ -309,12 +454,15 @@ pub fn start_scan(path: String, session: tauri::State<'_, Session>) -> Result<()
     let reread = Arc::new(AtomicBool::new(false));
     let thread = {
         let shared = Arc::clone(&session.shared);
-        let store = session.store.clone();
+        let places = Places {
+            store: session.store.clone(),
+            snapshots: snapshot::folder_for(&session.snapshots, &root),
+        };
         let stop = Arc::clone(&stop);
         let reread = Arc::clone(&reread);
         std::thread::Builder::new()
             .name("midda-keeper".into())
-            .spawn(move || keep(&shared, &root, &store, &stop, &reread))
+            .spawn(move || keep(&shared, &root, &places, &stop, &reread))
             .map_err(|error| format!("could not start reading: {error}"))?
     };
     *session.keeper.lock().map_err(poisoned)? = Some(Keeper { stop, reread, thread });
@@ -376,7 +524,7 @@ pub fn scan_progress(session: tauri::State<'_, Session>) -> Result<SessionState,
         result: state.index.as_ref().map(|index| {
             let tree = index.tree();
             ScanResult {
-                root: row(tree, ROOT, None),
+                root: row(Shown::Index(tree), ROOT),
                 cluster_bytes: tree.cluster_bytes(),
                 skipped: tree.skipped().len() as u64,
                 shared_names: tree.shared().shared_names,
@@ -395,19 +543,47 @@ pub fn scan_progress(session: tauri::State<'_, Session>) -> Result<SessionState,
     })
 }
 
+/// The tree a view is about, with whatever its rows carry beyond the tree.
+#[derive(Clone, Copy)]
+enum Shown<'a> {
+    Index(&'a Tree),
+    Changes(&'a Changes),
+    Compare(&'a Comparison),
+}
+
+impl<'a> Shown<'a> {
+    const fn tree(self) -> &'a Tree {
+        match self {
+            Self::Index(tree) => tree,
+            Self::Changes(changes) => &changes.tree,
+            Self::Compare(comparison) => comparison.tree(),
+        }
+    }
+}
+
+/// The arena the ids of a view are in now.
+const fn arena_of(state: &State, view: View) -> u64 {
+    match view {
+        View::Index => state.arena,
+        View::Changes => state.changes_arena,
+        View::Compare => state.comparison_arena,
+    }
+}
+
 /// The tree a view is about, checked against the arena the window's ids are
 /// from.
-fn tree_of(state: &State, view: View, arena: Option<u64>) -> Result<(&Tree, Option<&Changes>), String> {
-    let (tree, changes, current) = match view {
-        View::Index => (state.index.as_ref().map(Index::tree), None, state.arena),
-        View::Changes => (state.changes.as_ref().map(|changes| &changes.tree), state.changes.as_ref(), state.changes_arena),
+fn tree_of(state: &State, view: View, arena: Option<u64>) -> Result<Shown<'_>, String> {
+    let shown = match view {
+        View::Index => state.index.as_ref().map(|index| Shown::Index(index.tree())),
+        View::Changes => state.changes.as_ref().map(Shown::Changes),
+        View::Compare => state.comparison.as_ref().map(|compared| Shown::Compare(&compared.comparison)),
     };
     // The window's ids are from a tree read before this one: they name other
     // entries now. It finds its place again by path.
-    if arena.is_some_and(|arena| arena != current) {
+    if arena.is_some_and(|arena| arena != arena_of(state, view)) {
         return Err("stale".to_owned());
     }
-    tree.map(|tree| (tree, changes)).ok_or_else(|| "nothing has been read yet".to_owned())
+    shown.ok_or_else(|| "nothing has been read yet".to_owned())
 }
 
 fn checked(tree: &Tree, id: u32) -> Result<NodeId, String> {
@@ -419,7 +595,8 @@ fn checked(tree: &Tree, id: u32) -> Result<NodeId, String> {
     }
 }
 
-/// One page of the children of `id`, ordered by `sort`.
+/// One page of the children of `id`, ordered by `sort`. Growth, in a
+/// comparison, is read on `basis`.
 ///
 /// Paged rather than whole: a folder on a system volume can hold hundreds of
 /// thousands of children, and a table that received all of them on every click
@@ -431,13 +608,17 @@ fn checked(tree: &Tree, id: u32) -> Result<NodeId, String> {
 /// `stale` when the ids are from a tree read before this one or `id` is gone;
 /// otherwise when nothing has been read.
 #[tauri::command]
-pub fn list_children(view: View, arena: u64, id: u32, sort: Sort, span: Span, session: tauri::State<'_, Session>) -> Result<Page, String> {
+pub fn list_children(view: View, arena: u64, id: u32, sort: Sort, basis: SizeBasis, span: Span, session: tauri::State<'_, Session>) -> Result<Page, String> {
     let state = session.shared.read().map_err(poisoned)?;
-    let (tree, changes) = tree_of(&state, view, Some(arena))?;
+    let shown = tree_of(&state, view, Some(arena))?;
+    let tree = shown.tree();
     let id = checked(tree, id)?;
-    let (ids, total) = order::children_page(tree, id, sort, span);
+    let (ids, total) = match shown {
+        Shown::Compare(comparison) => comparison.children_page(id, sort, basis, span),
+        Shown::Index(_) | Shown::Changes(_) => order::children_page(tree, id, sort, span),
+    };
     Ok(Page {
-        rows: ids.into_iter().map(|child| row(tree, child, changes)).collect(),
+        rows: ids.into_iter().map(|child| row(shown, child)).collect(),
         offset: span.offset,
         total: u32::try_from(total).unwrap_or(u32::MAX),
     })
@@ -451,9 +632,9 @@ pub fn list_children(view: View, arena: u64, id: u32, sort: Sort, span: Span, se
 #[tauri::command]
 pub fn trail_to(view: View, arena: u64, id: u32, session: tauri::State<'_, Session>) -> Result<Vec<Row>, String> {
     let state = session.shared.read().map_err(poisoned)?;
-    let (tree, changes) = tree_of(&state, view, Some(arena))?;
-    let id = checked(tree, id)?;
-    Ok(trail(tree, id, changes))
+    let shown = tree_of(&state, view, Some(arena))?;
+    let id = checked(shown.tree(), id)?;
+    Ok(trail(shown, id))
 }
 
 /// The trail down to the entry at `path`, or to the deepest folder above it
@@ -469,11 +650,9 @@ pub fn trail_to(view: View, arena: u64, id: u32, session: tauri::State<'_, Sessi
 #[tauri::command]
 pub fn trail_to_path(view: View, path: String, session: tauri::State<'_, Session>) -> Result<Trail, String> {
     let state = session.shared.read().map_err(poisoned)?;
-    let (tree, changes) = tree_of(&state, view, None)?;
-    let arena = match view {
-        View::Index => state.arena,
-        View::Changes => state.changes_arena,
-    };
+    let shown = tree_of(&state, view, None)?;
+    let tree = shown.tree();
+    let arena = arena_of(&state, view);
     let mut at = ROOT;
     if let Ok(rest) = Path::new(&path).strip_prefix(tree.root_path()) {
         for part in rest.components() {
@@ -483,10 +662,7 @@ pub fn trail_to_path(view: View, path: String, session: tauri::State<'_, Session
             }
         }
     }
-    Ok(Trail {
-        arena,
-        rows: trail(tree, at, changes),
-    })
+    Ok(Trail { arena, rows: trail(shown, at) })
 }
 
 /// The rectangles that draw the children of `id`.
@@ -497,9 +673,14 @@ pub fn trail_to_path(view: View, path: String, session: tauri::State<'_, Session
 #[tauri::command]
 pub fn treemap(view: View, arena: u64, id: u32, layout: Layout, session: tauri::State<'_, Session>) -> Result<Vec<Tile>, String> {
     let state = session.shared.read().map_err(poisoned)?;
-    let (tree, _) = tree_of(&state, view, Some(arena))?;
-    let id = checked(tree, id)?;
-    Ok(treemap::tiles(tree, id, layout))
+    let shown = tree_of(&state, view, Some(arena))?;
+    let id = checked(shown.tree(), id)?;
+    Ok(match shown {
+        // Drawn by what moved, not by what is there.
+        Shown::Compare(comparison) => comparison.tiles(id, layout),
+        Shown::Index(tree) => treemap::tiles(tree, id, layout),
+        Shown::Changes(changes) => treemap::tiles(&changes.tree, id, layout),
+    })
 }
 
 /// Works out what was written in the last `hours`, from the change journal.
@@ -530,7 +711,7 @@ fn written_since(shared: &RwLock<State>, hours: u32) -> Result<ChangesSummary, S
     let changes = midda_core::fresh::since::written_since(index, &records, moment, journal.place());
     state.changes_arena += 1;
     let summary = ChangesSummary {
-        root: row(&changes.tree, ROOT, Some(&changes)),
+        root: row(Shown::Changes(&changes), ROOT),
         arena: state.changes_arena,
         created: changes.created,
         written: changes.written,
@@ -548,12 +729,198 @@ fn written_since(_shared: &RwLock<State>, _hours: u32) -> Result<ChangesSummary,
     Err("the change journal is an NTFS feature".to_owned())
 }
 
+/// The snapshots of the open folder.
+///
+/// # Errors
+///
+/// When nothing is open.
+#[tauri::command]
+pub fn snapshots(session: tauri::State<'_, Session>) -> Result<Snapshots, String> {
+    let (folder, root) = session.snapshot_folder()?;
+    let listed = snapshot::list(&folder, &root);
+    let state = session.shared.read().map_err(poisoned)?;
+    Ok(Snapshots {
+        bytes: listed.iter().map(|snapshot| snapshot.bytes).sum(),
+        snapshots: listed.into_iter().map(SnapshotRow::from).collect(),
+        last_note: state.last_note.clone(),
+        not_now: not_current(&state).err(),
+    })
+}
+
+/// Whether the picture on screen is the folder as it is now — as far as
+/// anything is keeping it so — rather than the one saved last time and not
+/// yet brought up to date. A snapshot of the second, dated now, would be a
+/// picture of last time under today's date.
+fn not_current(state: &State) -> Result<(), String> {
+    if state.index.is_none() {
+        return Err("nothing has been read yet".to_owned());
+    }
+    if state.freshness.saved_at.is_some() || state.freshness.catching_up {
+        return Err("the picture on screen is the one saved last time, and is still being brought up to date".to_owned());
+    }
+    Ok(())
+}
+
+/// Takes a snapshot of the folder as it is now.
+///
+/// # Errors
+///
+/// When nothing is open, the picture is not current yet, or the snapshot
+/// cannot be written.
+#[tauri::command]
+pub async fn take_snapshot(session: tauri::State<'_, Session>) -> Result<SnapshotRow, String> {
+    let (folder, _) = session.snapshot_folder()?;
+    let at = SystemTime::now();
+    // Written into memory under the lock, put on disk without it: the same
+    // split as the index's own save.
+    let encoded = {
+        let state = session.shared.read().map_err(poisoned)?;
+        not_current(&state)?;
+        let index = state.index.as_ref().ok_or_else(|| "nothing has been read yet".to_owned())?;
+        store::encode(index, at)
+    };
+    tauri::async_runtime::spawn_blocking(move || snapshot::keep(&encoded, &folder, at))
+        .await
+        .map_err(|error| error.to_string())?
+        .map(SnapshotRow::from)
+        .map_err(|error| format!("the snapshot could not be written: {error}"))
+}
+
+/// Deletes the snapshot called `name`.
+///
+/// # Errors
+///
+/// When nothing is open, or the snapshot cannot be deleted.
+#[tauri::command]
+pub fn delete_snapshot(name: String, session: tauri::State<'_, Session>) -> Result<(), String> {
+    let (folder, _) = session.snapshot_folder()?;
+    snapshot::remove(&folder, &name).map_err(|error| format!("the snapshot could not be deleted: {error}"))
+}
+
+/// Compares the snapshot called `from` with the snapshot called `to`, or
+/// with the folder as it is now when `to` is `None` — whichever of the two
+/// is older is "then".
+///
+/// # Errors
+///
+/// When nothing is open, a snapshot cannot be read or is of another folder,
+/// or the picture is not current yet and `to` is now.
+#[tauri::command]
+pub async fn compare_snapshots(from: String, to: Option<String>, session: tauri::State<'_, Session>) -> Result<ComparisonSummary, String> {
+    let (folder, root) = session.snapshot_folder()?;
+    let shared = Arc::clone(&session.shared);
+    tauri::async_runtime::spawn_blocking(move || compare_in(&shared, &folder, &root, &from, to.as_deref()))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn compare_in(shared: &RwLock<State>, folder: &Path, root: &Path, from: &str, to: Option<&str>) -> Result<ComparisonSummary, String> {
+    let read = |name: &str| -> Result<(Index, SystemTime), String> {
+        let saved = snapshot::load(folder, name).map_err(|why| format!("the snapshot could not be read: {why}"))?;
+        if !store::same_folder(saved.index.tree().root_path(), root) {
+            return Err("the snapshot is a picture of another folder".to_owned());
+        }
+        Ok((saved.index, saved.saved_at))
+    };
+    // Read off the disk before any lock is taken: the older picture of a
+    // large folder takes a second or two.
+    let (first, first_at) = read(from)?;
+    let compared = match to {
+        Some(name) => {
+            let (second, second_at) = read(name)?;
+            let (then, now) = if first_at <= second_at {
+                ((&first, first_at), (&second, second_at))
+            } else {
+                ((&second, second_at), (&first, first_at))
+            };
+            Compared {
+                comparison: compare(then.0.tree(), now.0.tree()),
+                then: then.1,
+                now: now.1,
+            }
+        }
+        None => {
+            let state = shared.read().map_err(poisoned)?;
+            not_current(&state)?;
+            let index = state.index.as_ref().ok_or_else(|| "nothing has been read yet".to_owned())?;
+            Compared {
+                comparison: compare(first.tree(), index.tree()),
+                then: first_at,
+                now: SystemTime::now(),
+            }
+        }
+    };
+    drop(first);
+
+    let mut state = shared.write().map_err(poisoned)?;
+    state.comparison_arena += 1;
+    let summary = ComparisonSummary {
+        root: row(Shown::Compare(&compared.comparison), ROOT),
+        arena: state.comparison_arena,
+        then: millis(compared.then),
+        now: millis(compared.now),
+        to_now: to.is_none(),
+        totals: compared.comparison.totals(),
+    };
+    state.comparison = Some(compared);
+    Ok(summary)
+}
+
+/// The report of the comparison on screen: the places bytes went from and
+/// came to, the most first on `basis`, `limit` of each and the rest added up.
+///
+/// # Errors
+///
+/// When no comparison has been made, or `arena` is not the one on screen.
+#[tauri::command]
+pub fn comparison_report(arena: u64, basis: SizeBasis, limit: u32, session: tauri::State<'_, Session>) -> Result<Report, String> {
+    let state = session.shared.read().map_err(poisoned)?;
+    let Shown::Compare(comparison) = tree_of(&state, View::Compare, Some(arena))? else {
+        return Err("no comparison has been made".to_owned());
+    };
+    let places = comparison.places();
+    let tree = comparison.tree();
+    let side = |pick: fn(&midda_core::Place) -> Size| {
+        let mut listed: Vec<_> = places.iter().filter(|place| basis.of(pick(place)) > 0).collect();
+        listed.sort_by(|a, b| basis.of(pick(b)).cmp(&basis.of(pick(a))).then_with(|| a.id.cmp(&b.id)));
+        let limit = limit as usize;
+        let rest = Rest {
+            places: listed.len().saturating_sub(limit) as u64,
+            bytes: listed.iter().skip(limit).map(|place| basis.of(pick(place))).sum(),
+        };
+        let rows = listed
+            .into_iter()
+            .take(limit)
+            .map(|place| PlaceRow {
+                id: place.id,
+                path: tree.path_of(place.id).to_string_lossy().into_owned(),
+                is_directory: tree.node(place.id).is_directory(),
+                kind: place.kind,
+                freed: place.freed,
+                grown: place.grown,
+                entries: place.entries,
+            })
+            .collect();
+        (rows, rest)
+    };
+    let (freed, freed_rest) = side(|place| place.freed);
+    let (grown, grown_rest) = side(|place| place.grown);
+    Ok(Report {
+        arena,
+        freed,
+        freed_rest,
+        grown,
+        grown_rest,
+    })
+}
+
 /// The trail from the root down to `id`, root first.
-fn trail(tree: &Tree, id: NodeId, changes: Option<&Changes>) -> Vec<Row> {
+fn trail(shown: Shown<'_>, id: NodeId) -> Vec<Row> {
+    let tree = shown.tree();
     let mut trail = Vec::new();
     let mut at = id;
     loop {
-        trail.push(row(tree, at, changes));
+        trail.push(row(shown, at));
         if at == ROOT {
             break;
         }
@@ -564,7 +931,8 @@ fn trail(tree: &Tree, id: NodeId, changes: Option<&Changes>) -> Vec<Row> {
 }
 
 /// Turns a node into a row.
-fn row(tree: &Tree, id: NodeId, changes: Option<&Changes>) -> Row {
+fn row(shown: Shown<'_>, id: NodeId) -> Row {
+    let tree = shown.tree();
     let node = tree.node(id);
     Row {
         id,
@@ -577,7 +945,18 @@ fn row(tree: &Tree, id: NodeId, changes: Option<&Changes>) -> Row {
         path: tree.path_of(id).to_string_lossy().into_owned(),
         traits: node.traits.bits(),
         links: node.links,
-        change: changes.and_then(|changes| changes.mark(id)),
+        change: match shown {
+            Shown::Changes(changes) => changes.mark(id),
+            Shown::Index(_) | Shown::Compare(_) => None,
+        },
+        compared: match shown {
+            Shown::Compare(comparison) => Some(ComparedRow {
+                before: comparison.before(id),
+                moved: comparison.moved(id),
+                mark: comparison.mark(id),
+            }),
+            Shown::Index(_) | Shown::Changes(_) => None,
+        },
     }
 }
 
@@ -731,9 +1110,17 @@ enum Due {
     Read(Option<String>),
 }
 
+/// Where the keeper keeps what it saves: the index of the open folder, and
+/// the folder's snapshots.
+struct Places {
+    store: PathBuf,
+    snapshots: PathBuf,
+}
+
 /// The keeper: opens `root`, and keeps what is on screen current until told
 /// to stop.
-fn keep(shared: &RwLock<State>, root: &Path, store: &Path, stop: &AtomicBool, reread: &AtomicBool) {
+fn keep(shared: &RwLock<State>, root: &Path, places: &Places, stop: &AtomicBool, reread: &AtomicBool) {
+    let store = places.store.as_path();
     let mut source = Source::open(root);
     let mut saved_at = Instant::now();
     let mut dirty = false;
@@ -744,7 +1131,13 @@ fn keep(shared: &RwLock<State>, root: &Path, store: &Path, stop: &AtomicBool, re
         Ok(saved) => {
             let journal = saved.index.journal();
             let saved_millis = millis(saved.saved_at);
+            // Kept as the picture of last time before anything brings it up
+            // to date: what "what grew since last time" is measured from.
+            let last_note = snapshot::keep_last(&places.snapshots, &store::file_for(store, root))
+                .err()
+                .map(|error| format!("the picture of last time could not be kept: {error}"));
             if let Ok(mut state) = shared.write() {
+                state.last_note = last_note;
                 state.index = Some(saved.index);
                 state.arena += 1;
                 state.version += 1;
@@ -1026,4 +1419,103 @@ impl Saver {
 /// Changes the state, if it is not poisoned.
 fn set<T>(shared: &RwLock<State>, change: impl FnOnce(&mut State) -> T) -> Option<T> {
     shared.write().ok().map(|mut state| change(&mut state))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use midda_core::{Mark, Scanner, WalkScanner};
+
+    use super::*;
+
+    fn write(path: &Path, bytes: usize) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create the parent");
+        }
+        std::fs::write(path, vec![b'a'; bytes]).expect("write a fixture file");
+    }
+
+    fn index_of(root: &Path) -> Index {
+        Index::new(WalkScanner::new().scan(root, &Progress::default()).expect("scan"), SystemTime::now())
+    }
+
+    fn opened(index: Index) -> RwLock<State> {
+        RwLock::new(State {
+            root: Some(index.tree().root_path().to_path_buf()),
+            index: Some(index),
+            ..State::default()
+        })
+    }
+
+    #[test]
+    fn a_picture_not_yet_brought_up_to_date_is_not_now() {
+        let dir = tempfile::tempdir().expect("a folder");
+        write(&dir.path().join("a.bin"), 10);
+        let shared = opened(index_of(dir.path()));
+        assert!(not_current(&shared.read().expect("read")).is_ok());
+
+        // Last time's index on screen, not yet caught up: a snapshot of it
+        // dated now would be last time under today's date.
+        set(&shared, |state| state.freshness.saved_at = Some(0));
+        assert!(not_current(&shared.read().expect("read")).is_err());
+        set(&shared, |state| {
+            state.freshness.saved_at = None;
+            state.freshness.catching_up = true;
+        });
+        assert!(not_current(&shared.read().expect("read")).is_err());
+        assert!(not_current(&State::default()).is_err(), "nothing read is nothing to compare");
+    }
+
+    #[test]
+    fn last_time_compared_with_now_is_what_changed_while_the_folder_was_closed() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let data = tempfile::tempdir().expect("a data folder");
+        let root = dir.path();
+        write(&root.join("build/app.exe"), 90_000);
+        write(&root.join("src/main.rs"), 1_000);
+
+        // Closed: the index is saved. Opened again: it is kept as last time.
+        let store_dir = data.path().join("index");
+        let saved = store::save(&index_of(root), &store_dir, SystemTime::now() - Duration::from_secs(3_600)).expect("save");
+        let folder = snapshot::folder_for(&data.path().join("snapshots"), root);
+        snapshot::keep_last(&folder, &saved).expect("keep last time");
+
+        std::fs::remove_dir_all(root.join("build")).expect("clean the build");
+        write(&root.join("downloads/setup.exe"), 40_000);
+        let shared = opened(index_of(root));
+
+        let summary = compare_in(&shared, &folder, root, "last.midx", None).expect("compare");
+        assert!(summary.to_now);
+        assert!(summary.then < summary.now);
+        assert!(summary.totals.freed.logical >= 90_000);
+        assert!(summary.totals.grown.logical >= 40_000);
+        let state = shared.read().expect("read");
+        assert_eq!(state.comparison_arena, summary.arena);
+        let comparison = &state.comparison.as_ref().expect("kept for the window").comparison;
+        let build = comparison.tree().child(ROOT, "build").expect("what went is in it");
+        assert_eq!(comparison.mark(build), Mark::Gone);
+        assert!(comparison.tree().child(ROOT, "src").is_none(), "what did not change is not");
+    }
+
+    #[test]
+    fn two_snapshots_compare_older_to_newer_whichever_is_named_first() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let data = tempfile::tempdir().expect("a data folder");
+        let root = dir.path();
+        write(&root.join("a.bin"), 1_000);
+        let folder = snapshot::folder_for(data.path(), root);
+        let monday = SystemTime::UNIX_EPOCH + Duration::from_secs(1_790_000_000);
+        let early = snapshot::keep(&store::encode(&index_of(root), monday), &folder, monday).expect("take");
+        write(&root.join("b.bin"), 5_000);
+        let tuesday = monday + Duration::from_secs(86_400);
+        let late = snapshot::keep(&store::encode(&index_of(root), tuesday), &folder, tuesday).expect("take");
+
+        let shared = opened(index_of(root));
+        let summary = compare_in(&shared, &folder, root, &late.name, Some(&early.name)).expect("compare");
+        assert_eq!((summary.then, summary.now), (millis(monday), millis(tuesday)));
+        assert!(!summary.to_now);
+        assert_eq!(summary.totals.new, 1, "b.bin came between the two");
+        assert_eq!(summary.totals.gone, 0);
+    }
 }

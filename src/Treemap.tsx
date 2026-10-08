@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { isStale, treemap, type Category, type Row, type SizeBasis, type Tile, type View } from '@/core'
-import { formatBytes, formatCount } from '@/format'
-import { boxOf, CATEGORY_LABELS, minAreaFor, neighbourOf, paletteOf, tileAt, tokenReader, type Box } from '@/treemap-layout'
+import { formatBytes, formatCount, formatSigned, wayOf, type Way } from '@/format'
+import { boxOf, CATEGORY_LABELS, minAreaFor, neighbourOf, paletteOf, tileAt, tokenReader, WAY_LABELS, wayPaletteOf, type Box } from '@/treemap-layout'
 
 /** How much of the box a tile needs before a label fits on it. */
 const LABEL_MIN_WIDTH = 56
@@ -46,6 +46,10 @@ interface TreemapProps {
  * fractions and decides what is too small to draw; this multiplies by the
  * canvas size and paints. That split is why the arithmetic can be tested at all
  * — a canvas cannot be asked what it drew.
+ *
+ * A comparison is the same picture of another quantity: each tile is as large
+ * as what moved under it, and coloured by which way it went on balance. The
+ * labels and the tooltip then say the change, and what it was and is.
  */
 export function Treemap({ view, arena, version, parentId, parentName, basis, selected, onDescend, onSelect }: TreemapProps) {
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -141,11 +145,12 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
 
     const styles = getComputedStyle(element)
     // Every colour the picture can use, resolved once a paint: four
-    // categories, the ground and the line.
+    // categories, three ways, the ground and the line.
     const { read, release } = tokenReader(element.parentElement ?? element)
     const ground = read('--bg')
     const line = read('--text')
     const byCategory = Object.fromEntries(CATEGORIES.map((category) => [category, paletteOf(read, category)]))
+    const byWay = Object.fromEntries(WAYS.map((way) => [way, wayPaletteOf(read, way)]))
     release()
 
     // The stylesheet has not arrived. Painting with invented colours would put
@@ -159,7 +164,7 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
       const box = boxes[index]
       if (!box || box.width <= 0 || box.height <= 0) return
 
-      const palette = byCategory[tile.category]
+      const palette = tile.change === null ? byCategory[tile.category] : byWay[wayOf(tile.change.before, tile.change.now)]
       if (!palette?.fill) return
       const lit = index === hovered || index === focused || index === selectedIndex
 
@@ -195,7 +200,8 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
       if (box.height >= LABEL_MIN_HEIGHT + 14) {
         context.globalAlpha = 0.75
         context.font = `400 11px ${styles.getPropertyValue('--font-mono').trim()}`
-        context.fillText(formatBytes(tile.bytes), box.x + 6, box.y + 20, box.width - 12)
+        const figure = tile.change === null ? formatBytes(tile.bytes) : formatSigned(tile.change.now - tile.change.before)
+        context.fillText(figure, box.x + 6, box.y + 20, box.width - 12)
         context.globalAlpha = 1
       }
       context.restore()
@@ -341,12 +347,19 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
           picture they would cover a tile — and the tile they cover is the
           largest one, because that is where the corner is. */}
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-4 py-1.5 text-xs text-dim">
-        {CATEGORIES.map((category) => (
-          <span key={category} className="flex items-center gap-1.5">
-            <span aria-hidden className={`size-2.5 rounded-xs ${LEGEND_SWATCH[category]}`} />
-            {CATEGORY_LABELS[category]}
-          </span>
-        ))}
+        {view === 'compare'
+          ? WAYS.map((way) => (
+              <span key={way} className="flex items-center gap-1.5">
+                <span aria-hidden className={`size-2.5 rounded-xs ${WAY_SWATCH[way]}`} />
+                {WAY_LABELS[way]}
+              </span>
+            ))
+          : CATEGORIES.map((category) => (
+              <span key={category} className="flex items-center gap-1.5">
+                <span aria-hidden className={`size-2.5 rounded-xs ${LEGEND_SWATCH[category]}`} />
+                {CATEGORY_LABELS[category]}
+              </span>
+            ))}
 
         <span className="ml-auto flex items-center gap-2">
           {copied !== null && <span aria-live="polite">{copied}</span>}
@@ -365,7 +378,11 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
           // The picture is one control, not a hundred: the rows it draws are in
           // the table beside it, where a screen reader can read them as rows.
           role="img"
-          aria-label={`Treemap of ${parentName}: ${formatCount(tiles.length)} areas, ${formatBytes(total)}`}
+          aria-label={
+            view === 'compare'
+              ? `What changed in ${parentName}: ${formatCount(tiles.length)} areas, ${formatBytes(total)} moved`
+              : `Treemap of ${parentName}: ${formatCount(tiles.length)} areas, ${formatBytes(total)}`
+          }
           onMouseMove={move}
           onMouseLeave={() => setHovered(null)}
           onClick={click}
@@ -390,13 +407,31 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
                 question the picture raised. `break-all` because a path has no
                 spaces to wrap at. */}
             <p className="mb-1 break-all font-mono text-2xs text-accent">{tip.path || tip.name}</p>
-            <p className="tabular">
-              <span className="font-medium">{formatBytes(tip.bytes)}</span>
-              <span className="text-dim">
-                {' · '}
-                {formatCount(tip.entries)} {tip.entries === 1 ? 'entry' : 'entries'}
-              </span>
-            </p>
+            {tip.change === null ? (
+              <p className="tabular">
+                <span className="font-medium">{formatBytes(tip.bytes)}</span>
+                <span className="text-dim">
+                  {' · '}
+                  {formatCount(tip.entries)} {tip.entries === 1 ? 'entry' : 'entries'}
+                </span>
+              </p>
+            ) : (
+              /* What it netted, what it was and is, and how much moved to
+                 get there: a tile whose net is small and whose area is large
+                 is where as much went as came. */
+              <>
+                <p className="tabular">
+                  <span className="font-medium">{formatSigned(tip.change.now - tip.change.before)}</span>
+                  <span className="text-dim">
+                    {' · '}
+                    {formatBytes(tip.change.before)} → {formatBytes(tip.change.now)}
+                  </span>
+                </p>
+                <p className="tabular text-dim">
+                  {formatBytes(tip.bytes)} moved · {formatCount(tip.entries)} {tip.entries === 1 ? 'entry' : 'entries'} changed
+                </p>
+              </>
+            )}
             {tip.id !== null && tip.isDirectory && <p className="mt-1 text-2xs text-dim">Double-click to open</p>}
           </div>
         )}
@@ -419,5 +454,15 @@ const LEGEND_SWATCH = {
   other: 'bg-raise border border-line',
 } as const
 
-/** The categories of a picture, in the order the legend names them. */
+/** The categories of a picture of one moment, in the order the legend names them. */
 const CATEGORIES: readonly Category[] = ['build', 'source', 'media', 'other']
+
+/** The ways a comparison's tiles go, in the order the legend names them. */
+const WAYS: readonly Way[] = ['grew', 'freed', 'even']
+
+/** The legend swatches of a comparison, in the tokens the canvas paints. */
+const WAY_SWATCH = {
+  grew: 'bg-bad',
+  freed: 'bg-good',
+  even: 'bg-raise border border-line',
+} as const

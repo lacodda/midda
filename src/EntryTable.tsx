@@ -4,10 +4,12 @@ import { Badge } from '@/components/ui/badge'
 import { TableSortHeader } from '@/components/ui/table'
 import { windowFor } from '@/components/ui/virtual-list'
 import {
+  growthOf,
   hasTrait,
   isSharedName,
   isStale,
   listChildren,
+  pick,
   sizeOf,
   TRAIT,
   type Page,
@@ -17,7 +19,7 @@ import {
   type SortKey,
   type View,
 } from '@/core'
-import { explainSize, formatAge, formatBytes, formatCount, formatShare } from '@/format'
+import { explainSize, formatAge, formatBytes, formatCount, formatShare, formatSigned, MARK_WORDS } from '@/format'
 
 /**
  * How tall one row is. Fixed, because virtualization is arithmetic over a known
@@ -40,6 +42,10 @@ const OVERSCAN = 12
  */
 const GRID = 'minmax(0,1fr) 5rem 4.5rem 7rem 6rem 6rem'
 
+/** The columns of a comparison: what each entry held then, holds now, and
+ * the difference, all on the size being read. */
+const COMPARED_GRID = 'minmax(0,1fr) 5rem 6.5rem 6.5rem 7rem'
+
 interface Column {
   /** What clicking this header sorts by. A column with no key of its own is
    * not sortable and is drawn as a plain heading. */
@@ -61,6 +67,24 @@ const COLUMNS: Column[] = [
   { key: 'modified', label: 'Changed', numeric: true },
 ]
 
+/**
+ * The columns of a comparison, on the size being read.
+ *
+ * "Before" has no key: an order by what something held then is an order by
+ * a picture that is gone, and the question a comparison answers is what
+ * grew. "Now" sorts by the size being read, as a size column does anywhere.
+ * "Items" counts what changed inside, not what is inside.
+ */
+function comparedColumns(basis: SizeBasis): Column[] {
+  return [
+    { key: 'name', label: 'Name', numeric: false },
+    { key: 'entries', label: 'Items', numeric: true },
+    { key: null, label: 'Before', numeric: true },
+    { key: basis, label: 'Now', numeric: true },
+    { key: 'growth', label: 'Change', numeric: true },
+  ]
+}
+
 interface EntryTableProps {
   /** Which tree the rows come from. */
   view: View
@@ -71,7 +95,8 @@ interface EntryTableProps {
   version: number
   /** The folder whose children are shown. */
   parentId: number
-  /** That folder's total on the current basis, for the share column. */
+  /** That folder's total on the current basis, for the share column — in a
+   * comparison, how much moved under it, which the bars are shares of. */
   total: number
   sort: Sort
   basis: SizeBasis
@@ -110,6 +135,9 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
   // Which request is current. A reader who clicks two headers quickly has two
   // pages in flight, and the slower one must not land on top of the newer.
   const generation = useRef(0)
+  const compared = view === 'compare'
+  const grid = compared ? COMPARED_GRID : GRID
+  const columns = compared ? comparedColumns(basis) : COLUMNS
   // Which version of the tree the rows held are from. A change to the tree
   // asks for the rows on screen again; until they land, the old ones stay
   // drawn rather than blinking out, and when they land they replace every
@@ -160,7 +188,7 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
     // pages of the same tree for another stretch of the list are not.
     if (outdated) generation.current += 1
     const mine = generation.current
-    void listChildren(view, arena, parentId, sort, { offset: from, limit: Math.max(to - from, 1) })
+    void listChildren(view, arena, parentId, sort, basis, { offset: from, limit: Math.max(to - from, 1) })
       .then((page: Page) => {
         // A page from a folder or an order the reader has already left.
         if (mine !== generation.current) return
@@ -180,7 +208,7 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
         if (isStale(cause)) return
         setFailure(String(cause))
       })
-  }, [view, arena, version, parentId, sort, start, end, count, rows])
+  }, [view, arena, version, parentId, sort, basis, start, end, count, rows])
 
   if (failure !== null) {
     return <p className="p-4 text-sm text-bad">{failure}</p>
@@ -193,8 +221,8 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
     <div className="flex min-h-0 flex-1 flex-col">
       <table className="w-full table-fixed border-collapse text-left text-sm">
         <thead className="border-b border-line text-xs text-dim">
-          <tr style={{ display: 'grid', gridTemplateColumns: GRID }} className="h-8 items-center">
-            {COLUMNS.map((column) =>
+          <tr style={{ display: 'grid', gridTemplateColumns: grid }} className="h-8 items-center">
+            {columns.map((column) =>
               column.key === null ? (
                 <th
                   key={column.label}
@@ -229,7 +257,7 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
         className="min-h-0 flex-1 overflow-y-auto"
       >
         {count === 0 ? (
-          <p className="px-3 py-6 text-sm text-dim">This folder is empty.</p>
+          <p className="px-3 py-6 text-sm text-dim">{compared ? 'Nothing in this folder changed size.' : 'This folder is empty.'}</p>
         ) : (
           <div style={{ height: totalHeight }} className="relative">
             <div style={{ transform: `translateY(${offsetTop}px)` }}>
@@ -242,7 +270,9 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
                   return <div key={`pending-${index}`} style={{ height: ROW_HEIGHT }} aria-hidden />
                 }
 
-                const size = sizeOf(row, basis)
+                // In a comparison the bar is the row's share of what moved in
+                // the folder, as its tile in the picture is.
+                const size = row.compared === null ? sizeOf(row, basis) : pick(row.compared.moved, basis)
                 const chosen = row.id === selectedId
                 // Why this row's two numbers differ, when they do. A second
                 // name for shared bytes is the one worth marking in the list
@@ -269,7 +299,7 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
                     onClick={() => onSelect(row)}
                     onDoubleClick={() => onDescend(row)}
                     title={explanation === null ? row.path : `${row.path}\n${explanation}`}
-                    style={{ display: 'grid', gridTemplateColumns: GRID, height: ROW_HEIGHT }}
+                    style={{ display: 'grid', gridTemplateColumns: grid, height: ROW_HEIGHT }}
                     className={
                       chosen
                         ? 'w-full cursor-pointer items-center bg-accent-soft text-left'
@@ -312,22 +342,35 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
                           {row.change === 'created' ? 'new' : 'written'}
                         </Badge>
                       )}
+                      {/* In a comparison, what happened to the entry as a
+                          whole. A file that only changed size carries no
+                          word: the change column is the word. */}
+                      {row.compared !== null && MARK_WORDS[row.compared.mark] !== null && (
+                        <Badge variant="soft" className="shrink-0 px-1.5 py-0 text-2xs leading-4" title={MARK_TITLES[row.compared.mark]}>
+                          {MARK_WORDS[row.compared.mark]}
+                        </Badge>
+                      )}
                     </span>
                     <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
                       {row.isDirectory ? formatCount(row.entries) : ''}
                     </span>
-                    <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
-                      {formatShare(size, total)}
-                    </span>
-                    <span role="gridcell" className="tabular truncate px-3 text-right">
-                      {formatBytes(row.allocated)}
-                    </span>
-                    <span role="gridcell" className="tabular truncate px-3 text-right text-dim">
-                      {formatBytes(row.logical)}
-                    </span>
-                    <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
-                      {formatAge(row.subtreeModified)}
-                    </span>
+                    {row.compared !== null && <ComparedCells row={row} basis={basis} />}
+                    {row.compared === null && (
+                      <>
+                        <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
+                          {formatShare(size, total)}
+                        </span>
+                        <span role="gridcell" className="tabular truncate px-3 text-right">
+                          {formatBytes(row.allocated)}
+                        </span>
+                        <span role="gridcell" className="tabular truncate px-3 text-right text-dim">
+                          {formatBytes(row.logical)}
+                        </span>
+                        <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
+                          {formatAge(row.subtreeModified)}
+                        </span>
+                      </>
+                    )}
                   </button>
                 )
               })}
@@ -336,5 +379,38 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
         )}
       </div>
     </div>
+  )
+}
+
+/** What each mark on a row of a comparison means, for its tooltip. */
+const MARK_TITLES = {
+  new: 'Was not there in the earlier picture',
+  gone: 'Is not there any more',
+  replaced: 'A file stands where a folder stood, or a folder where a file did',
+  changed: '',
+} as const
+
+/**
+ * The three numbers of a comparison's row: before, now, and the change.
+ *
+ * The change is coloured the way the picture beside it is - growth in the
+ * colour that means trouble, what was freed in the one that means relief -
+ * so a glance down the column and a glance at the picture agree.
+ */
+function ComparedCells({ row, basis }: { row: Row; basis: SizeBasis }) {
+  const growth = growthOf(row, basis) ?? 0
+  const before = row.compared === null ? 0 : pick(row.compared.before, basis)
+  return (
+    <>
+      <span role="gridcell" className="tabular truncate px-3 text-right text-dim">
+        {formatBytes(before)}
+      </span>
+      <span role="gridcell" className="tabular truncate px-3 text-right">
+        {formatBytes(sizeOf(row, basis))}
+      </span>
+      <span role="gridcell" className={`tabular truncate px-3 text-right font-medium ${growth > 0 ? 'text-bad' : growth < 0 ? 'text-good' : 'text-dim'}`}>
+        {formatSigned(growth)}
+      </span>
+    </>
   )
 }

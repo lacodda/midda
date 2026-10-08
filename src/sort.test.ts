@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_SORT, naturalDirection, toggleSort, type SortKey } from '@/core'
+import { DEFAULT_SORT, GROWTH_SORT, naturalDirection, toggleSort, type SortKey } from '@/core'
 
 /**
  * The toggle rule exists twice: here, so a header click reorders without
@@ -21,12 +21,13 @@ describe('toggleSort', () => {
     expect(toggleSort(DEFAULT_SORT, 'modified').direction).toBe('descending')
     expect(toggleSort(DEFAULT_SORT, 'entries').direction).toBe('descending')
     expect(toggleSort(DEFAULT_SORT, 'logical').direction).toBe('descending')
+    expect(toggleSort(DEFAULT_SORT, 'growth').direction).toBe('descending')
   })
 
   it('names the natural direction of every key', () => {
     // If a key is added to the core and not here, this fails on the new one
     // rather than silently defaulting it.
-    const keys: SortKey[] = ['allocated', 'logical', 'name', 'modified', 'entries']
+    const keys: SortKey[] = ['allocated', 'logical', 'name', 'modified', 'entries', 'growth']
     for (const key of keys) {
       expect(naturalDirection(key)).toBe(key === 'name' ? 'ascending' : 'descending')
     }
@@ -35,5 +36,7 @@ describe('toggleSort', () => {
   it('opens on the question the product is about', () => {
     // Not a preference: someone who opened a disk analyzer came to free space.
     expect(DEFAULT_SORT).toEqual({ key: 'allocated', direction: 'descending' })
+    // And a comparison opens on what grew most, which is its question.
+    expect(GROWTH_SORT).toEqual({ key: 'growth', direction: 'descending' })
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { boxOf, minAreaFor, neighbourOf, tileAt, type Box } from '@/treemap-layout'
+import { boxOf, minAreaFor, neighbourOf, tileAt, wayPaletteOf, type Box } from '@/treemap-layout'
 
 describe('boxOf', () => {
   it('turns a fraction of the box into whole pixels', () => {
@@ -173,5 +173,20 @@ describe('neighbourOf', () => {
   it('answers nothing when there is nowhere to go', () => {
     expect(neighbourOf([], 0, 'right')).toBeNull()
     expect(neighbourOf(boxes, 99, 'right')).toBeNull()
+  })
+})
+
+describe('wayPaletteOf', () => {
+  // The tokens as the canvas is handed them: resolved, by name.
+  const tokens: Record<string, string> = { '--bad': 'red', '--on-bad': 'white', '--good': 'green', '--on-good': 'black', '--raise': 'grey', '--text': 'ink' }
+  const styles = (name: string) => tokens[name] ?? ''
+
+  it('draws growth in the bad pair and what was freed in the good one', () => {
+    expect(wayPaletteOf(styles, 'grew')).toEqual({ fill: 'red', label: 'white' })
+    expect(wayPaletteOf(styles, 'freed')).toEqual({ fill: 'green', label: 'black' })
+  })
+
+  it('draws a tile that went neither way without a hue', () => {
+    expect(wayPaletteOf(styles, 'even')).toEqual({ fill: 'grey', label: 'ink' })
   })
 })

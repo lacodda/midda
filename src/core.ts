@@ -9,8 +9,9 @@ import { invoke } from '@tauri-apps/api/core'
 /** Which of the two sizes the window is showing. */
 export type SizeBasis = 'allocated' | 'logical'
 
-/** What a column is ordered by. Mirrors `SortKey` in midda-core. */
-export type SortKey = 'allocated' | 'logical' | 'name' | 'modified' | 'entries'
+/** What a column is ordered by. Mirrors `SortKey` in midda-core. `growth`
+ * is known only in a comparison; in any other tree every row is unknown. */
+export type SortKey = 'allocated' | 'logical' | 'name' | 'modified' | 'entries' | 'growth'
 
 /** Which way a column points. Mirrors `Direction`. */
 export type Direction = 'ascending' | 'descending'
@@ -69,10 +70,29 @@ export function isSharedName(traits: number): boolean {
 export type Change = 'created' | 'written'
 
 /**
- * Which tree a question is about: the folder as it is, or what was written
- * in it lately. Mirrors `View` in src-tauri/src/session.rs.
+ * Which tree a question is about: the folder as it is, what was written in
+ * it lately, or two pictures of it compared. Mirrors `View` in
+ * src-tauri/src/session.rs.
  */
-export type View = 'index' | 'changes'
+export type View = 'index' | 'changes' | 'compare'
+
+/** Both sizes of something. Mirrors `Size` in midda-core. */
+export interface Size {
+  logical: number
+  allocated: number
+}
+
+/** How an entry came to be in a comparison. Mirrors `Mark`. */
+export type Mark = 'new' | 'gone' | 'changed' | 'replaced'
+
+/** What a row of a comparison carries: the other moment. Mirrors `ComparedRow`. */
+export interface ComparedRow {
+  /** What it held then; what it holds now is the row's own size. */
+  before: Size
+  /** How many bytes moved under it: grown and freed, added. */
+  moved: Size
+  mark: Mark
+}
 
 /** One row of the table. Mirrors `Row` in src-tauri/src/session.rs. */
 export interface Row {
@@ -93,6 +113,8 @@ export interface Row {
   links: number | null
   /** In the view of what changed, whether the file is new or was written to. */
   change: Change | null
+  /** In a comparison, what it held then and how much moved under it. */
+  compared: ComparedRow | null
 }
 
 /** One page of an ordered list. Mirrors `Page`. */
@@ -176,6 +198,88 @@ export interface ChangesSummary {
   covers: boolean
 }
 
+/** A picture of the folder kept for later. Mirrors `Kind` in midda-core's
+ * snapshot module: the folder as it was last closed, or one the reader took. */
+export type SnapshotKind = 'last' | 'taken'
+
+/** One snapshot of the open folder. Mirrors `SnapshotRow`. */
+export interface SnapshotRow {
+  /** Its file name, which is what it is asked for by. */
+  name: string
+  kind: SnapshotKind
+  /** The moment it is a picture of. */
+  at: number | null
+  /** What it takes on disk. */
+  bytes: number
+  /** Why it cannot be compared, when it cannot. */
+  unusable: string | null
+}
+
+/** The snapshots of the open folder. Mirrors `Snapshots`. */
+export interface Snapshots {
+  snapshots: SnapshotRow[]
+  bytes: number
+  /** Why there is no picture of last time from this opening, when it matters. */
+  lastNote: string | null
+  /** Why nothing can be taken or compared with now yet, when it cannot. */
+  notNow: string | null
+}
+
+/** What a comparison adds up to. Mirrors `Totals`. */
+export interface Totals {
+  before: Size
+  now: Size
+  /** Everything written in between and still there. */
+  grown: Size
+  /** Everything that went in between: after a cleanup, what came back. */
+  freed: Size
+  new: number
+  gone: number
+  changed: number
+}
+
+/** A comparison on screen. Mirrors `ComparisonSummary`. */
+export interface ComparisonSummary {
+  root: Row
+  arena: number
+  /** The earlier moment. */
+  then: number | null
+  /** The later one. */
+  now: number | null
+  /** Whether the later picture is the folder as it is, not a snapshot. */
+  toNow: boolean
+  totals: Totals
+}
+
+/** What kind of place a report line is. Mirrors `PlaceKind`. */
+export type PlaceKind = 'gone' | 'new' | 'replaced' | 'files'
+
+/** One place in a report. Mirrors `PlaceRow`. */
+export interface PlaceRow {
+  id: number
+  path: string
+  isDirectory: boolean
+  kind: PlaceKind
+  freed: Size
+  grown: Size
+  entries: number
+}
+
+/** The places past the ones listed, added up. Mirrors `Rest`. */
+export interface Rest {
+  places: number
+  bytes: number
+}
+
+/** The report of a comparison. Mirrors `Report`. */
+export interface Report {
+  arena: number
+  freed: PlaceRow[]
+  freedRest: Rest
+  grown: PlaceRow[]
+  grownRest: Rest
+}
+
 /** A rectangle in fractions of the box being drawn. Mirrors `Rect`. */
 export interface Rect {
   x: number
@@ -186,6 +290,12 @@ export interface Rect {
 
 /** What a tile is made of, as far as the colour is concerned. Mirrors `Category`. */
 export type Category = 'build' | 'source' | 'media' | 'other'
+
+/** What a tile held at two moments, on the basis drawn. Mirrors `Delta`. */
+export interface Delta {
+  before: number
+  now: number
+}
 
 /** One rectangle of a laid-out treemap. Mirrors `Tile`. */
 export interface Tile {
@@ -201,6 +311,9 @@ export interface Tile {
   /** The full path, for the tooltip. Empty for the gathered remainder, which
    * stands for many paths and so has none. */
   path: string
+  /** In a comparison, what it held then and holds now; there the area is
+   * how much moved, and this says which way. */
+  change: Delta | null
 }
 
 /** What the window asks the core to lay out. Mirrors `Layout`. */
@@ -279,8 +392,10 @@ export function isStale(cause: unknown): boolean {
   return cause === 'stale'
 }
 
-export function listChildren(view: View, arena: number, id: number, sort: Sort, span: Span): Promise<Page> {
-  return invoke<Page>('list_children', { view, arena, id, sort, span })
+/** One page of the children of `id`. `basis` is what growth is read on, in
+ * a comparison. */
+export function listChildren(view: View, arena: number, id: number, sort: Sort, basis: SizeBasis, span: Span): Promise<Page> {
+  return invoke<Page>('list_children', { view, arena, id, sort, basis, span })
 }
 
 export function trailTo(view: View, arena: number, id: number): Promise<Row[]> {
@@ -301,10 +416,49 @@ export function changesSince(hours: number): Promise<ChangesSummary> {
   return invoke<ChangesSummary>('changes_since', { hours })
 }
 
+/** The snapshots of the open folder. */
+export function listSnapshots(): Promise<Snapshots> {
+  return invoke<Snapshots>('snapshots')
+}
+
+/** Takes a snapshot of the open folder as it is now. */
+export function takeSnapshot(): Promise<SnapshotRow> {
+  return invoke<SnapshotRow>('take_snapshot')
+}
+
+export function deleteSnapshot(name: string): Promise<void> {
+  return invoke<void>('delete_snapshot', { name })
+}
+
+/** Compares the snapshot `from` with `to`, or with the folder as it is now
+ * when `to` is `null`. Whichever is older is "then". */
+export function compareSnapshots(from: string, to: string | null): Promise<ComparisonSummary> {
+  return invoke<ComparisonSummary>('compare_snapshots', { from, to })
+}
+
+/** The report of the comparison in `arena`: `limit` places each way. */
+export function comparisonReport(arena: number, basis: SizeBasis, limit: number): Promise<Report> {
+  return invoke<Report>('comparison_report', { arena, basis, limit })
+}
+
 /** Picks the size a basis names out of a row. */
 export function sizeOf(row: Row, basis: SizeBasis): number {
   return basis === 'allocated' ? row.allocated : row.logical
 }
+
+/** Picks the size a basis names out of a pair of sizes. */
+export function pick(size: Size, basis: SizeBasis): number {
+  return basis === 'allocated' ? size.allocated : size.logical
+}
+
+/** How much a row of a comparison grew on `basis` — negative for one that
+ * shrank or went — or `null` outside a comparison. */
+export function growthOf(row: Row, basis: SizeBasis): number | null {
+  return row.compared === null ? null : sizeOf(row, basis) - pick(row.compared.before, basis)
+}
+
+/** The order a comparison opens in: what grew most, first. */
+export const GROWTH_SORT: Sort = { key: 'growth', direction: 'descending' }
 
 /** The order a freshly opened folder is shown in: biggest on disk first. */
 export const DEFAULT_SORT: Sort = { key: 'allocated', direction: 'descending' }

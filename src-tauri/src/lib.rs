@@ -24,15 +24,11 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .setup(|app| {
-            // Indexes are kept beside the WebView's own data, in the user's
-            // local application data: they are a cache of the disk, not a
-            // document, and do not roam.
-            let store = app
-                .path()
-                .app_local_data_dir()
-                .map(|dir| dir.join("index"))
-                .unwrap_or_else(|_| std::env::temp_dir().join("midda-index"));
-            app.manage(session::Session::new(store));
+            // Indexes and snapshots are kept beside the WebView's own data,
+            // in the user's local application data: they are pictures of
+            // this machine's disk, not documents, and do not roam.
+            let data = app.path().app_local_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("midda"));
+            app.manage(session::Session::new(&data));
             show_if_the_page_never_does(app.handle());
             Ok(())
         })
@@ -49,6 +45,11 @@ pub fn run() {
             session::trail_to_path,
             session::treemap,
             session::changes_since,
+            session::snapshots,
+            session::take_snapshot,
+            session::delete_snapshot,
+            session::compare_snapshots,
+            session::comparison_report,
             elevate::acceleration,
             elevate::accelerate,
             elevate::launch_request,
