@@ -434,8 +434,15 @@ mod saved {
         let index = Index::new(scan(&root), SystemTime::now());
         store::save(&index, place.path(), SystemTime::now()).expect("saved");
 
-        fs::remove_dir_all(&root).expect("delete");
+        // The old folder is moved aside and kept until the new one exists.
+        // Deleted first, ext4 hands its freed inode straight to the next
+        // folder made, and the new folder *is* the old one by every number
+        // the volume keeps: the test passed or failed by the allocator's
+        // mood, not by midda's (v0.8, red on the Linux runner).
+        let aside = dir.path().join("project-before");
+        fs::rename(&root, &aside).expect("move the folder aside");
         write(&root.join("other.txt"), 10);
+        fs::remove_dir_all(&aside).expect("delete the old folder");
         assert_eq!(store::load(place.path(), &root).err(), Some(Unusable::Replaced));
     }
 }

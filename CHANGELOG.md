@@ -13,6 +13,9 @@ All notable changes to this project are documented in this file.
 ### Features
 - Keep pictures of a folder and compare two of them
 - Show what grew since last time and what a cleanup freed
+
+### Testing
+- Keep the old folder alive while its replacement is made
 ## [0.7.0] - 2026-10-04
 
 ### Bug Fixes
