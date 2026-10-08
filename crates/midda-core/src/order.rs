@@ -29,6 +29,10 @@ pub enum SortKey {
     Modified,
     /// How many entries are in the subtree.
     Entries,
+    /// How much an entry grew between two moments — shrinking is negative
+    /// growth. Only a comparison of two trees knows it ([`crate::compare`]);
+    /// in a tree of one moment every entry compares as unknown.
+    Growth,
 }
 
 /// Which way a column points.
@@ -98,9 +102,9 @@ impl SortKey {
     #[must_use]
     pub const fn natural_direction(self) -> Direction {
         match self {
-            // "Which of these is big" and "what changed lately" are both
-            // largest-first questions.
-            Self::Allocated | Self::Logical | Self::Modified | Self::Entries => Direction::Descending,
+            // "Which of these is big", "what changed lately" and "what grew"
+            // are all largest-first questions.
+            Self::Allocated | Self::Logical | Self::Modified | Self::Entries | Self::Growth => Direction::Descending,
             // The alphabet runs one way.
             Self::Name => Direction::Ascending,
         }
@@ -128,14 +132,17 @@ impl SortKey {
 /// This is the same rule dowel's `table-sort` is built on, held here because
 /// the sorting happens here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Value<'a> {
+pub(crate) enum Value<'a> {
     Number(u64),
+    /// A number that can go below zero: growth, where a folder that was
+    /// cleaned out shrank.
+    Signed(i64),
     Text(&'a str),
     Absent,
 }
 
 /// Reads what a node compares as under `key`.
-fn value_of<'a>(node: &'a Node, key: SortKey) -> Value<'a> {
+pub(crate) fn value_of(node: &Node, key: SortKey) -> Value<'_> {
     match key {
         SortKey::Allocated => Value::Number(node.size.allocated),
         SortKey::Logical => Value::Number(node.size.logical),
@@ -147,6 +154,8 @@ fn value_of<'a>(node: &'a Node, key: SortKey) -> Value<'a> {
             // the timestamp exists, it is merely implausible.
             Value::Number(time.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs()))
         }),
+        // A tree of one moment has nothing to have grown from.
+        SortKey::Growth => Value::Absent,
     }
 }
 
@@ -158,6 +167,7 @@ fn value_of<'a>(node: &'a Node, key: SortKey) -> Value<'a> {
 fn compare_present(a: &Value<'_>, b: &Value<'_>) -> std::cmp::Ordering {
     match (a, b) {
         (Value::Number(a), Value::Number(b)) => a.cmp(b),
+        (Value::Signed(a), Value::Signed(b)) => a.cmp(b),
         (Value::Text(a), Value::Text(b)) => a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)),
         // Mixed kinds cannot happen: both come from the same key.
         _ => std::cmp::Ordering::Equal,
@@ -171,11 +181,21 @@ fn compare_present(a: &Value<'_>, b: &Value<'_>) -> std::cmp::Ordering {
 /// equal rows on every rescan looks broken.
 #[must_use]
 pub fn children(tree: &Tree, id: NodeId, sort: Sort) -> Vec<NodeId> {
+    ordered(tree, id, sort.direction, |child| value_of(tree.node(child), sort.key))
+}
+
+/// Orders the children of `id` by what `value` says each one compares as.
+///
+/// The rules of [`children`] — absence last whichever way, ties by name —
+/// for a column the tree does not hold itself: how much an entry grew is a
+/// fact about two trees, and a comparison asks for its own order here rather
+/// than keeping a second copy of these rules.
+pub(crate) fn ordered<'a>(tree: &'a Tree, id: NodeId, direction: Direction, value: impl Fn(NodeId) -> Value<'a>) -> Vec<NodeId> {
     let mut children = tree.node(id).children.clone();
 
     children.sort_unstable_by(|&a, &b| {
         let (left, right) = (tree.node(a), tree.node(b));
-        let (a_value, b_value) = (value_of(left, sort.key), value_of(right, sort.key));
+        let (a_value, b_value) = (value(a), value(b));
 
         // Presence is settled before the direction is applied, which is the
         // whole point: flipping the sort must not float the unknown rows up.
@@ -185,7 +205,7 @@ pub fn children(tree: &Tree, id: NodeId, sort: Sort) -> Vec<NodeId> {
             (_, Value::Absent) => return std::cmp::Ordering::Less,
             _ => {
                 let ordering = compare_present(&a_value, &b_value);
-                match sort.direction {
+                match direction {
                     Direction::Ascending => ordering,
                     Direction::Descending => ordering.reverse(),
                 }
@@ -249,7 +269,11 @@ impl Span {
 /// window can size its scrollbar without holding every row.
 #[must_use]
 pub fn children_page(tree: &Tree, id: NodeId, sort: Sort, span: Span) -> (Vec<NodeId>, usize) {
-    let ordered = children(tree, id, sort);
+    page(children(tree, id, sort), span)
+}
+
+/// The slice of an ordered list that `span` asks for, and the list's length.
+pub(crate) fn page(ordered: Vec<NodeId>, span: Span) -> (Vec<NodeId>, usize) {
     let total = ordered.len();
     let range = span.range(total);
     (ordered[range].to_vec(), total)
@@ -428,6 +452,45 @@ mod tests {
         assert_eq!(SortKey::Allocated.basis(), Some(SizeBasis::Allocated));
         assert_eq!(SortKey::Logical.basis(), Some(SizeBasis::Logical));
         assert_eq!(SortKey::Name.basis(), None);
+        // Growth reads a size, but whichever one is on screen: the switch
+        // between the two sizes leaves it where it is.
+        assert_eq!(SortKey::Growth.basis(), None);
+    }
+
+    #[test]
+    fn growth_in_a_tree_of_one_moment_is_unknown_and_keeps_the_names_in_order() {
+        // Nothing grew from anything: every row is absent, and absence ties
+        // break on name rather than on whatever the arena held.
+        let tree = sample();
+        let by_growth = Sort {
+            key: SortKey::Growth,
+            direction: Direction::Descending,
+        };
+        assert_eq!(names(&tree, by_growth), ["alpha", "bravo", "Charlie", "delta"]);
+        assert_eq!(SortKey::Growth.natural_direction(), Direction::Descending);
+    }
+
+    #[test]
+    fn a_signed_column_puts_the_biggest_growth_first_and_the_biggest_shrink_last() {
+        let tree = sample();
+        let growth = |id: NodeId| match tree.node(id).name.as_str() {
+            "delta" => Value::Signed(-400),
+            "alpha" => Value::Signed(300),
+            "bravo" => Value::Signed(0),
+            _ => Value::Absent,
+        };
+        let order = |direction| {
+            ordered(&tree, ROOT, direction, growth)
+                .into_iter()
+                .map(|id| tree.node(id).name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(Direction::Descending), ["alpha", "bravo", "delta", "Charlie"]);
+        assert_eq!(
+            order(Direction::Ascending),
+            ["delta", "bravo", "alpha", "Charlie"],
+            "the most freed first, the unknown still last"
+        );
     }
 
     #[test]

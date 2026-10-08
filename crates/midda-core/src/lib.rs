@@ -52,6 +52,15 @@
 //! again — that is what `tests/fresh.rs` holds them to. See
 //! `docs/adr/0009-freshness-without-rescanning.md`.
 //!
+//! # Moments apart
+//!
+//! A picture kept current says what is there now; it cannot say what grew.
+//! A [`snapshot`] keeps a picture of a moment — the folder as it was last
+//! closed, or one the reader took before a cleanup — and [`compare`] sets two
+//! pictures side by side: every entry whose size is not what it was, with how
+//! much it grew, how much went, and the places it came from, each counted
+//! once. See `docs/adr/0010-snapshots-and-comparisons.md`.
+//!
 //! ```no_run
 //! use midda_core::{Progress, SizeBasis, scan};
 //!
@@ -65,6 +74,7 @@
 //! # Ok::<(), midda_core::Error>(())
 //! ```
 
+pub mod compare;
 pub mod error;
 pub mod fresh;
 pub mod links;
@@ -73,11 +83,13 @@ pub mod order;
 pub mod platform;
 pub mod scanner;
 pub mod size;
+pub mod snapshot;
 pub mod traits;
 pub mod tree;
 pub mod treemap;
 pub mod walk;
 
+pub use compare::{Comparison, Mark, Place, PlaceKind, Totals, compare};
 pub use error::{Error, Result};
 pub use fresh::{Applied, Index, JournalPosition, Observed};
 pub use links::Deduplicated;
@@ -86,9 +98,10 @@ pub use order::{Direction, Sort, SortKey, Span};
 pub use platform::FileIdentity;
 pub use scanner::{Progress, Scanner};
 pub use size::{Size, SizeBasis};
+pub use snapshot::Snapshot;
 pub use traits::Traits;
 pub use tree::{Kind, Node, NodeId, ROOT, Skipped, Tree, listing_order};
-pub use treemap::{Category, Layout, Rect, Tile};
+pub use treemap::{Category, Delta, Layout, Rect, Tile};
 pub use walk::WalkScanner;
 
 use std::path::Path;

@@ -8,7 +8,8 @@
 //! the answer is a tree of the files written since the moment, at what they
 //! occupy now, with each one marked as new or as written to — and the window
 //! says which of the two numbers it is showing (ADR 0009). The difference
-//! between two moments is v0.8's, with snapshots.
+//! between two moments needs a picture of the first one: that is a snapshot,
+//! compared with [`crate::compare`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

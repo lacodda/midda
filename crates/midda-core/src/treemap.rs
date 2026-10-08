@@ -99,6 +99,22 @@ pub struct Tile {
     /// happens sixty times a second. Two hundred paths is a few kilobytes once;
     /// a round trip per hover is a round trip per frame.
     pub path: String,
+    /// What this stood for at two moments, when the picture is of a
+    /// comparison ([`crate::compare`]): there the area is how much changed,
+    /// and the colour is which way. `None` in a picture of one moment.
+    pub change: Option<Delta>,
+}
+
+/// What a tile held at two moments, on the basis the picture is drawn on.
+///
+/// Both numbers rather than their difference: the difference is one
+/// subtraction away, and a tooltip that says "+6.2 GB" without "12.1 → 18.3"
+/// leaves the reader to guess whether that is a little or a lot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Delta {
+    pub before: u64,
+    pub now: u64,
 }
 
 /// What a tile is made of, as far as the colour is concerned.
@@ -271,13 +287,24 @@ pub const MAX_TILES: usize = 1000;
 /// children are all tiny gets one tile rather than a hundred thousand.
 #[must_use]
 pub fn tiles(tree: &Tree, id: NodeId, layout: Layout) -> Vec<Tile> {
+    weighted(tree, id, layout, |child| bytes_of(tree, child, layout.basis), |_| None)
+}
+
+/// The rectangles for the children of `id`, each as large as `weight` says,
+/// and each carrying what `change` says it held at two moments.
+///
+/// [`tiles`] is this with a node's own size for the weight. A comparison
+/// draws the same picture of a different quantity — how many bytes changed
+/// under each child — and gets the same order, cut-off and remainder rather
+/// than a second layout to keep in step.
+pub(crate) fn weighted(tree: &Tree, id: NodeId, layout: Layout, weight: impl Fn(NodeId) -> u64, change: impl Fn(NodeId) -> Option<Delta>) -> Vec<Tile> {
     let parent_category = category_of(tree, id);
 
     let mut weighted: Vec<(NodeId, u64)> = tree
         .node(id)
         .children
         .iter()
-        .map(|&child| (child, bytes_of(tree, child, layout.basis)))
+        .map(|&child| (child, weight(child)))
         .filter(|&(_, bytes)| bytes > 0)
         .collect();
 
@@ -343,6 +370,7 @@ pub fn tiles(tree: &Tree, id: NodeId, layout: Layout) -> Vec<Tile> {
                 category: Category::of(&node.name, node.kind, parent_category),
                 entries: node.entries,
                 path: tree.path_of(child).to_string_lossy().into_owned(),
+                change: change(child),
             }
         })
         .collect();
@@ -351,6 +379,12 @@ pub fn tiles(tree: &Tree, id: NodeId, layout: Layout) -> Vec<Tile> {
         && let Some(&rect) = rects.last()
     {
         let count = tail.iter().map(|&(child, _)| tree.node(child).entries).sum();
+        // What the gathered children held, together — when they hold
+        // anything of the kind: a picture of one moment has nothing to add.
+        let change = tail.iter().filter_map(|&(child, _)| change(child)).reduce(|total, one| Delta {
+            before: total.before.saturating_add(one.before),
+            now: total.now.saturating_add(one.now),
+        });
         tiles.push(Tile {
             id: None,
             name: remainder_name(tail.len()),
@@ -360,6 +394,7 @@ pub fn tiles(tree: &Tree, id: NodeId, layout: Layout) -> Vec<Tile> {
             category: Category::Other,
             entries: count,
             path: String::new(),
+            change,
         });
     }
 

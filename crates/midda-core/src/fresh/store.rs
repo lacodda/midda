@@ -19,6 +19,10 @@
 //! cut short by a crash is refused rather than read as a smaller disk.
 //!
 //! On a system volume of three million entries the file is around 130 MB.
+//!
+//! The same file, kept under another name, is a snapshot: a picture of the
+//! folder at a moment, compared later with another ([`crate::snapshot`]).
+//! One format for both — a snapshot is a saved index nobody brings up to date.
 
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
@@ -53,7 +57,14 @@ const OTHER_VOLUME: u8 = 1 << 4;
 /// has characters a file name cannot, and the path is inside the file anyway.
 #[must_use]
 pub fn file_for(directory: &Path, root: &Path) -> PathBuf {
-    directory.join(format!("{:016x}.midx", fnv(&key_of(root))))
+    directory.join(format!("{}.midx", name_for(root)))
+}
+
+/// What everything kept for `root` is named by: a hash of its path as the
+/// volume compares it.
+#[must_use]
+pub fn name_for(root: &Path) -> String {
+    format!("{:016x}", fnv(&key_of(root)))
 }
 
 /// The path as the volume compares it: on Windows, without regard to case or
@@ -122,14 +133,36 @@ impl Encoded {
     pub fn write(&self, directory: &Path) -> std::io::Result<PathBuf> {
         std::fs::create_dir_all(directory)?;
         let path = file_for(directory, &self.root);
+        self.write_to(&path)?;
+        Ok(path)
+    }
+
+    /// Puts the index on disk at `path`, replacing what was there only once
+    /// the new file is whole. The folder above `path` has to exist.
+    ///
+    /// # Errors
+    ///
+    /// When the file cannot be written.
+    pub fn write_to(&self, path: &Path) -> std::io::Result<()> {
         let partial = path.with_extension("midx.partial");
         {
             let mut out = File::create(&partial)?;
             out.write_all(&self.bytes)?;
             out.sync_all()?;
         }
-        std::fs::rename(&partial, &path)?;
-        Ok(path)
+        std::fs::rename(&partial, path)
+    }
+
+    /// How many bytes the file will take.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Whether there is nothing to write — which an encoded index never is.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
     }
 }
 
@@ -166,17 +199,8 @@ pub struct Saved {
 ///
 /// Why it could not be used. Every reason is a reason to scan instead.
 pub fn load(directory: &Path, root: &Path) -> Result<Saved, Unusable> {
-    let path = file_for(directory, root);
-    let file = match File::open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(Unusable::Missing),
-        Err(error) => return Err(Unusable::Damaged(error.to_string())),
-    };
-    let saved = read(&mut BufReader::with_capacity(1 << 20, file)).map_err(|error| match error {
-        Problem::Format => Unusable::OtherFormat,
-        Problem::Damaged(why) => Unusable::Damaged(why),
-    })?;
-    if key_of(saved.index.tree().root_path()) != key_of(root) {
+    let saved = load_file(&file_for(directory, root))?;
+    if !same_folder(saved.index.tree().root_path(), root) {
         return Err(Unusable::Damaged("it describes another folder".into()));
     }
     if let (Some(then), Some(now)) = (saved.index.tree().root().identity, crate::platform::own(root).identity)
@@ -185,6 +209,68 @@ pub fn load(directory: &Path, root: &Path) -> Result<Saved, Unusable> {
         return Err(Unusable::Replaced);
     }
     Ok(saved)
+}
+
+/// Reads the index in the file at `path`, whatever folder it describes and
+/// whether or not that folder is still the one at its path.
+///
+/// What a snapshot is read with: a picture of a folder since deleted and
+/// made again is still a picture of that path at that moment.
+///
+/// # Errors
+///
+/// Why it could not be read.
+pub fn load_file(path: &Path) -> Result<Saved, Unusable> {
+    read(&mut open(path)?).map_err(Unusable::from)
+}
+
+/// What a saved index says about itself, read without its nodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Header {
+    /// The folder it is a picture of.
+    pub root: PathBuf,
+    /// When that folder was last read in full before it was saved.
+    pub scanned_at: SystemTime,
+    /// When it was written: the moment the picture is of.
+    pub saved_at: SystemTime,
+}
+
+/// Reads what the file at `path` says about itself: a few hundred bytes, not
+/// the hundred megabytes after them. What a list of snapshots is made from.
+///
+/// # Errors
+///
+/// Why the file is not an index this version can read.
+pub fn header(path: &Path) -> Result<Header, Unusable> {
+    let head = read_head(&mut open(path)?).map_err(Unusable::from)?;
+    Ok(Header {
+        root: head.root,
+        scanned_at: head.scanned_at,
+        saved_at: head.saved_at,
+    })
+}
+
+/// Whether two paths name the same folder, as the volume compares them.
+#[must_use]
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    key_of(a) == key_of(b)
+}
+
+fn open(path: &Path) -> Result<BufReader<File>, Unusable> {
+    match File::open(path) {
+        Ok(file) => Ok(BufReader::with_capacity(1 << 20, file)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(Unusable::Missing),
+        Err(error) => Err(Unusable::Damaged(error.to_string())),
+    }
+}
+
+impl From<Problem> for Unusable {
+    fn from(problem: Problem) -> Self {
+        match problem {
+            Problem::Format => Self::OtherFormat,
+            Problem::Damaged(why) => Self::Damaged(why),
+        }
+    }
 }
 
 fn write(out: &mut impl Write, index: &Index, saved_at: SystemTime) -> std::io::Result<()> {
@@ -305,7 +391,18 @@ fn damaged(why: &str) -> Problem {
     Problem::Damaged(why.to_owned())
 }
 
-fn read(input: &mut impl Read) -> Result<Saved, Problem> {
+/// The fields before the journal position: everything that says what the
+/// file is a picture of, and when.
+struct Head {
+    root: PathBuf,
+    scanned_by: String,
+    fallback: Option<String>,
+    cluster_bytes: Option<u64>,
+    scanned_at: SystemTime,
+    saved_at: SystemTime,
+}
+
+fn read_head(input: &mut impl Read) -> Result<Head, Problem> {
     let mut magic = [0_u8; 4];
     input.read_exact(&mut magic)?;
     if &magic != MAGIC {
@@ -317,12 +414,25 @@ fn read(input: &mut impl Read) -> Result<Saved, Problem> {
         return Err(Problem::Format);
     }
 
-    let root = PathBuf::from(read_text(input)?);
-    let scanned_by = read_text(input)?;
-    let fallback = read_optional_text(input)?;
-    let cluster_bytes = read_optional(input)?;
-    let scanned_at = read_time(input)?.ok_or_else(|| damaged("no scan time"))?;
-    let saved_at = read_time(input)?.ok_or_else(|| damaged("no save time"))?;
+    Ok(Head {
+        root: PathBuf::from(read_text(input)?),
+        scanned_by: read_text(input)?,
+        fallback: read_optional_text(input)?,
+        cluster_bytes: read_optional(input)?,
+        scanned_at: read_time(input)?.ok_or_else(|| damaged("no scan time"))?,
+        saved_at: read_time(input)?.ok_or_else(|| damaged("no save time"))?,
+    })
+}
+
+fn read(input: &mut impl Read) -> Result<Saved, Problem> {
+    let Head {
+        root,
+        scanned_by,
+        fallback,
+        cluster_bytes,
+        scanned_at,
+        saved_at,
+    } = read_head(input)?;
     let journal = match byte(input)? {
         0 => None,
         1 => Some(JournalPosition {
