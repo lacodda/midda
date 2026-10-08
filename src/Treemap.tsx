@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { isStale, treemap, type Row, type SizeBasis, type Tile, type View } from '@/core'
+import { isStale, treemap, type Category, type Row, type SizeBasis, type Tile, type View } from '@/core'
 import { formatBytes, formatCount } from '@/format'
-import { boxOf, CATEGORY_LABELS, minAreaFor, neighbourOf, paletteOf, tileAt, type Box } from '@/treemap-layout'
+import { boxOf, CATEGORY_LABELS, minAreaFor, neighbourOf, paletteOf, tileAt, tokenReader, type Box } from '@/treemap-layout'
 
 /** How much of the box a tile needs before a label fits on it. */
 const LABEL_MIN_WIDTH = 56
@@ -140,8 +140,13 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
     context.setTransform(ratio, 0, 0, ratio, 0, 0)
 
     const styles = getComputedStyle(element)
-    const ground = styles.getPropertyValue('--bg').trim()
-    const line = styles.getPropertyValue('--text').trim()
+    // Every colour the picture can use, resolved once a paint: four
+    // categories, the ground and the line.
+    const { read, release } = tokenReader(element.parentElement ?? element)
+    const ground = read('--bg')
+    const line = read('--text')
+    const byCategory = Object.fromEntries(CATEGORIES.map((category) => [category, paletteOf(read, category)]))
+    release()
 
     // The stylesheet has not arrived. Painting with invented colours would put
     // the dark theme on a white window; an empty canvas for one frame is the
@@ -154,8 +159,8 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
       const box = boxes[index]
       if (!box || box.width <= 0 || box.height <= 0) return
 
-      const palette = paletteOf(styles, tile.category)
-      if (!palette.fill) return
+      const palette = byCategory[tile.category]
+      if (!palette?.fill) return
       const lit = index === hovered || index === focused || index === selectedIndex
 
       context.fillStyle = palette.fill
@@ -336,7 +341,7 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
           picture they would cover a tile — and the tile they cover is the
           largest one, because that is where the corner is. */}
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-4 py-1.5 text-xs text-dim">
-        {(['build', 'source', 'media', 'other'] as const).map((category) => (
+        {CATEGORIES.map((category) => (
           <span key={category} className="flex items-center gap-1.5">
             <span aria-hidden className={`size-2.5 rounded-xs ${LEGEND_SWATCH[category]}`} />
             {CATEGORY_LABELS[category]}
@@ -413,3 +418,6 @@ const LEGEND_SWATCH = {
   media: 'bg-good',
   other: 'bg-raise border border-line',
 } as const
+
+/** The categories of a picture, in the order the legend names them. */
+const CATEGORIES: readonly Category[] = ['build', 'source', 'media', 'other']

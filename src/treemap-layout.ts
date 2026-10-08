@@ -62,6 +62,37 @@ export interface Palette {
   label: string
 }
 
+/** Reads a colour token — `--accent` — as a colour the canvas can paint
+ * with, or `''` when the stylesheet has not defined it yet. */
+export type TokenReader = (token: string) => string
+
+/**
+ * A reader of colour tokens for a canvas inside `host`, and what lets it go.
+ *
+ * A canvas takes a colour as a string and resolves no CSS. dowel's `--on-*`
+ * pairs are `contrast-color(...)`, which `fillStyle` refuses — and a refused
+ * `fillStyle` is ignored without a word, so every label was painted in its
+ * own tile's fill and could not be read (v0.7, found on screen in v0.8). Set
+ * as the `color` of an element, the same token comes back resolved to a
+ * colour the canvas takes, whatever function the design system writes it as.
+ */
+export function tokenReader(host: HTMLElement): { read: TokenReader; release: () => void } {
+  const probe = document.createElement('span')
+  probe.hidden = true
+  host.appendChild(probe)
+  const declared = getComputedStyle(host)
+  return {
+    read: (token) => {
+      // An undefined token would leave the probe the colour it inherits —
+      // a colour, and the wrong one. Empty is what says "not yet".
+      if (declared.getPropertyValue(token).trim() === '') return ''
+      probe.style.color = `var(${token})`
+      return getComputedStyle(probe).color
+    },
+    release: () => probe.remove(),
+  }
+}
+
 /**
  * The four fills, read out of the stylesheet rather than written here.
  *
@@ -98,8 +129,7 @@ export interface Palette {
  * failure the tokens exist to prevent. When a token reads empty the stylesheet
  * has not arrived, and the answer to that is not to invent a violet.
  */
-export function paletteOf(styles: CSSStyleDeclaration, category: Category): Palette {
-  const read = (name: string) => styles.getPropertyValue(name).trim()
+export function paletteOf(read: TokenReader, category: Category): Palette {
   switch (category) {
     case 'build':
       return { fill: read('--accent'), label: read('--on-accent') }
