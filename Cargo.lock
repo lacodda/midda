@@ -1794,7 +1794,7 @@ dependencies = [
 
 [[package]]
 name = "midda-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "rayon",
  "serde",
@@ -1806,7 +1806,7 @@ dependencies = [
 
 [[package]]
 name = "midda-desktop"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "midda-core",
  "serde",

@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.0] - 2026-10-12
+
+### Documentation
+- Record who is eating the disk in ADR 0011
+
+### Features
+- Name the folders eating the disk, and the pace it fills at
+- Open growth on who is eating the disk
+
+### Refactoring
+- Ask the core how full a volume is
 ## [0.8.0] - 2026-10-08
 
 ### Bug Fixes
