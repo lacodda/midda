@@ -33,9 +33,14 @@ import { cn } from 'dowel-ui'
  * the other stops being a list you can scan.
  */
 
+/* The quiet parts are `dim`, not `faint`. `--faint` is verified against the
+ * grounds at body size, and at 11px under a row's title a live axe run
+ * measured it below AA in both themes - on every list beside a detail, which
+ * is every block that has a list. The title against them is `text`, so the
+ * row still reads as a title and its notes. */
 const slots = {
   start: 'flex shrink-0 items-center text-dim [&_svg:not([class*=size-])]:size-4',
-  end: 'ml-auto flex shrink-0 items-center gap-1.5 text-xs text-faint tabular-nums',
+  end: 'ml-auto flex shrink-0 items-center gap-1.5 text-xs text-dim tabular-nums',
 } as const
 
 interface RowSlots {
@@ -62,7 +67,7 @@ function RowBody({ start, description, end, children, strong }: RowSlots & { str
           the list instead of truncating its words. */}
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={cn('truncate', strong && 'font-semibold')}>{children}</span>
-        {description === undefined ? null : <span className="truncate text-xs text-faint">{description}</span>}
+        {description === undefined ? null : <span className="truncate text-xs text-dim">{description}</span>}
       </span>
       {end === undefined ? null : <span className={slots.end}>{end}</span>}
     </>
