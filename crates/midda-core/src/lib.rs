@@ -61,6 +61,15 @@
 //! much it grew, how much went, and the places it came from, each counted
 //! once. See `docs/adr/0010-snapshots-and-comparisons.md`.
 //!
+//! # Who is eating the disk
+//!
+//! A tree of a volume's growth is still a question. [`growth`] answers it with
+//! a handful of folders — each named as deep as its growth is one sizeable
+//! thing, each counted once, with what is left over said as one number — and
+//! the pace: so much a day, and how long the free space lasts at it. The same
+//! rule reads a comparison and the journal's view of what was written lately.
+//! See `docs/adr/0011-who-is-eating-the-disk.md`.
+//!
 //! ```no_run
 //! use midda_core::{Progress, SizeBasis, scan};
 //!
@@ -77,6 +86,7 @@
 pub mod compare;
 pub mod error;
 pub mod fresh;
+pub mod growth;
 pub mod links;
 pub mod mft;
 pub mod order;
@@ -92,6 +102,7 @@ pub mod walk;
 pub use compare::{Comparison, Mark, Place, PlaceKind, Totals, compare};
 pub use error::{Error, Result};
 pub use fresh::{Applied, Index, JournalPosition, Observed};
+pub use growth::{Grower, Growers, Pace};
 pub use links::Deduplicated;
 pub use mft::{Acceleration, MftScanner, acceleration};
 pub use order::{Direction, Sort, SortKey, Span};

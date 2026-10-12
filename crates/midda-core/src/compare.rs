@@ -32,6 +32,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::growth::{self, Growers};
 use crate::order::{self, Sort, SortKey, Span, Value};
 use crate::size::{Size, SizeBasis};
 use crate::tree::{Node, NodeId, ROOT, Tree, listing_order};
@@ -189,6 +190,20 @@ impl Comparison {
                 })
             },
         )
+    }
+
+    /// The folders that grew most on `basis`, each counted once: who is
+    /// eating the disk. See [`crate::growth`].
+    #[must_use]
+    pub fn growers(&self, basis: SizeBasis) -> Growers {
+        growth::growers(&self.tree, basis.of(self.totals.grown), |id| self.growth(id, basis), |_| false)
+    }
+
+    /// The folders that shrank most on `basis`, by the same rule, read the
+    /// other way: each line's numbers are what it freed.
+    #[must_use]
+    pub fn shrinkers(&self, basis: SizeBasis) -> Growers {
+        growth::growers(&self.tree, basis.of(self.totals.freed), |id| self.growth(id, basis).saturating_neg(), |_| false)
     }
 
     /// Every place bytes came or went, each counted once. See [`Place`].
@@ -829,6 +844,32 @@ mod tests {
         let totals = comparison.totals();
         assert_eq!(places.iter().map(|place| place.freed).sum::<Size>(), totals.freed);
         assert_eq!(places.iter().map(|place| place.grown).sum::<Size>(), totals.grown);
+    }
+
+    #[test]
+    fn who_grew_and_who_freed_are_named_from_the_comparison() {
+        let (then, now) = days();
+        let comparison = compare(&then, &now);
+        let named = |growers: &Growers| -> Vec<String> {
+            growers
+                .growers
+                .iter()
+                .map(|grower| comparison.tree().path_of(grower.id).to_string_lossy().replace('\\', "/"))
+                .collect()
+        };
+
+        // The download and the dependencies grew; app only through them.
+        let growers = comparison.growers(A);
+        assert_eq!(named(&growers), ["C:/scan/downloads", "C:/scan/app/node_modules"]);
+        assert_eq!(growers.growers[1].growth, 550, "net: 750 came, 200 went");
+        assert_eq!(growers.threshold, 5_750 / growth::SHARE, "a fiftieth of all that grew");
+        let own: i64 = growers.growers.iter().map(|grower| grower.own).sum();
+        assert_eq!(own + growers.rest, comparison.growth(ROOT, A));
+
+        // Read the other way: the cache went.
+        let shrinkers = comparison.shrinkers(A);
+        assert_eq!(named(&shrinkers), ["C:/scan/cache"]);
+        assert_eq!(shrinkers.growers[0].own, 1_050, "a shrinker's numbers are what it freed");
     }
 
     #[test]
