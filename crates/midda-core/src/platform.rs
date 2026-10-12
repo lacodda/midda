@@ -333,6 +333,26 @@ pub fn cluster_bytes_of(path: &Path) -> Option<u64> {
     imp::cluster_bytes_of(path)
 }
 
+/// How large a volume is and how much of it is free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Space {
+    pub total: u64,
+    /// What the volume has free — not what a quota would leave this user:
+    /// what it is compared against is the volume filling, which is the
+    /// volume's.
+    pub free: u64,
+}
+
+/// The size and free space of the volume `path` is on, when it can be read.
+///
+/// Any path on the volume will do, a folder being scanned as well as its
+/// root. Not run on a window's thread: a disconnected network drive can take
+/// seconds to answer.
+#[must_use]
+pub fn space_of(path: &Path) -> Option<Space> {
+    imp::space_of(path)
+}
+
 #[cfg(windows)]
 mod imp {
     use std::fs::Metadata;
@@ -343,7 +363,8 @@ mod imp {
     use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_128, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileBasicInfo, FileIdInfo, FileStandardInfo, GetDiskFreeSpaceW, GetFileInformationByHandleEx, OPEN_EXISTING,
+        FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileBasicInfo, FileIdInfo, FileStandardInfo, GetDiskFreeSpaceExW, GetDiskFreeSpaceW,
+        GetFileInformationByHandleEx, OPEN_EXISTING,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -716,6 +737,20 @@ mod imp {
         (cluster > 0).then_some(cluster)
     }
 
+    pub(super) fn space_of(path: &Path) -> Option<super::Space> {
+        let wide = wide(path);
+        let mut free_to_caller: u64 = 0;
+        let mut total: u64 = 0;
+        let mut free: u64 = 0;
+
+        // SAFETY: `wide` is NUL-terminated and outlives the call; the three
+        // out-parameters are valid writable u64s, written only through those
+        // pointers.
+        #[allow(unsafe_code, reason = "the free space of a volume is not exposed by std")]
+        let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &raw mut free_to_caller, &raw mut total, &raw mut free) };
+        (ok != 0).then_some(super::Space { total, free })
+    }
+
     /// The volume root a path sits on: `C:\Projects\midda` becomes `C:\`.
     fn root_of(path: &Path) -> Option<std::path::PathBuf> {
         use std::path::Component;
@@ -788,6 +823,11 @@ mod imp {
         None
     }
 
+    // `statvfs` is libc's, not std's; off Windows nothing forecasts yet.
+    pub(super) const fn space_of(_path: &Path) -> Option<super::Space> {
+        None
+    }
+
     // `lstat` reads the inode, which is the truth already: there is no second
     // copy in the directory to lag behind it.
     pub(super) fn own(path: &Path) -> super::Own {
@@ -847,6 +887,18 @@ mod tests {
         file.write_all(&vec![b'x'; bytes]).expect("write");
         file.sync_all().expect("sync");
         path
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_answers_for_the_space_of_its_volume() {
+        // A folder, not a root: the pace of a scanned folder is set against
+        // the volume it is on.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let space = space_of(dir.path()).expect("a local volume says how full it is");
+        assert!(space.total > 0);
+        assert!(space.free <= space.total);
+        assert_eq!(space_of(&dir.path().join("not-there")), None, "a path that is not there is not a volume");
     }
 
     #[test]

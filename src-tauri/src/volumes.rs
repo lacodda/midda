@@ -68,34 +68,15 @@ mod imp {
                 // disconnected network share — has no space to report. It is
                 // listed anyway, without numbers, because it is still somewhere
                 // a scan could be pointed once it is ready.
-                let (total, free) = space(&path).map_or((None, None), |(total, free)| (Some(total), Some(free)));
+                let space = midda_core::platform::space_of(std::path::Path::new(&path));
                 Some(Volume {
                     label: label(&path).unwrap_or_else(|| path.clone()),
                     path,
-                    total,
-                    free,
+                    total: space.map(|space| space.total),
+                    free: space.map(|space| space.free),
                 })
             })
             .collect()
-    }
-
-    /// Total and free bytes on a volume.
-    fn space(path: &str) -> Option<(u64, u64)> {
-        let wide = wide(path);
-        let mut free_to_caller: u64 = 0;
-        let mut total: u64 = 0;
-        let mut free: u64 = 0;
-
-        // SAFETY: `wide` is NUL-terminated and outlives the call; the three
-        // out-parameters are valid writable `u64`s written only through those
-        // pointers.
-        #[allow(unsafe_code, reason = "free space on a volume is not exposed by std")]
-        let ok = unsafe { windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(wide.as_ptr(), &raw mut free_to_caller, &raw mut total, &raw mut free) };
-
-        // `free_to_caller` is what a quota would leave this user; `free` is what
-        // the volume actually has. midda reports the volume, because the number
-        // it is about to compare against is the volume's too.
-        (ok != 0).then_some((total, free))
     }
 
     /// The volume label, when it has one: "Windows", "Data".
