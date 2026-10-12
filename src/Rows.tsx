@@ -1,13 +1,18 @@
 import { Segment, SegmentedControl } from '@/components/ui/segmented-control'
 import { ComparisonReport } from '@/ComparisonReport'
 import { EntryTable } from '@/EntryTable'
+import { TopGrowth } from '@/TopGrowth'
 import { Treemap } from '@/Treemap'
 import type { ChangesSummary, ComparisonSummary, Row, ScanResult, Size, SizeBasis, Sort, SortKey, View } from '@/core'
 import { growthOf, pick, sizeOf } from '@/core'
 import { describeChanges, describeComparison, describeOverhead, describeScan, explainSize, formatBytes, formatCount, formatSigned } from '@/format'
 
-/** How a comparison is shown: as the folder's tree, or as one page. */
-export type CompareMode = 'tree' | 'report'
+/**
+ * How a view of growth is shown: who is eating the disk, as a list; the
+ * folder's tree, with the picture; or - a comparison only - the page of what
+ * came back and from where.
+ */
+export type Shape = 'top' | 'tree' | 'report'
 
 interface RowsProps {
   /** Which tree is shown: the folder as it is, or what was written lately. */
@@ -23,9 +28,11 @@ interface RowsProps {
   hours: number
   /** Two pictures compared, when that is the view. */
   comparison: ComparisonSummary | null
-  compareMode: CompareMode
-  onCompareMode: (mode: CompareMode) => void
-  /** A place in the report was chosen: show it in the comparison's tree. */
+  /** How the view of growth on screen is shown. */
+  shape: Shape
+  onShape: (shape: Shape) => void
+  /** A line of the list or a place in the report was chosen: show it in
+   * the view's tree. */
   onOpenPlace: (id: number) => void
   /** The scan root down to what is on screen. */
   trail: Row[]
@@ -59,8 +66,8 @@ export function Rows({
   changes,
   hours,
   comparison,
-  compareMode,
-  onCompareMode,
+  shape,
+  onShape,
   onOpenPlace,
   trail,
   showing,
@@ -98,10 +105,11 @@ export function Rows({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* A comparison says what its numbers are first, and offers its other
-          shape: the page that answers "how much came back, and from where". */}
+          shapes: the list of who is eating the disk, and the page that
+          answers "how much came back, and from where". */}
       {compared !== null && comparison !== null && (
         <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
-          {compareMode === 'tree' ? (
+          {shape === 'tree' ? (
             <>
               <span className="tabular text-sm">
                 <span className={`font-medium ${(growthOf(showing, basis) ?? 0) > 0 ? 'text-bad' : (growthOf(showing, basis) ?? 0) < 0 ? 'text-good' : 'text-text'}`}>
@@ -134,115 +142,158 @@ export function Rows({
                 ))}
             </>
           ) : (
-            <span className="text-sm text-text">One page: what came back, and from where</span>
+            <span className="text-sm text-text">{shape === 'top' ? 'Who is eating the disk, and how fast' : 'One page: what came back, and from where'}</span>
           )}
           <SegmentedControl
             aria-label="How to show the comparison"
             className="ml-auto"
-            value={compareMode}
+            value={shape}
             onValueChange={(next) => {
-              if (next === 'tree' || next === 'report') onCompareMode(next)
+              if (next === 'top' || next === 'tree' || next === 'report') onShape(next)
             }}
           >
+            <Segment value="top">Top</Segment>
             <Segment value="tree">Tree</Segment>
             <Segment value="report">Report</Segment>
           </SegmentedControl>
         </div>
       )}
 
-      {compared !== null && comparison !== null && compareMode === 'report' ? (
-        <ComparisonReport summary={comparison} basis={basis} root={trail[0]?.path ?? showing.path} onOpen={onOpenPlace} />
-      ) : (
-        <>
-          {/* One strip: what this folder costs first, then how the numbers were
-              read and anything about them that needs saying. It was two - a trail
-              with the total, and the notes under it - until the trail moved up
-              into the title bar, and a strip holding only a total is a strip of
-              screen spent on one number. */}
-          {compared === null && (
-            <div className="flex shrink-0 flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
-              <span className="tabular text-sm">
-                <span className="font-medium text-text">{formatBytes(total)}</span> · {formatCount(showing.entries)} entries
-              </span>
-              {/* How the numbers were read, at the root: the same answer arrives in
-                  minutes or in seconds, and a fallback from the fast way is said
-                  rather than left to look like a slow disk. */}
-              {/* In the view of what changed, the strip says what the numbers are:
-                  what was written, what it holds now, and how far back the
-                  journal reaches. Said at every depth - it is true of every
-                  folder in this view, not only of its root. */}
-              {lately && describeChanges(changes, hours).map((part) => <span key={part}>{part}</span>)}
-              {!lately && atRoot && <span>{describeScan(result.scannedBy, result.elapsedMs)}</span>}
-              {!lately && atRoot && result.fallback !== null && <span className="text-warn">{result.fallback}</span>}
-              {overhead !== null && <span>{overhead}</span>}
-              {showsExplanation && <span>{explanation}</span>}
-              {result.clusterBytes !== null && overhead !== null && <span>cluster {formatBytes(result.clusterBytes)}</span>}
-              {/* The difference between midda's total and a naive one, stated rather
-                  than silently applied. A volume holding a package manager's store
-                  can double under a scanner that counts every name of a hard-linked
-                  file, and a reader comparing two tools should be able to see which
-                  of them is explaining itself. */}
-              {showsShared && (
-                <span>
-                  {formatCount(result.sharedNames)} {result.sharedNames === 1 ? 'entry is another name' : 'entries are other names'} for bytes counted
-                  elsewhere — {formatBytes(result.sharedReclaimed)} not counted twice
-                </span>
-              )}
-              {/* A scan of a system volume always refuses something. Saying so is
-                  the difference between a total that is short and a total that is
-                  quietly wrong. Only at the scan root: the count is for the whole
-                  scan, and repeating it inside every folder would read as a claim
-                  about that folder — which nothing here knows. */}
-              {showsSkipped && <span>{formatCount(result.skipped)} entries could not be read in this scan</span>}
-            </div>
+      {/* What was written lately says what its numbers are first, at every
+          shape, and offers the list beside the tree. */}
+      {lately && (
+        <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
+          {shape === 'tree' && (
+            <span className="tabular text-sm">
+              <span className="font-medium text-text">{formatBytes(total)}</span> · {formatCount(showing.entries)} entries
+            </span>
           )}
+          {describeChanges(changes, hours).map((part) => (
+            <span key={part}>{part}</span>
+          ))}
+          <SegmentedControl
+            aria-label="How to show what was written"
+            className="ml-auto"
+            value={shape === 'report' ? 'top' : shape}
+            onValueChange={(next) => {
+              if (next === 'top' || next === 'tree') onShape(next)
+            }}
+          >
+            <Segment value="top">Top</Segment>
+            <Segment value="tree">Tree</Segment>
+          </SegmentedControl>
+        </div>
+      )}
 
-          {/* Side by side above 60rem, stacked below it. The split is the shape of
-              the product: the list and the picture are two readings of one folder,
-              and a window narrow enough that they would crowd each other gets them
-              one after the other rather than one instead of the other. */}
-          <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,53fr)_minmax(0,47fr)] lg:grid-rows-1">
-            <div className="flex min-h-0 min-w-0 flex-col border-b border-line lg:border-b-0 lg:border-r">
-              {/* Keyed by the folder and the order: a change to either makes every
-                  row held meaningless, and a fresh component says that better than
-                  clearing five pieces of state by hand. */}
-              <EntryTable
-                key={`${view}:${arena}:${showing.id}:${sort.key}:${sort.direction}`}
-                view={view}
-                arena={arena}
-                version={version}
-                parentId={showing.id}
-                total={total}
-                sort={sort}
-                basis={basis}
-                selectedId={selected?.id ?? null}
-                onSortChange={onSortChange}
-                onDescend={onDescend}
-                onSelect={onSelect}
-              />
-            </div>
-
-            <div className="flex min-h-0 min-w-0 flex-col">
-              <Treemap
-                // Same reasoning as the table: a new folder or a new basis makes
-                // every rectangle held meaningless.
-                key={`${view}:${arena}:${showing.id}:${basis}`}
-                view={view}
-                arena={arena}
-                version={version}
-                parentId={showing.id}
-                parentName={showing.name}
-                basis={basis}
-                selected={selected}
-                onDescend={onDescendById}
-                onSelect={onSelectById}
-              />
-            </div>
-          </div>
-        </>
+      {compared !== null && comparison !== null && shape === 'report' ? (
+        <ComparisonReport summary={comparison} basis={basis} root={trail[0]?.path ?? showing.path} onOpen={onOpenPlace} />
+      ) : (compared !== null && comparison !== null) || lately ? (
+        shape !== 'tree' ? (
+          <TopGrowth
+            view={lately ? 'changes' : 'compare'}
+            arena={arena}
+            basis={basis}
+            root={trail[0]?.path ?? showing.path}
+            comparison={lately ? null : comparison}
+            hours={hours}
+            onOpen={onOpenPlace}
+          />
+        ) : (
+          tree()
+        )
+      ) : (
+        tree()
       )}
     </div>
   )
+
+  /** The folder as a table and a picture, side by side. */
+  function tree() {
+    return (
+      <>
+        {/* One strip: what this folder costs first, then how the numbers were
+            read and anything about them that needs saying. It was two - a trail
+            with the total, and the notes under it - until the trail moved up
+            into the title bar, and a strip holding only a total is a strip of
+            screen spent on one number. */}
+        {compared === null && !lately && (
+          <div className="flex shrink-0 flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
+            <span className="tabular text-sm">
+              <span className="font-medium text-text">{formatBytes(total)}</span> · {formatCount(showing.entries)} entries
+            </span>
+            {/* How the numbers were read, at the root: the same answer arrives in
+                minutes or in seconds, and a fallback from the fast way is said
+                rather than left to look like a slow disk. */}
+            {atRoot && <span>{describeScan(result.scannedBy, result.elapsedMs)}</span>}
+            {atRoot && result.fallback !== null && <span className="text-warn">{result.fallback}</span>}
+            {overhead !== null && <span>{overhead}</span>}
+            {showsExplanation && <span>{explanation}</span>}
+            {result.clusterBytes !== null && overhead !== null && <span>cluster {formatBytes(result.clusterBytes)}</span>}
+            {/* The difference between midda's total and a naive one, stated rather
+                than silently applied. A volume holding a package manager's store
+                can double under a scanner that counts every name of a hard-linked
+                file, and a reader comparing two tools should be able to see which
+                of them is explaining itself. */}
+            {showsShared && (
+              <span>
+                {formatCount(result.sharedNames)} {result.sharedNames === 1 ? 'entry is another name' : 'entries are other names'} for bytes counted
+                elsewhere — {formatBytes(result.sharedReclaimed)} not counted twice
+              </span>
+            )}
+            {/* A scan of a system volume always refuses something. Saying so is
+                the difference between a total that is short and a total that is
+                quietly wrong. Only at the scan root: the count is for the whole
+                scan, and repeating it inside every folder would read as a claim
+                about that folder — which nothing here knows. */}
+            {showsSkipped && <span>{formatCount(result.skipped)} entries could not be read in this scan</span>}
+          </div>
+        )}
+
+        {/* Side by side above 60rem, stacked below it. The split is the shape of
+            the product: the list and the picture are two readings of one folder,
+            and a window narrow enough that they would crowd each other gets them
+            one after the other rather than one instead of the other. */}
+        <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[minmax(0,53fr)_minmax(0,47fr)] lg:grid-rows-1">
+          <div className="flex min-h-0 min-w-0 flex-col border-b border-line lg:border-b-0 lg:border-r">
+            {/* Keyed by the folder and the order: a change to either makes every
+                row held meaningless, and a fresh component says that better than
+                clearing five pieces of state by hand. */}
+            <EntryTable
+              key={`${view}:${arena}:${showing.id}:${sort.key}:${sort.direction}`}
+              view={view}
+              arena={arena}
+              version={version}
+              parentId={showing.id}
+              total={total}
+              sort={sort}
+              basis={basis}
+              selectedId={selected?.id ?? null}
+              onSortChange={onSortChange}
+              onDescend={onDescend}
+              onSelect={onSelect}
+            />
+          </div>
+
+          <div className="flex min-h-0 min-w-0 flex-col">
+            <Treemap
+              // Same reasoning as the table: a new folder or a new basis makes
+              // every rectangle held meaningless.
+              key={`${view}:${arena}:${showing.id}:${basis}`}
+              view={view}
+              arena={arena}
+              version={version}
+              parentId={showing.id}
+              parentName={showing.name}
+              basis={basis}
+              selected={selected}
+              onDescend={onDescendById}
+              onSelect={onSelectById}
+            />
+          </div>
+        </div>
+      </>
+    )
+  }
 }
 
 /** What a folder of a comparison held at two moments and moved, split into

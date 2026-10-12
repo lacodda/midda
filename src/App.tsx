@@ -41,7 +41,7 @@ import {
   type Volume,
 } from '@/core'
 import { CHANGE_SPANS, describeFreshness, formatBytes, formatCount } from '@/format'
-import { Rows, type CompareMode } from '@/Rows'
+import { Rows, type Shape } from '@/Rows'
 import { SnapshotMenu } from '@/SnapshotMenu'
 import { Splash } from '@/Splash'
 import { Volumes } from '@/Volumes'
@@ -85,6 +85,10 @@ type Span = 'all' | 'grown' | 'day' | 'week'
 /** The order each view opens in. A comparison's is its own question. */
 const SORTS: Record<View, Sort> = { index: DEFAULT_SORT, changes: DEFAULT_SORT, compare: GROWTH_SORT }
 
+/** How each view of growth opens: as the list of who is eating the disk,
+ * which is the question both are asked. */
+const SHAPES: Record<'changes' | 'compare', Shape> = { changes: 'top', compare: 'top' }
+
 /** One trail and the ids it is in, per view. */
 interface Place {
   trail: Row[]
@@ -114,7 +118,9 @@ export default function App() {
   const [gathering, setGathering] = useState(false)
   /** Two pictures of the folder compared, once asked. */
   const [comparison, setComparison] = useState<ComparisonSummary | null>(null)
-  const [compareMode, setCompareMode] = useState<CompareMode>('tree')
+  /** How each view of growth is shown, kept apart: the list for one and the
+   * tree for the other is a reader comparing two answers. */
+  const [shapes, setShapes] = useState(SHAPES)
   /** Where the reader is in each view. */
   const [places, setPlaces] = useState<Record<View, Place>>({ index: NOWHERE, changes: NOWHERE, compare: NOWHERE })
   /** The version of the folder's tree the screen was last drawn from. */
@@ -194,6 +200,7 @@ export default function App() {
       setView('index')
       setChanges(null)
       setComparison(null)
+      setShapes(SHAPES)
       setPlaces({ index: NOWHERE, changes: NOWHERE, compare: NOWHERE })
       setSelected(null)
 
@@ -294,11 +301,12 @@ export default function App() {
     setSorts((sorts) => ({ index: moved(sorts.index), changes: moved(sorts.changes), compare: moved(sorts.compare) }))
   }, [])
 
-  /** Puts a comparison on screen, at its root, as its tree. */
+  /** Puts a comparison on screen, at its root, as the list of who is
+   * eating the disk. */
   const showComparison = useCallback((summary: ComparisonSummary) => {
     setComparison(summary)
     setPlaces((places) => ({ ...places, compare: { trail: [summary.root], arena: summary.arena } }))
-    setCompareMode('tree')
+    setShapes((shapes) => ({ ...shapes, compare: SHAPES.compare }))
     setSelected(null)
     setView('compare')
   }, [])
@@ -327,23 +335,25 @@ export default function App() {
     }
   }, [showComparison])
 
-  /* A place chosen in the report: its folder in the comparison's tree, with
-   * a file selected rather than entered - a file has nothing inside. */
+  /* A line of the list or a place in the report, chosen: its folder in the
+   * view's tree, with a file selected rather than entered - a file has
+   * nothing inside. */
   const openPlace = useCallback(
     (id: number) => {
-      void trailTo('compare', places.compare.arena, id)
+      if (view === 'index') return
+      void trailTo(view, places[view].arena, id)
         .then((steps) => {
           const last = steps.at(-1)
           const folder = last !== undefined && !last.isDirectory ? steps.slice(0, -1) : steps
-          setPlaces((places) => ({ ...places, compare: { ...places.compare, trail: folder } }))
+          setPlaces((places) => ({ ...places, [view]: { ...places[view], trail: folder } }))
           setSelected(last !== undefined && !last.isDirectory ? last : null)
-          setCompareMode('tree')
+          setShapes((shapes) => ({ ...shapes, [view]: 'tree' }))
         })
         .catch((cause: unknown) => {
           if (!isStale(cause)) setNotice(String(cause))
         })
     },
-    [places.compare.arena],
+    [view, places],
   )
 
   /* The span control. "All" is the folder as it is; the others ask the
@@ -368,6 +378,7 @@ export default function App() {
       const summary = await changesSince(span)
       setChanges(summary)
       setPlaces((places) => ({ ...places, changes: { trail: [summary.root], arena: summary.arena } }))
+      setShapes((shapes) => ({ ...shapes, changes: SHAPES.changes }))
     } catch (cause) {
       setNotice(`What changed could not be read: ${String(cause)}`)
       setView('index')
@@ -656,8 +667,10 @@ export default function App() {
               changes={changes}
               hours={hours}
               comparison={comparison}
-              compareMode={compareMode}
-              onCompareMode={setCompareMode}
+              shape={view === 'index' ? 'tree' : shapes[view]}
+              onShape={(shape) => {
+                if (view !== 'index') setShapes((shapes) => ({ ...shapes, [view]: shape }))
+              }}
               onOpenPlace={openPlace}
               trail={place.trail}
               showing={showing}

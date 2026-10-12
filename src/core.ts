@@ -280,6 +280,58 @@ export interface Report {
   grownRest: Rest
 }
 
+/** One line of who is eating the disk. Mirrors `GrowerRow`. */
+export interface GrowerRow {
+  /** The folder in the view's tree. */
+  id: number
+  path: string
+  /** What the whole folder grew by, the lines inside it included; in the
+   * list of what was freed, what it freed. */
+  growth: number
+  /** What this line accounts for apart from the lines inside it. */
+  own: number
+  /** How many lines are named inside it. */
+  inside: number
+  /** The files directly in the folder compared, not a folder. */
+  loose: boolean
+  /** How many entries came, went or changed under it. */
+  entries: number
+  /** In a comparison, how the folder came to be in it. */
+  mark: Mark | null
+}
+
+/** One side of who is eating the disk. Mirrors `GrowerSide`. */
+export interface GrowerSide {
+  growers: GrowerRow[]
+  /** The lines past the ones listed, added up. */
+  more: Rest
+  /** What grew in pieces too small to name, on balance. */
+  rest: number
+  /** What a folder had to account for on its own to be named. */
+  threshold: number
+}
+
+/** How fast the folder grew. Mirrors `PaceRow`. */
+export interface PaceRow {
+  /** Growth in a day, on the size shown. */
+  perDay: number
+  /** Days until the volume's free space is gone at this pace, on disk. */
+  fullInDays: number | null
+}
+
+/** Who is eating the disk. Mirrors `Top`. */
+export interface Top {
+  arena: number
+  grew: GrowerSide
+  /** What shrank, in a comparison; `null` in the view of what was written. */
+  freed: GrowerSide | null
+  spanMs: number | null
+  /** `null` unless the view is a comparison a day or more long. */
+  pace: PaceRow | null
+  /** What the volume had free when the comparison was made. */
+  free: number | null
+}
+
 /** A rectangle in fractions of the box being drawn. Mirrors `Rect`. */
 export interface Rect {
   x: number
@@ -439,6 +491,12 @@ export function compareSnapshots(from: string, to: string | null): Promise<Compa
 /** The report of the comparison in `arena`: `limit` places each way. */
 export function comparisonReport(arena: number, basis: SizeBasis, limit: number): Promise<Report> {
   return invoke<Report>('comparison_report', { arena, basis, limit })
+}
+
+/** Who is eating the disk in the comparison or the view of what was written
+ * in `arena`: `limit` lines each way. */
+export function topGrowth(view: View, arena: number, basis: SizeBasis, limit: number): Promise<Top> {
+  return invoke<Top>('top_growth', { view, arena, basis, limit })
 }
 
 /** Picks the size a basis names out of a row. */

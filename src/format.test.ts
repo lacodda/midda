@@ -3,7 +3,11 @@ import {
   CHANGE_SPANS,
   describeChanges,
   describeComparison,
+  describeGrower,
   describePlace,
+  formatGap,
+  formatPerDay,
+  formatRunway,
   describeSnapshot,
   formatSigned,
   relativeTo,
@@ -455,5 +459,55 @@ describe('relativeTo', () => {
     expect(relativeTo('C:\\work', 'C:\\work')).toBe('work')
     expect(relativeTo('C:\\', 'C:\\')).toBe('C:')
     expect(relativeTo('C:\\work', 'C:\\workshop\\a')).toBe('C:\\workshop\\a')
+  })
+})
+
+describe('formatPerDay', () => {
+  it('says a pace with its sign', () => {
+    expect(formatPerDay(1.5 * 1024 ** 3)).toBe('+1.5 GB a day')
+    expect(formatPerDay(-300 * 1024 ** 2)).toBe('−300 MB a day')
+  })
+})
+
+describe('formatGap', () => {
+  it('says how far apart two pictures are, roughly', () => {
+    expect(formatGap(20_000)).toBe('under a minute')
+    expect(formatGap(45 * 60_000)).toBe('45 min')
+    expect(formatGap(3 * 3_600_000)).toBe('3 h')
+    expect(formatGap(47 * 3_600_000)).toBe('47 h')
+    expect(formatGap(4 * 86_400_000)).toBe('4 days')
+  })
+})
+
+describe('formatRunway', () => {
+  it('says how long the free space lasts no more precisely than it was measured', () => {
+    expect(formatRunway(0.4)).toBe('less than a day')
+    expect(formatRunway(1.2)).toBe('about a day')
+    expect(formatRunway(9.6)).toBe('about 10 days')
+    expect(formatRunway(23)).toBe('about 3 weeks')
+    expect(formatRunway(200)).toBe('about 7 months')
+    expect(formatRunway(1000)).toBe('about 3 years')
+    expect(formatRunway(1e6)).toBe('more than ten years')
+  })
+})
+
+describe('describeGrower', () => {
+  const line = { growth: 2048, own: 2048, inside: 0, loose: false, entries: 3, mark: 'changed' as const }
+
+  it('says how the folder came to be on the list', () => {
+    expect(describeGrower({ ...line, mark: 'new', entries: 1205 }, 'grew')).toBe('new folder · 1,205 entries')
+    expect(describeGrower(line, 'grew')).toBe('3 entries changed')
+    expect(describeGrower({ ...line, mark: 'gone' }, 'freed')).toBe('folder gone · 3 entries')
+    expect(describeGrower({ ...line, mark: null }, 'written')).toBe('3 entries')
+  })
+
+  it('names the files directly in the root as files, not as the folder', () => {
+    expect(describeGrower({ ...line, loose: true, entries: 1, mark: null }, 'grew')).toBe('files directly in it · 1 file')
+  })
+
+  it('says what the whole folder came to when lines are named inside it', () => {
+    // The figure on the line is its own share; the folder grew by more.
+    expect(describeGrower({ ...line, growth: 6 * 1024 ** 3, inside: 1 }, 'grew')).toBe('3 entries changed · +6.0 GB counting the line under it')
+    expect(describeGrower({ ...line, growth: 6 * 1024 ** 3, inside: 2 }, 'freed')).toBe('3 entries changed · 6.0 GB counting the 2 lines under it')
   })
 })

@@ -50,6 +50,7 @@ pub fn run() {
             session::delete_snapshot,
             session::compare_snapshots,
             session::comparison_report,
+            session::top_growth,
             elevate::acceleration,
             elevate::accelerate,
             elevate::launch_request,

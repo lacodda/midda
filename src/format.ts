@@ -425,6 +425,82 @@ export function describePlace(place: { kind: 'gone' | 'new' | 'replaced' | 'file
   }
 }
 
+/** A pace as a person reads it: `+1.2 GB a day`. */
+export function formatPerDay(bytes: number): string {
+  return `${formatSigned(bytes)} a day`
+}
+
+/**
+ * How far apart two moments are, roughly: `45 min`, `3 h`, `2 days`.
+ *
+ * Said where a pace is withheld, so the reader can see why: pictures three
+ * hours apart are not a day's worth of anything.
+ */
+export function formatGap(millis: number): string {
+  if (!Number.isFinite(millis) || millis < 0) return '—'
+  const minutes = Math.round(millis / 60_000)
+  if (minutes < 1) return 'under a minute'
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `${hours} h`
+  return `${Math.round(hours / 24)} days`
+}
+
+/**
+ * How long the free space lasts at a pace, in words: `about 3 weeks`.
+ *
+ * Coarse on purpose. A pace read off a few days does not know the day the
+ * disk fills, and "23 days" would claim it does; "about 3 weeks" is the
+ * same number said as honestly as it was measured.
+ */
+export function formatRunway(days: number): string {
+  if (!Number.isFinite(days) || days < 0) return '—'
+  if (days < 1) return 'less than a day'
+  if (days < 1.5) return 'about a day'
+  if (days < 14) return `about ${Math.round(days)} days`
+  if (days < 60) return `about ${Math.round(days / 7)} weeks`
+  if (days < 730) return `about ${Math.round(days / 30)} months`
+  if (days < 3650) return `about ${Math.round(days / 365)} years`
+  return 'more than ten years'
+}
+
+/** A line of who is eating the disk, as `describeGrower` reads it. Mirrors
+ * `GrowerRow` without importing the bridge. */
+export interface GrowerFacts {
+  growth: number
+  own: number
+  inside: number
+  loose: boolean
+  entries: number
+  mark: 'new' | 'gone' | 'changed' | 'replaced' | null
+}
+
+/**
+ * What a line of who is eating the disk is, in words: how the folder came
+ * to be there, how much is in it, and - when lines are named inside it -
+ * what the whole folder came to, since the figure on the line is only its
+ * own share.
+ *
+ * `side` is which way the line's numbers point: grown, freed, or - in the
+ * view of what was written - what the files written to hold now.
+ */
+export function describeGrower(grower: GrowerFacts, side: 'grew' | 'freed' | 'written'): string {
+  const counted = (count: number, one: string, many: string) => `${formatCount(count)} ${count === 1 ? one : many}`
+  const entries = counted(grower.entries, 'entry', 'entries')
+  const parts: string[] = []
+  if (grower.loose) parts.push(`files directly in it · ${counted(grower.entries, 'file', 'files')}`)
+  else if (grower.mark === 'new') parts.push(`new folder · ${entries}`)
+  else if (grower.mark === 'gone') parts.push(`folder gone · ${entries}`)
+  else if (grower.mark === 'replaced') parts.push('a folder where a file was')
+  else if (side === 'written') parts.push(entries)
+  else parts.push(`${entries} changed`)
+  if (grower.inside > 0) {
+    const whole = side === 'grew' ? formatSigned(grower.growth) : formatBytes(grower.growth)
+    parts.push(`${whole} counting the ${grower.inside === 1 ? 'line' : `${formatCount(grower.inside)} lines`} under it`)
+  }
+  return parts.join(' · ')
+}
+
 /** What the size a report is in is called. */
 function basisWords(basis: 'allocated' | 'logical'): string {
   return basis === 'allocated' ? 'on disk' : 'by size'

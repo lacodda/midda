@@ -20,7 +20,8 @@
 //! lately, and a comparison of two pictures of the folder — a snapshot and
 //! now, or two snapshots (ADR 0010). Opening a folder keeps the index saved
 //! last time as the picture of last time before anything brings it up to
-//! date.
+//! date. Of either tree the window can ask who is eating the disk: the few
+//! folders that account for its growth, and the pace (ADR 0011).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +32,7 @@ use std::time::{Duration, Instant, SystemTime};
 use midda_core::compare::{Comparison, Mark, PlaceKind};
 use midda_core::fresh::since::{Change, Changes};
 use midda_core::fresh::store::{self, Unusable};
+use midda_core::growth::{self, Growers};
 use midda_core::order::{self, Sort, Span};
 use midda_core::snapshot::{self, Kind, Snapshot};
 use midda_core::treemap::{self, Layout, Tile};
@@ -133,6 +135,9 @@ struct Compared {
     comparison: Comparison,
     then: SystemTime,
     now: SystemTime,
+    /// What the volume had free when the later picture is now: what a pace
+    /// is set against. Not asked for two snapshots - their pace was then.
+    free: Option<u64>,
 }
 
 struct Reading {
@@ -420,6 +425,75 @@ pub struct Report {
     /// The places bytes came to, the most first.
     pub grown: Vec<PlaceRow>,
     pub grown_rest: Rest,
+}
+
+/// One line of who is eating the disk, as the window shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrowerRow {
+    /// The folder in the view's tree, for the window to go to.
+    pub id: u32,
+    pub path: String,
+    /// What the whole folder grew by, the lines inside it included. In the
+    /// list of what was freed, what it freed.
+    pub growth: i64,
+    /// What this line accounts for apart from the lines inside it.
+    pub own: i64,
+    /// How many lines are named inside it.
+    pub inside: u32,
+    /// The line is the files directly in the folder compared, not a folder.
+    pub loose: bool,
+    /// How many entries came, went or changed under it.
+    pub entries: u64,
+    /// In a comparison, how the folder came to be in it; `null` in the view
+    /// of what was written.
+    pub mark: Option<Mark>,
+}
+
+/// One side of who is eating the disk: the lines, and what they leave.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrowerSide {
+    /// The most first.
+    pub growers: Vec<GrowerRow>,
+    /// The lines past the ones listed, added up.
+    pub more: Rest,
+    /// What grew in pieces too small to name, on balance.
+    pub rest: i64,
+    /// What a folder had to account for on its own to be named.
+    pub threshold: u64,
+}
+
+/// How fast the folder grew, and how long the volume's free space lasts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaceRow {
+    /// What the folder grew by in a day, on the size shown.
+    pub per_day: i64,
+    /// Days until the volume's free space is gone at this pace - on disk,
+    /// whatever size is shown, because free space is clusters. `null` when
+    /// the folder is not growing on disk or the free space is not known.
+    pub full_in_days: Option<f64>,
+}
+
+/// Who is eating the disk, as the window shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Top {
+    pub arena: u64,
+    /// The folders that grew - or, in the view of what was written, that the
+    /// most was written to.
+    pub grew: GrowerSide,
+    /// The folders that shrank, in a comparison; `null` in the view of what
+    /// was written, which cannot know.
+    pub freed: Option<GrowerSide>,
+    /// How long the span is, in milliseconds.
+    pub span_ms: Option<u64>,
+    /// The pace, when the view is a comparison and its span is long enough
+    /// to read one.
+    pub pace: Option<PaceRow>,
+    /// What the volume had free when the comparison was made.
+    pub free: Option<u64>,
 }
 
 fn poisoned<T>(_: T) -> String {
@@ -825,6 +899,13 @@ fn compare_in(shared: &RwLock<State>, folder: &Path, root: &Path, from: &str, to
     // Read off the disk before any lock is taken: the older picture of a
     // large folder takes a second or two.
     let (first, first_at) = read(from)?;
+    // Asked here, off the window's thread: a network volume can be slow to
+    // say how full it is.
+    let free = if to.is_none() {
+        midda_core::platform::space_of(root).map(|space| space.free)
+    } else {
+        None
+    };
     let compared = match to {
         Some(name) => {
             let (second, second_at) = read(name)?;
@@ -837,6 +918,7 @@ fn compare_in(shared: &RwLock<State>, folder: &Path, root: &Path, from: &str, to
                 comparison: compare(then.0.tree(), now.0.tree()),
                 then: then.1,
                 now: now.1,
+                free: None,
             }
         }
         None => {
@@ -847,6 +929,7 @@ fn compare_in(shared: &RwLock<State>, folder: &Path, root: &Path, from: &str, to
                 comparison: compare(first.tree(), index.tree()),
                 then: first_at,
                 now: SystemTime::now(),
+                free,
             }
         }
     };
@@ -912,6 +995,91 @@ pub fn comparison_report(arena: u64, basis: SizeBasis, limit: u32, session: taur
         grown,
         grown_rest,
     })
+}
+
+/// Who is eating the disk in the comparison or the view of what was written
+/// on screen: the folders that account for the growth on `basis`, `limit` of
+/// them each way and the rest added up, and the pace.
+///
+/// # Errors
+///
+/// When the view holds nothing yet, is the folder as it is, or `arena` is not
+/// the one on screen.
+#[tauri::command]
+pub fn top_growth(view: View, arena: u64, basis: SizeBasis, limit: u32, session: tauri::State<'_, Session>) -> Result<Top, String> {
+    let state = session.shared.read().map_err(poisoned)?;
+    top_of(&state, view, arena, basis, limit as usize)
+}
+
+fn top_of(state: &State, view: View, arena: u64, basis: SizeBasis, limit: usize) -> Result<Top, String> {
+    let shown = tree_of(state, view, Some(arena))?;
+    let tree = shown.tree();
+    let side = |growers: Growers, mark: &dyn Fn(NodeId) -> Option<Mark>| GrowerSide {
+        more: Rest {
+            places: growers.growers.len().saturating_sub(limit) as u64,
+            bytes: growers.growers.iter().skip(limit).map(|grower| grower.own.unsigned_abs()).sum(),
+        },
+        rest: growers.rest,
+        threshold: growers.threshold,
+        growers: growers
+            .growers
+            .into_iter()
+            .take(limit)
+            .map(|grower| GrowerRow {
+                id: grower.id,
+                path: tree.path_of(grower.id).to_string_lossy().into_owned(),
+                growth: grower.growth,
+                own: grower.own,
+                inside: grower.inside,
+                loose: grower.loose,
+                // What changed under it: a folder that came or went whole is
+                // one of those entries itself, one that is still there is
+                // not - it only holds them.
+                entries: if grower.loose {
+                    tree.root().children.iter().filter(|&&child| !tree.node(child).is_directory()).count() as u64
+                } else if matches!(mark(grower.id), Some(Mark::New | Mark::Gone | Mark::Replaced)) {
+                    tree.node(grower.id).entries
+                } else {
+                    tree.node(grower.id).entries.saturating_sub(1)
+                },
+                mark: if grower.loose { None } else { mark(grower.id) },
+            })
+            .collect(),
+    };
+    let millis_of = |span: Duration| u64::try_from(span.as_millis()).unwrap_or(u64::MAX);
+    match shown {
+        Shown::Compare(comparison) => {
+            let compared = state.comparison.as_ref();
+            let span = compared.and_then(|compared| compared.now.duration_since(compared.then).ok());
+            let free = compared.and_then(|compared| compared.free);
+            let pace = span.and_then(|span| {
+                let shown = growth::pace(comparison.growth(ROOT, basis), span, None)?;
+                let on_disk = growth::pace(comparison.growth(ROOT, SizeBasis::Allocated), span, free)?;
+                Some(PaceRow {
+                    per_day: shown.per_day,
+                    full_in_days: on_disk.full_in.map(|full| full.as_secs_f64() / growth::PACE_SPAN.as_secs_f64()),
+                })
+            });
+            Ok(Top {
+                arena,
+                grew: side(comparison.growers(basis), &|id| Some(comparison.mark(id))),
+                freed: Some(side(comparison.shrinkers(basis), &|id| Some(comparison.mark(id)))),
+                span_ms: span.map(millis_of),
+                pace,
+                free,
+            })
+        }
+        Shown::Changes(changes) => Ok(Top {
+            arena,
+            grew: side(changes.growers(basis), &|_| None),
+            freed: None,
+            span_ms: SystemTime::now().duration_since(changes.since).ok().map(millis_of),
+            pace: None,
+            free: None,
+        }),
+        // The folder as it is has no second moment to have grown between.
+        Shown::Index(_) => Err("growth is read from a comparison or from what was written lately".to_owned()),
+    }
 }
 
 /// The trail from the root down to `id`, root first.
@@ -1496,6 +1664,82 @@ mod tests {
         let build = comparison.tree().child(ROOT, "build").expect("what went is in it");
         assert_eq!(comparison.mark(build), Mark::Gone);
         assert!(comparison.tree().child(ROOT, "src").is_none(), "what did not change is not");
+    }
+
+    #[test]
+    fn who_ate_the_space_since_three_days_ago_and_at_what_pace() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let data = tempfile::tempdir().expect("a data folder");
+        let root = dir.path();
+        write(&root.join("build/app.exe"), 90_000);
+        write(&root.join("src/main.rs"), 1_000);
+        let store_dir = data.path().join("index");
+        let three_days = Duration::from_secs(3 * 86_400);
+        let saved = store::save(&index_of(root), &store_dir, SystemTime::now() - three_days).expect("save");
+        let folder = snapshot::folder_for(&data.path().join("snapshots"), root);
+        snapshot::keep_last(&folder, &saved).expect("keep last time");
+
+        // Since then: a download came, the source grew a file, the build went.
+        write(&root.join("downloads/setup.exe"), 400_000);
+        write(&root.join("downloads/notes.txt"), 2_000);
+        write(&root.join("src/lib.rs"), 300_000);
+        std::fs::remove_dir_all(root.join("build")).expect("clean the build");
+        let shared = opened(index_of(root));
+        let summary = compare_in(&shared, &folder, root, "last.midx", None).expect("compare");
+
+        let state = shared.read().expect("read");
+        let top = top_of(&state, View::Compare, summary.arena, SizeBasis::Logical, 10).expect("the top of a comparison");
+        let names: Vec<_> = top
+            .grew
+            .growers
+            .iter()
+            .map(|grower| Path::new(&grower.path).file_name().map(|name| name.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(
+            names,
+            [Some("downloads".to_owned()), Some("src".to_owned())],
+            "one line a folder, not one a file"
+        );
+        assert_eq!(top.grew.growers[0].mark, Some(Mark::New));
+        assert_eq!(top.grew.growers[0].entries, 3, "a folder that came is one of what came, with its two files");
+        assert_eq!(top.grew.growers[1].mark, Some(Mark::Changed));
+        assert_eq!(top.grew.growers[1].entries, 1, "a folder that stayed only holds what changed: one file");
+        let freed = top.freed.as_ref().expect("a comparison says what went");
+        assert!(freed.growers[0].path.ends_with("build"));
+        assert_eq!(freed.growers[0].own, 90_000);
+
+        // Three days apart is a pace: a third of the net a day.
+        let pace = top.pace.expect("three days is long enough for a pace");
+        let net = 402_000 + 300_000 - 90_000;
+        assert!((pace.per_day - net / 3).abs() <= 1, "{} a day", pace.per_day);
+        let span = top.span_ms.expect("a span");
+        assert!(span >= 3 * 86_400_000);
+        if cfg!(windows) {
+            assert!(top.free.is_some(), "the volume says what it has free");
+            assert!(pace.full_in_days.is_some_and(|days| days > 0.0));
+        }
+
+        assert!(
+            top_of(&state, View::Compare, summary.arena + 1, SizeBasis::Logical, 10).is_err(),
+            "ids from another comparison"
+        );
+    }
+
+    #[test]
+    fn a_comparison_an_hour_apart_has_no_pace() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let data = tempfile::tempdir().expect("a data folder");
+        let root = dir.path();
+        write(&root.join("a.bin"), 1_000);
+        let saved = store::save(&index_of(root), &data.path().join("index"), SystemTime::now() - Duration::from_secs(3_600)).expect("save");
+        let folder = snapshot::folder_for(&data.path().join("snapshots"), root);
+        snapshot::keep_last(&folder, &saved).expect("keep last time");
+        write(&root.join("cache/blob.bin"), 900_000);
+        let shared = opened(index_of(root));
+        let summary = compare_in(&shared, &folder, root, "last.midx", None).expect("compare");
+        let top = top_of(&shared.read().expect("read"), View::Compare, summary.arena, SizeBasis::Logical, 10).expect("top");
+        assert_eq!(top.grew.growers.len(), 1, "the growth is still named");
+        assert!(top.pace.is_none(), "an hour times twenty-four is not a pace");
     }
 
     #[test]
