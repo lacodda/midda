@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.10.1] - 2026-10-16
+
+### Testing
+- Write the top of a volume as the platform does
 ## [0.10.0] - 2026-10-16
 
 ### Documentation

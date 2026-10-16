@@ -29,7 +29,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.10.0. Pick a volume and see it as a table and a treemap of what is on disk, kept current while the window is open and saved for the next start. "Safe to delete" lists what a tool makes again, grouped, each with how it comes back and what deleting it would free, and cleans package caches with their own commands. "Grown" names who is eating the disk, with the pace and how long the free space lasts; snapshots compare any two moments. "Accelerate" reads the Master File Table in seconds. Next: what kind of thing fills the disk - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.10.1. Pick a volume and see it as a table and a treemap of what is on disk, kept current while the window is open and saved for the next start. "Safe to delete" lists what a tool makes again, grouped, each with how it comes back and what deleting it would free, and cleans package caches with their own commands. "Grown" names who is eating the disk, with the pace and how long the free space lasts; snapshots compare any two moments. "Accelerate" reads the Master File Table in seconds. Next: what kind of thing fills the disk - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
