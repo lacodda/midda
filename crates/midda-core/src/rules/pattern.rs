@@ -222,9 +222,14 @@ mod tests {
         assert!(Template::new("AppData//npm-cache").is_err(), "an empty name in a path is refused");
     }
 
-    /// root (C:/Users/me) / AppData / Local / pnpm / store / v10
+    /// The top of a volume as the platform writes it: `C:/` here, `/` on
+    /// Linux - where `C:` is a folder like any other, and a test that called
+    /// it a drive would be asserting Windows, not the rule.
+    const VOLUME: &str = if cfg!(windows) { "C:/" } else { "/" };
+
+    /// root (Users/me on the volume) / AppData / Local / pnpm / store / v10
     fn profile() -> (Tree, NodeId) {
-        let mut tree = Tree::new(PathBuf::from("C:/Users/me"), None);
+        let mut tree = Tree::new(PathBuf::from(format!("{VOLUME}Users/me")), None);
         let mut at = ROOT;
         for name in ["AppData", "Local", "pnpm", "store", "v10"] {
             at = tree.push(at, Node::new(name.into(), at, Kind::Directory));
@@ -246,10 +251,12 @@ mod tests {
             "and the path above it"
         );
         assert!(!path("Roaming/pnpm/store/v*").matches(&tree, v10, &outer));
-        assert!(
-            !path("C:/Users/me/AppData/Local/pnpm/store/v10").matches(&tree, v10, &outer),
-            "a drive is not a name"
-        );
+        if cfg!(windows) {
+            assert!(
+                !path("C:/Users/me/AppData/Local/pnpm/store/v10").matches(&tree, v10, &outer),
+                "a drive is not a name"
+            );
+        }
         assert!(
             !path("x/Users/me/AppData/Local/pnpm/store/v10").matches(&tree, v10, &outer),
             "nothing is above the drive"
@@ -260,7 +267,7 @@ mod tests {
     fn a_scan_of_the_folder_itself_still_knows_where_it_is() {
         // Opened at the store: v10 is a child of the root, and the rest of
         // the path is the root's.
-        let mut tree = Tree::new(PathBuf::from("C:/Users/me/AppData/Local/pnpm/store"), None);
+        let mut tree = Tree::new(PathBuf::from(format!("{VOLUME}Users/me/AppData/Local/pnpm/store")), None);
         let v10 = tree.push(ROOT, Node::new("v10".into(), ROOT, Kind::Directory));
         let outer = Outer::of(tree.root_path());
         assert!(Template::new("AppData/Local/pnpm/store/v*").expect("a path").matches(&tree, v10, &outer));
@@ -268,7 +275,7 @@ mod tests {
 
     #[test]
     fn a_volume_root_has_nothing_above_it() {
-        let mut tree = Tree::new(PathBuf::from("C:/"), None);
+        let mut tree = Tree::new(PathBuf::from(VOLUME), None);
         let modules = tree.push(ROOT, Node::new("node_modules".into(), ROOT, Kind::Directory));
         let outer = Outer::of(tree.root_path());
         assert!(Template::new("node_modules").expect("a path").matches(&tree, modules, &outer));
