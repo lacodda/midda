@@ -1,0 +1,231 @@
+# The rules midda ships with: what a developer's disk fills with that a tool
+# makes again.
+#
+# A rule names a folder, says what brings it back and what is lost, and how
+# careful to be. This is the format a user's own rules are written in: what a
+# rule here can say, a user's can.
+#
+#   id       kebab-case, unique in the file
+#   name     what a reader calls the thing found
+#   group    dependencies | build | caches
+#   paths    where the folder is, read from its end: `node_modules` is one
+#            anywhere, `AppData/Local/npm-cache` one in any profile. `*` and
+#            `?` work inside a name; case is ignored.
+#   beside   the folder counts only when one of these is next to it
+#   inside   the folder counts only when one of these is in it
+#   closed   nothing inside a folder these paths name is looked at by any
+#            rule, even when this one does not apply: what is in a
+#            `node_modules` is installed packages, never a project's build
+#   restore  the ways back, tried in order: the first whose `when` is next to
+#            the folder, else the last, which has no `when`. Each has a risk
+#            (safe | caution), the command that brings the folder back when
+#            one does, and a sentence that says what is lost.
+#   cleanup  the cache's own tool, run instead of deleting the folder: the
+#            ways to call the tool (the first found is used), the command
+#            that cleans, and the command that prints the folder it cleans -
+#            the cleanup runs only when that is the folder found.
+#
+# The first rule that names a folder is the one that applies, and nothing
+# inside a folder a rule names is looked at: it is one thing.
+
+# ---------------------------------------------------------------- dependencies
+
+[[rule]]
+id = "node-modules"
+name = "node_modules"
+group = "dependencies"
+paths = ["node_modules"]
+beside = ["package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "yarn.lock", "package-lock.json"]
+closed = true
+
+[[rule.restore]]
+when = "pnpm-lock.yaml"
+command = "pnpm install"
+risk = "safe"
+explain = "Packages installed for this project. The lockfile beside it pins every version, so an install brings back exactly these."
+
+[[rule.restore]]
+when = "yarn.lock"
+command = "yarn install"
+risk = "safe"
+explain = "Packages installed for this project. The lockfile beside it pins every version, so an install brings back exactly these."
+
+[[rule.restore]]
+when = "bun.lock*"
+command = "bun install"
+risk = "safe"
+explain = "Packages installed for this project. The lockfile beside it pins every version, so an install brings back exactly these."
+
+[[rule.restore]]
+when = "package-lock.json"
+command = "npm install"
+risk = "safe"
+explain = "Packages installed for this project. The lockfile beside it pins every version, so an install brings back exactly these."
+
+[[rule.restore]]
+when = "pnpm-workspace.yaml"
+command = "pnpm install"
+risk = "caution"
+explain = "Packages installed for this workspace. There is no lockfile beside it, so an install may bring newer versions than the ones here."
+
+[[rule.restore]]
+command = "npm install"
+risk = "caution"
+explain = "Packages installed for this project. There is no lockfile beside it, so an install may bring newer versions than the ones here."
+
+# ----------------------------------------------------------------------- build
+
+[[rule]]
+id = "cargo-target"
+name = "Cargo build output"
+group = "build"
+paths = ["target"]
+beside = ["Cargo.toml"]
+
+[[rule.restore]]
+command = "cargo build"
+risk = "safe"
+explain = "Everything cargo built for this project. The next build compiles it again, which takes a while; programs built into it are gone until then."
+
+[[rule]]
+id = "next-build"
+name = "Next.js build output"
+group = "build"
+paths = [".next"]
+beside = ["package.json"]
+
+[[rule.restore]]
+command = "next build"
+risk = "safe"
+explain = "Next.js build output and cache. The next build writes it again; the first one after is slower."
+
+[[rule]]
+id = "dist"
+name = "dist"
+group = "build"
+paths = ["dist"]
+beside = ["package.json", "pyproject.toml", "setup.py"]
+
+# Caution either way: `dist` is what most builds write, and also where some
+# projects keep files they publish or did not build at all.
+[[rule.restore]]
+when = "pyproject.toml"
+command = "python -m build"
+risk = "caution"
+explain = "Usually the packages a Python build wrote, but some projects keep files here they did not build. Look inside before deleting."
+
+[[rule.restore]]
+when = "setup.py"
+command = "python -m build"
+risk = "caution"
+explain = "Usually the packages a Python build wrote, but some projects keep files here they did not build. Look inside before deleting."
+
+[[rule.restore]]
+command = "npm run build"
+risk = "caution"
+explain = "Usually what the project's build wrote, but some projects keep files here they publish or did not build. Look inside before deleting."
+
+[[rule]]
+id = "python-bytecode"
+name = "Python bytecode"
+group = "build"
+paths = ["__pycache__"]
+inside = ["*.pyc"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "Compiled Python bytecode. Python writes it again the next time the code runs."
+
+[[rule]]
+id = "gradle-project"
+name = "Gradle project cache"
+group = "build"
+paths = [".gradle"]
+beside = ["build.gradle*", "settings.gradle*"]
+
+[[rule.restore]]
+when = "gradlew.bat"
+command = "gradlew build"
+risk = "safe"
+explain = "Gradle's working files for this project. The next build makes them again."
+
+[[rule.restore]]
+command = "gradle build"
+risk = "safe"
+explain = "Gradle's working files for this project. The next build makes them again."
+
+# ---------------------------------------------------------------------- caches
+
+[[rule]]
+id = "npm-cache"
+name = "npm cache"
+group = "caches"
+paths = ["AppData/Local/npm-cache"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "Packages npm downloaded before. An install downloads what it needs again, which needs the network."
+
+[rule.cleanup]
+tools = [["npm"]]
+run = ["cache", "clean", "--force"]
+locate = ["config", "get", "cache"]
+explain = "npm empties its cache."
+
+[[rule]]
+id = "pnpm-store"
+name = "pnpm store"
+group = "caches"
+# One folder per layout: pnpm 10 keeps `v10`, and prunes only that one.
+paths = ["AppData/Local/pnpm/store/v*", ".pnpm-store/v*"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "Every package pnpm downloaded, kept once for all projects. An install downloads what it needs again, which needs the network."
+
+[rule.cleanup]
+tools = [["pnpm"]]
+run = ["store", "prune"]
+locate = ["store", "path"]
+explain = "pnpm removes the packages no project uses any more, and keeps the rest."
+
+# No cleanup: `cargo clean gc` is still nightly-only, and cargo trims what
+# goes unused for months by itself.
+[[rule]]
+id = "cargo-registry"
+name = "Cargo downloads"
+group = "caches"
+paths = [".cargo/registry", ".cargo/git"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "Crates cargo downloaded and unpacked. A build downloads what it needs again, which needs the network."
+
+[[rule]]
+id = "pip-cache"
+name = "pip cache"
+group = "caches"
+paths = ["AppData/Local/pip/cache"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "Packages pip downloaded and built before. An install downloads them again, which needs the network."
+
+[rule.cleanup]
+# Where only the Python launcher is on the search path, pip is a module of it.
+tools = [["pip"], ["py", "-m", "pip"]]
+run = ["cache", "purge"]
+locate = ["cache", "dir"]
+explain = "pip empties its cache."
+
+# No cleanup: Gradle has no command for it, and removes what goes unused for
+# a month by itself.
+[[rule]]
+id = "gradle-cache"
+name = "Gradle downloads"
+group = "caches"
+paths = [".gradle/caches"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "Dependencies and build outputs Gradle downloaded and kept. A build downloads what it needs again, which needs the network."

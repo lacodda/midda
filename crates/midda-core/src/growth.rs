@@ -41,8 +41,9 @@
 //! The rule cannot tell from the shape of a tree that `target\debug` and
 //! `target\release` are one build and `data` and `target` are two things; a
 //! sizeable build folder may therefore come out as two or three lines. A folder
-//! known to be one thing — the rules of v0.10 name `node_modules` and `target`
-//! — can be declared a *unit*: it is named whole, and nothing under it is.
+//! known to be one thing — a `node_modules` or a `target` the rules found
+//! ([`crate::rules::RuleSet::units`]) — can be declared a *unit*: it is named
+//! whole, and nothing under it is.
 //!
 //! # Pace
 //!

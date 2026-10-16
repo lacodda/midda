@@ -70,6 +70,15 @@
 //! rule reads a comparison and the journal's view of what was written lately.
 //! See `docs/adr/0011-who-is-eating-the-disk.md`.
 //!
+//! # What can go
+//!
+//! A picture says what is large; [`rules`] say what of it a tool makes again
+//! — this `node_modules` comes back with `pnpm install`, that `target` with
+//! the next build — how careful to be about it, and how much deleting it
+//! would really give back. A package manager's cache is cleaned by the
+//! manager's own command, once the manager has said it is the cache found.
+//! See `docs/adr/0012-rules-that-explain-themselves.md`.
+//!
 //! ```no_run
 //! use midda_core::{Progress, SizeBasis, scan};
 //!
@@ -91,6 +100,7 @@ pub mod links;
 pub mod mft;
 pub mod order;
 pub mod platform;
+pub mod rules;
 pub mod scanner;
 pub mod size;
 pub mod snapshot;
@@ -107,6 +117,7 @@ pub use links::Deduplicated;
 pub use mft::{Acceleration, MftScanner, acceleration};
 pub use order::{Direction, Sort, SortKey, Span};
 pub use platform::FileIdentity;
+pub use rules::{Finding, Group, Risk, Rule, RuleSet};
 pub use scanner::{Progress, Scanner};
 pub use size::{Size, SizeBasis};
 pub use snapshot::Snapshot;

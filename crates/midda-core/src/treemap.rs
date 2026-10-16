@@ -119,7 +119,7 @@ pub struct Delta {
 
 /// What a tile is made of, as far as the colour is concerned.
 ///
-/// Deliberately coarse. The rules engine of v0.9 will say "this is 8.9 GB of
+/// Deliberately coarse. The rules ([`crate::rules`]) say "this is 8.9 GB of
 /// `node_modules`, recreated by `npm install`" — that is a *finding*, with an
 /// explanation attached, and it is not this. This is the four-way read a person
 /// gets from the picture before they have read a single label: is this my work,
@@ -143,7 +143,7 @@ pub enum Category {
 ///
 /// Names rather than paths on purpose: `node_modules` is `node_modules`
 /// wherever it is found, and a path pattern would need a project root to
-/// anchor to. The rules engine of v0.9 does the anchored, explained version;
+/// anchor to. The rules ([`crate::rules`]) do the anchored, explained version;
 /// this is the colour of a rectangle.
 const BUILD_DIRECTORIES: &[&str] = &[
     "node_modules",
