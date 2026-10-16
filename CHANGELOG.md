@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.10.0] - 2026-10-16
+
+### Documentation
+- Name a made-up folder in the volume root example
+- Record rules that explain themselves in ADR 0012
+
+### Features
+- Find what a tool makes again, and what deleting it frees
+- Read a folder again whole when nothing said what changed in it
+- Show what can go, and clean caches with their own tools
 ## [0.9.0] - 2026-10-12
 
 ### Documentation
