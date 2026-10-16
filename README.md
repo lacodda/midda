@@ -19,7 +19,7 @@ The name comes from *midden* — the archaeological refuse layer. A disk is stra
 
 **Growth, not only size.** Every time a folder is opened, midda keeps the picture it had last time. What grew since then is one press away: the few folders eating the disk, each counted once, the pace in gigabytes a day and how long the free space lasts at it - and a treemap sized by how much changed, red where it grew, green where it was freed. Take a snapshot before a cleanup, and afterwards one page says how much came back and from where.
 
-**Domain knowledge.** Not "here are big folders" but "here are 40 GB that a build regenerates": `node_modules`, `target/`, `.next`, `__pycache__`, Docker layers, package manager caches. Every finding explains itself — what recreates it, what is lost.
+**Domain knowledge.** Not "here are big folders" but "here are 40 GB that a build regenerates": `node_modules`, `target/`, `.next`, `dist`, `__pycache__`, `.gradle` and the npm, pnpm, cargo, pip and Gradle caches. Every finding explains itself — what brings it back, what is lost, how careful to be — and counts what deleting it really gives back: a `node_modules` linked from pnpm's store frees almost nothing, and says so. A cache is cleaned by its own tool, once the tool confirms it is the cache found.
 
 ## Privileges
 
@@ -29,7 +29,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.9.0. Pick a volume and see it as a table and a treemap of what is on disk, kept current while the window is open and saved for the next start. "Grown" compares the folder with the last time it was open and names who is eating the disk, with the pace and how long the free space lasts; snapshots compare any two moments. "Accelerate" reads the Master File Table in seconds and follows the change journal. Next: rules for *what* is safe to delete - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.9.0. Pick a volume and see it as a table and a treemap of what is on disk, kept current while the window is open and saved for the next start. "Safe to delete" lists what a tool makes again, grouped, each with how it comes back and what deleting it would free, and cleans package caches with their own commands. "Grown" names who is eating the disk, with the pace and how long the free space lasts; snapshots compare any two moments. "Accelerate" reads the Master File Table in seconds. Next: what kind of thing fills the disk - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
