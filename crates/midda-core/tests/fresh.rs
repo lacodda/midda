@@ -67,6 +67,43 @@ fn find(tree: &Tree, path: &str) -> midda_core::NodeId {
 }
 
 #[test]
+fn a_folder_read_again_is_what_a_scan_finds_however_little_was_reported() {
+    // A cache's own tool cleaned inside a folder and nothing said which
+    // files: the folder is read again whole.
+    let dir = fixture();
+    let root = dir.path();
+    let mut index = Index::new(scan(root), SystemTime::now());
+    fs::remove_dir_all(root.join("project/target/debug/deps")).expect("delete");
+    write(&root.join("project/target/debug/fresh.bin"), 1234);
+
+    let observed = index.observe([root.join("project/target")]);
+    index.apply(observed);
+    index.compact();
+    assert_ne!(
+        index.tree().root().size,
+        scan(root).root().size,
+        "told only that the folder changed, the index keeps what it held inside"
+    );
+
+    let observed = index.read_again(&root.join("project/target"));
+    index.apply(observed);
+    index.compact();
+    assert_same(&scan(root), index.tree());
+}
+
+#[test]
+fn a_folder_read_again_that_is_gone_goes() {
+    let dir = fixture();
+    let root = dir.path();
+    let mut index = Index::new(scan(root), SystemTime::now());
+    fs::remove_dir_all(root.join("project/target")).expect("delete");
+    let observed = index.read_again(&root.join("project/target"));
+    index.apply(observed);
+    index.compact();
+    assert_same(&scan(root), index.tree());
+}
+
+#[test]
 fn a_new_file_is_listed_where_a_scan_would_list_it() {
     let dir = fixture();
     after(dir.path(), |root| {

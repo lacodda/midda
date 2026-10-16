@@ -191,6 +191,40 @@ impl Index {
         Observed { found }
     }
 
+    /// Reads the folder at `path` again whole, as a scan would, however much
+    /// of it the tree holds — and says what the tree should become there.
+    /// Reads the disk; changes nothing.
+    ///
+    /// [`Index::observe`] trusts a folder it already holds and reads only its
+    /// own facts, because the news names what changed inside. This is for
+    /// when nothing may have said so yet: a cache's own tool has just cleaned
+    /// thousands of files in it, and the reader is waiting to see how much
+    /// came back. A path that is not a folder the tree holds is looked at as
+    /// `observe` would.
+    #[must_use]
+    pub fn read_again(&self, path: &Path) -> Observed {
+        let tree = &self.tree;
+        let Some((parent, Some(name))) = point_of(tree, self.below_root(path)) else {
+            return self.observe([path.to_path_buf()]);
+        };
+        let held = tree.child(parent, &name).filter(|&id| tree.node(id).is_directory());
+        let folder = tree.path_of(parent).join(&name);
+        let still = std::fs::symlink_metadata(&folder).is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
+        if held.is_none() || !still {
+            return self.observe([path.to_path_buf()]);
+        }
+        let own = platform::own(&folder);
+        let mut branch = walk::read(&folder, &Progress::default()).unwrap_or_else(|error| {
+            let mut unread = Tree::new(folder.clone(), tree.cluster_bytes());
+            unread.skip(folder.clone(), error.to_string());
+            unread
+        });
+        branch.stamp_root(own.modified, own.identity);
+        Observed {
+            found: vec![Seen::Branch { parent, branch }],
+        }
+    }
+
     /// Makes the tree what [`Index::observe`] found, and brings every total
     /// above a change up to date.
     pub fn apply(&mut self, observed: Observed) -> Applied {
