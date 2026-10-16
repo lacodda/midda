@@ -751,7 +751,7 @@ mod imp {
         (ok != 0).then_some(super::Space { total, free })
     }
 
-    /// The volume root a path sits on: `C:\Projects\midda` becomes `C:\`.
+    /// The volume root a path sits on: `D:\work\demo` becomes `D:\`.
     fn root_of(path: &Path) -> Option<std::path::PathBuf> {
         use std::path::Component;
 
