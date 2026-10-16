@@ -193,17 +193,18 @@ impl Comparison {
     }
 
     /// The folders that grew most on `basis`, each counted once: who is
-    /// eating the disk. See [`crate::growth`].
+    /// eating the disk. A folder `unit` says is one thing — a `node_modules`
+    /// a rule found — is named whole. See [`crate::growth`].
     #[must_use]
-    pub fn growers(&self, basis: SizeBasis) -> Growers {
-        growth::growers(&self.tree, basis.of(self.totals.grown), |id| self.growth(id, basis), |_| false)
+    pub fn growers(&self, basis: SizeBasis, unit: impl Fn(NodeId) -> bool) -> Growers {
+        growth::growers(&self.tree, basis.of(self.totals.grown), |id| self.growth(id, basis), unit)
     }
 
     /// The folders that shrank most on `basis`, by the same rule, read the
     /// other way: each line's numbers are what it freed.
     #[must_use]
-    pub fn shrinkers(&self, basis: SizeBasis) -> Growers {
-        growth::growers(&self.tree, basis.of(self.totals.freed), |id| self.growth(id, basis).saturating_neg(), |_| false)
+    pub fn shrinkers(&self, basis: SizeBasis, unit: impl Fn(NodeId) -> bool) -> Growers {
+        growth::growers(&self.tree, basis.of(self.totals.freed), |id| self.growth(id, basis).saturating_neg(), unit)
     }
 
     /// Every place bytes came or went, each counted once. See [`Place`].
@@ -859,7 +860,7 @@ mod tests {
         };
 
         // The download and the dependencies grew; app only through them.
-        let growers = comparison.growers(A);
+        let growers = comparison.growers(A, |_| false);
         assert_eq!(named(&growers), ["C:/scan/downloads", "C:/scan/app/node_modules"]);
         assert_eq!(growers.growers[1].growth, 550, "net: 750 came, 200 went");
         assert_eq!(growers.threshold, 5_750 / growth::SHARE, "a fiftieth of all that grew");
@@ -867,7 +868,7 @@ mod tests {
         assert_eq!(own + growers.rest, comparison.growth(ROOT, A));
 
         // Read the other way: the cache went.
-        let shrinkers = comparison.shrinkers(A);
+        let shrinkers = comparison.shrinkers(A, |_| false);
         assert_eq!(named(&shrinkers), ["C:/scan/cache"]);
         assert_eq!(shrinkers.growers[0].own, 1_050, "a shrinker's numbers are what it freed");
     }

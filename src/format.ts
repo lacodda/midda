@@ -577,3 +577,62 @@ export function relativeTo(root: string, path: string): string {
   if (path.startsWith(trimmed) && /^[\\/]/.test(path.slice(trimmed.length))) return path.slice(trimmed.length + 1)
   return path
 }
+
+/** What each group of findings is called on the page. Keys mirror `Group`. */
+export const GROUP_WORDS = {
+  dependencies: 'Installed dependencies',
+  build: 'Build output',
+  caches: 'Package caches',
+} as const
+
+/**
+ * What deleting a finding would not give back, in words - or `null` when it
+ * gives back what it holds.
+ *
+ * A folder whose files have names elsewhere - a `node_modules` linked from a
+ * package store - holds more than it frees, and the figure on its line is
+ * what it frees. A sliver is not worth a sentence: under a fiftieth of what
+ * it holds is a few files linked twice, not a store.
+ */
+export function describeKept(holds: number, frees: number): string | null {
+  const kept = holds - frees
+  if (kept <= 0 || kept * 50 < holds) return null
+  return `holds ${formatBytes(holds)}, of which ${formatBytes(kept)} has another name outside it and stays`
+}
+
+/** When anything in a folder was last written, as a phrase - or `null` when
+ * the filesystem would not say. */
+export function describeLastWritten(millis: number | null, now: number = Date.now()): string | null {
+  const age = formatAge(millis, now)
+  if (age === '—' || age === 'ahead') return null
+  return age === 'today' || age === 'yesterday' ? `last written ${age}` : `last written ${age} ago`
+}
+
+/** What a cleanup did, as `describeCleaned` reads it. Mirrors `Cleaned`
+ * without importing the bridge. */
+export interface CleanedFacts {
+  ran: { line: string; succeeded: boolean; output: string }
+  before: { logical: number; allocated: number }
+  after: { logical: number; allocated: number }
+}
+
+/**
+ * What a cleanup brought back, said once it has run: measured from the
+ * folder read again, never taken from the tool's own account - and a tool
+ * that failed is quoted, at the line where it says why.
+ */
+export function describeCleaned(cleaned: CleanedFacts, basis: 'allocated' | 'logical'): string {
+  const { ran } = cleaned
+  if (!ran.succeeded) {
+    const said = ran.output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .at(-1)
+    return said === undefined ? `${ran.line} did not succeed.` : `${ran.line} did not succeed: ${said}`
+  }
+  const before = basis === 'allocated' ? cleaned.before.allocated : cleaned.before.logical
+  const after = basis === 'allocated' ? cleaned.after.allocated : cleaned.after.logical
+  if (after >= before) return `${ran.line} ran, and nothing came back: there was nothing it could let go of.`
+  return `${ran.line} gave back ${formatBytes(before - after)}: ${formatBytes(before)} → ${formatBytes(after)}.`
+}

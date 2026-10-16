@@ -499,6 +499,115 @@ export function topGrowth(view: View, arena: number, basis: SizeBasis, limit: nu
   return invoke<Top>('top_growth', { view, arena, basis, limit })
 }
 
+/** Where a finding is listed. Mirrors `Group` in midda-core. */
+export type Group = 'dependencies' | 'build' | 'caches'
+
+/** How careful to be. Mirrors `Risk`: `safe` comes back as it was,
+ * `caution` may not, or may hold something no tool made. */
+export type Risk = 'safe' | 'caution'
+
+/** A cache's own cleanup, before its tool is asked. Mirrors `CleanupRow`. */
+export interface CleanupRow {
+  /** The command with the first of its tools: `pnpm store prune`. */
+  line: string
+  explain: string
+}
+
+/** One folder a rule found. Mirrors `FindingRow`. */
+export interface FindingRow {
+  /** The folder, in the tree of the folder as it is. */
+  id: number
+  path: string
+  /** The rule's id, and what it calls what it found. */
+  rule: string
+  name: string
+  risk: Risk
+  /** What brings it back, when one command does. */
+  command: string | null
+  /** What it is, how it comes back and what is lost. */
+  explain: string
+  /** What the tree counts for it. */
+  holds: Size
+  /** What deleting it would give back: what it holds less the files with a
+   * name somewhere else. */
+  frees: Size
+  entries: number
+  /** When anything in it was last written, as milliseconds since the epoch. */
+  subtreeModified: number | null
+  cleanup: CleanupRow | null
+}
+
+/** One group of findings. Mirrors `GroupRow`. */
+export interface GroupRow {
+  group: Group
+  /** The most freed first, up to the limit asked. */
+  rows: FindingRow[]
+  count: number
+  holds: Size
+  frees: Size
+  /** The findings past the ones listed, and what they free. */
+  more: number
+  moreFrees: Size
+}
+
+/** What can go in the folder as it is. Mirrors `FindingsSummary`. */
+export interface FindingsSummary {
+  arena: number
+  /** The version of the tree these are of. */
+  version: number
+  groups: GroupRow[]
+  count: number
+  holds: Size
+  frees: Size
+  /** What the findings that come back as they were free. */
+  safe: Size
+  /** What the findings to look at first free. */
+  caution: Size
+}
+
+/** Whether a cleanup would run on its folder. Mirrors `Reach`. */
+export interface Reach {
+  /** The command as it would run. */
+  line: string
+  /** The folder the tool says it cleans, when it said. */
+  cleans: string | null
+  /** Why it would not run on this folder, when it would not. */
+  refused: string | null
+}
+
+/** What a cleanup did. Mirrors `Ran`. */
+export interface Ran {
+  line: string
+  succeeded: boolean
+  /** The end of what the tool printed. */
+  output: string
+}
+
+/** What a cleanup did, and how much came back. Mirrors `Cleaned`. */
+export interface Cleaned {
+  ran: Ran
+  /** What the folder held before, and holds now, read again whole. */
+  before: Size
+  after: Size
+}
+
+/** What the rules find in the folder as it is in `arena`: `limit` findings
+ * of each group, every one of `whole`. */
+export function findings(arena: number, basis: SizeBasis, limit: number, whole: Group | null): Promise<FindingsSummary> {
+  return invoke<FindingsSummary>('findings', { arena, basis, limit, whole })
+}
+
+/** Whether the cleanup of finding `id` would run: asks its tool where it
+ * cleans, which only prints. */
+export function cleanupReach(arena: number, id: number): Promise<Reach> {
+  return invoke<Reach>('cleanup_reach', { arena, id })
+}
+
+/** Runs the cleanup of finding `id` and reads its folder again. */
+export function runCleanup(arena: number, id: number): Promise<Cleaned> {
+  return invoke<Cleaned>('run_cleanup', { arena, id })
+}
+
 /** Picks the size a basis names out of a row. */
 export function sizeOf(row: Row, basis: SizeBasis): number {
   return basis === 'allocated' ? row.allocated : row.logical

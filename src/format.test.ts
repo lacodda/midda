@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   CHANGE_SPANS,
   describeChanges,
+  describeCleaned,
   describeComparison,
+  describeKept,
+  describeLastWritten,
   describeGrower,
   describePlace,
   formatGap,
@@ -509,5 +512,58 @@ describe('describeGrower', () => {
     // The figure on the line is its own share; the folder grew by more.
     expect(describeGrower({ ...line, growth: 6 * 1024 ** 3, inside: 1 }, 'grew')).toBe('3 entries changed · +6.0 GB counting the line under it')
     expect(describeGrower({ ...line, growth: 6 * 1024 ** 3, inside: 2 }, 'freed')).toBe('3 entries changed · 6.0 GB counting the 2 lines under it')
+  })
+})
+
+describe('describeKept', () => {
+  it('says what a folder linked from a store holds but would not give back', () => {
+    const mb = 1024 ** 2
+    expect(describeKept(414 * mb, 37 * mb)).toBe('holds 414 MB, of which 377 MB has another name outside it and stays')
+  })
+
+  it('says nothing when the folder gives back what it holds, or near enough', () => {
+    expect(describeKept(5000, 5000)).toBeNull()
+    // A few files linked twice inside a large folder are not a store.
+    expect(describeKept(100_000, 99_000)).toBeNull()
+    expect(describeKept(100_000, 97_000)).not.toBeNull()
+  })
+})
+
+describe('describeLastWritten', () => {
+  const now = Date.UTC(2026, 9, 16)
+  const day = 86_400_000
+
+  it('reads the age of the layer as a phrase', () => {
+    expect(describeLastWritten(now - 2 * 3_600_000, now)).toBe('last written today')
+    expect(describeLastWritten(now - day, now)).toBe('last written yesterday')
+    expect(describeLastWritten(now - 90 * day, now)).toBe('last written 3 months ago')
+  })
+
+  it('says nothing it does not know', () => {
+    expect(describeLastWritten(null, now)).toBeNull()
+    expect(describeLastWritten(now + 5 * day, now)).toBeNull()
+  })
+})
+
+describe('describeCleaned', () => {
+  const gb = 1024 ** 3
+  const ran = { line: 'pnpm store prune', succeeded: true, output: 'Removed 412 packages' }
+
+  it('says what came back as measured, on the size shown', () => {
+    const cleaned = { ran, before: { logical: 3 * gb, allocated: 4 * gb }, after: { logical: 2 * gb, allocated: 2 * gb } }
+    expect(describeCleaned(cleaned, 'allocated')).toBe('pnpm store prune gave back 2.0 GB: 4.0 GB → 2.0 GB.')
+    expect(describeCleaned(cleaned, 'logical')).toBe('pnpm store prune gave back 1.0 GB: 3.0 GB → 2.0 GB.')
+  })
+
+  it('says when nothing came back rather than a zero', () => {
+    const same = { ran, before: { logical: gb, allocated: gb }, after: { logical: gb, allocated: gb } }
+    expect(describeCleaned(same, 'allocated')).toBe('pnpm store prune ran, and nothing came back: there was nothing it could let go of.')
+  })
+
+  it('quotes a tool that failed at the line where it says why', () => {
+    const failed = { ...ran, succeeded: false, output: 'progress...\r\nERR_PNPM_LOCKED the store is in use\r\n' }
+    const cleaned = { ran: failed, before: { logical: 1, allocated: 1 }, after: { logical: 1, allocated: 1 } }
+    expect(describeCleaned(cleaned, 'allocated')).toBe('pnpm store prune did not succeed: ERR_PNPM_LOCKED the store is in use')
+    expect(describeCleaned({ ...cleaned, ran: { ...failed, output: '' } }, 'allocated')).toBe('pnpm store prune did not succeed.')
   })
 })

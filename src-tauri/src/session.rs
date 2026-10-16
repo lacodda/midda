@@ -21,8 +21,17 @@
 //! now, or two snapshots (ADR 0010). Opening a folder keeps the index saved
 //! last time as the picture of last time before anything brings it up to
 //! date. Of either tree the window can ask who is eating the disk: the few
-//! folders that account for its growth, and the pace (ADR 0011).
+//! folders that account for its growth, and the pace (ADR 0011) — with each
+//! folder a rule knows to be one thing named whole.
+//!
+//! Of the folder as it is the window can ask what can go: the folders the
+//! rules find, grouped, each with how it comes back and how much deleting it
+//! would give back — worked out again only when the tree has changed. A
+//! cache whose own tool cleans it is cleaned by that tool, here, once the
+//! tool has said it is the cache found, and the folder is read again so the
+//! window can say how much came back (ADR 0012).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -34,6 +43,8 @@ use midda_core::fresh::since::{Change, Changes};
 use midda_core::fresh::store::{self, Unusable};
 use midda_core::growth::{self, Growers};
 use midda_core::order::{self, Sort, Span};
+use midda_core::rules::cleanup::{Ran, Reach};
+use midda_core::rules::{self, Finding, Group, Risk, RuleSet};
 use midda_core::snapshot::{self, Kind, Snapshot};
 use midda_core::treemap::{self, Layout, Tile};
 use midda_core::{Index, JournalPosition, NodeId, Progress, ROOT, Size, SizeBasis, Tree, compare};
@@ -54,6 +65,16 @@ pub struct Session {
     store: PathBuf,
     /// Where snapshots are kept, a folder per scanned folder.
     snapshots: PathBuf,
+    /// What the rules found in the folder as it is, as of the tree it was
+    /// worked out from.
+    found: Arc<Mutex<Option<Found>>>,
+}
+
+/// The findings of one version of the open folder's tree.
+struct Found {
+    arena: u64,
+    version: u64,
+    findings: Vec<Finding>,
 }
 
 impl Session {
@@ -66,6 +87,7 @@ impl Session {
             keeper: Mutex::new(None),
             store: data.join("index"),
             snapshots: data.join("snapshots"),
+            found: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -119,6 +141,9 @@ struct State {
     arena: u64,
     /// What was written since a moment, once asked.
     changes: Option<Changes>,
+    /// The folders of the tree above that are one thing, as the folder as it
+    /// was then says.
+    changes_units: HashSet<NodeId>,
     /// Moves when the answer above is replaced.
     changes_arena: u64,
     /// Two pictures of the folder compared, once asked.
@@ -138,6 +163,11 @@ struct Compared {
     /// What the volume had free when the later picture is now: what a pace
     /// is set against. Not asked for two snapshots - their pace was then.
     free: Option<u64>,
+    /// The folders of the comparison that are one thing in the later
+    /// picture, and in the earlier one: what grew is named by the first,
+    /// what was freed by the second, which still held what went.
+    units_now: HashSet<NodeId>,
+    units_then: HashSet<NodeId>,
 }
 
 struct Reading {
@@ -783,6 +813,8 @@ fn written_since(shared: &RwLock<State>, hours: u32) -> Result<ChangesSummary, S
     let mut state = shared.write().map_err(poisoned)?;
     let index = state.index.as_ref().ok_or_else(|| "nothing has been read yet".to_owned())?;
     let changes = midda_core::fresh::since::written_since(index, &records, moment, journal.place());
+    let units = rules::units_in(&changes.tree, index.tree(), &RuleSet::shipped().units(index.tree()));
+    state.changes_units = units;
     state.changes_arena += 1;
     let summary = ChangesSummary {
         root: row(Shown::Changes(&changes), ROOT),
@@ -914,8 +946,11 @@ fn compare_in(shared: &RwLock<State>, folder: &Path, root: &Path, from: &str, to
             } else {
                 ((&second, second_at), (&first, first_at))
             };
+            let comparison = compare(then.0.tree(), now.0.tree());
             Compared {
-                comparison: compare(then.0.tree(), now.0.tree()),
+                units_now: rules::units_in(comparison.tree(), now.0.tree(), &RuleSet::shipped().units(now.0.tree())),
+                units_then: rules::units_in(comparison.tree(), then.0.tree(), &RuleSet::shipped().units(then.0.tree())),
+                comparison,
                 then: then.1,
                 now: now.1,
                 free: None,
@@ -925,8 +960,11 @@ fn compare_in(shared: &RwLock<State>, folder: &Path, root: &Path, from: &str, to
             let state = shared.read().map_err(poisoned)?;
             not_current(&state)?;
             let index = state.index.as_ref().ok_or_else(|| "nothing has been read yet".to_owned())?;
+            let comparison = compare(first.tree(), index.tree());
             Compared {
-                comparison: compare(first.tree(), index.tree()),
+                units_now: rules::units_in(comparison.tree(), index.tree(), &RuleSet::shipped().units(index.tree())),
+                units_then: rules::units_in(comparison.tree(), first.tree(), &RuleSet::shipped().units(first.tree())),
+                comparison,
                 then: first_at,
                 now: SystemTime::now(),
                 free,
@@ -1060,10 +1098,11 @@ fn top_of(state: &State, view: View, arena: u64, basis: SizeBasis, limit: usize)
                     full_in_days: on_disk.full_in.map(|full| full.as_secs_f64() / growth::PACE_SPAN.as_secs_f64()),
                 })
             });
+            let (now, then) = compared.map_or((None, None), |compared| (Some(&compared.units_now), Some(&compared.units_then)));
             Ok(Top {
                 arena,
-                grew: side(comparison.growers(basis), &|id| Some(comparison.mark(id))),
-                freed: Some(side(comparison.shrinkers(basis), &|id| Some(comparison.mark(id)))),
+                grew: side(comparison.growers(basis, among(now)), &|id| Some(comparison.mark(id))),
+                freed: Some(side(comparison.shrinkers(basis, among(then)), &|id| Some(comparison.mark(id)))),
                 span_ms: span.map(millis_of),
                 pace,
                 free,
@@ -1071,7 +1110,7 @@ fn top_of(state: &State, view: View, arena: u64, basis: SizeBasis, limit: usize)
         }
         Shown::Changes(changes) => Ok(Top {
             arena,
-            grew: side(changes.growers(basis), &|_| None),
+            grew: side(changes.growers(basis, |id| state.changes_units.contains(&id)), &|_| None),
             freed: None,
             span_ms: SystemTime::now().duration_since(changes.since).ok().map(millis_of),
             pace: None,
@@ -1080,6 +1119,311 @@ fn top_of(state: &State, view: View, arena: u64, basis: SizeBasis, limit: usize)
         // The folder as it is has no second moment to have grown between.
         Shown::Index(_) => Err("growth is read from a comparison or from what was written lately".to_owned()),
     }
+}
+
+/// One finding, as the window lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingRow {
+    /// The folder, in the tree of the folder as it is.
+    pub id: u32,
+    pub path: String,
+    /// Which rule found it, and what the rule calls what it found.
+    pub rule: String,
+    pub name: String,
+    pub risk: Risk,
+    /// What brings it back, when one command does.
+    pub command: Option<String>,
+    /// What it is, how it comes back and what is lost.
+    pub explain: String,
+    /// What the tree counts for it.
+    pub holds: Size,
+    /// What deleting it would give back: what it holds less the files with
+    /// a name somewhere else.
+    pub frees: Size,
+    pub entries: u64,
+    /// When anything in it was last written.
+    pub subtree_modified: Option<i64>,
+    /// The cache's own cleanup, when it has one.
+    pub cleanup: Option<CleanupRow>,
+}
+
+/// A cache's own cleanup, as the window offers it before asking the tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupRow {
+    /// The command with the first of the tools: `pnpm store prune`.
+    pub line: String,
+    /// What it does.
+    pub explain: String,
+}
+
+/// One group of findings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupRow {
+    pub group: Group,
+    /// The most freed first, up to the limit asked.
+    pub rows: Vec<FindingRow>,
+    /// How many findings are in the group, listed or not.
+    pub count: u64,
+    pub holds: Size,
+    pub frees: Size,
+    /// The findings past the ones listed: how many, and what they free.
+    pub more: u64,
+    pub more_frees: Size,
+}
+
+/// What can go in the folder as it is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingsSummary {
+    pub arena: u64,
+    /// The version of the tree these are of.
+    pub version: u64,
+    /// Dependencies, build output, caches — those with anything in them.
+    pub groups: Vec<GroupRow>,
+    pub count: u64,
+    pub holds: Size,
+    pub frees: Size,
+    /// What the findings that come back as they were free.
+    pub safe: Size,
+    /// What the findings to look at first free.
+    pub caution: Size,
+}
+
+/// What a cleanup did, and how much came back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cleaned {
+    pub ran: Ran,
+    /// What the folder held before, and holds now, read again whole.
+    pub before: Size,
+    pub after: Size,
+}
+
+/// The order groups are listed in: what a project installed, what it built,
+/// what every project shares.
+const GROUPS: [Group; 3] = [Group::Dependencies, Group::Build, Group::Caches];
+
+/// What the rules find in the folder as it is: each group's findings, the
+/// most freed on `basis` first, `limit` of each — every one of `whole` —
+/// and what each group and the whole add up to.
+///
+/// # Errors
+///
+/// `stale` when `arena` is not the tree on screen; otherwise when nothing
+/// has been read.
+#[tauri::command]
+pub async fn findings(arena: u64, basis: SizeBasis, limit: u32, whole: Option<Group>, session: tauri::State<'_, Session>) -> Result<FindingsSummary, String> {
+    let shared = Arc::clone(&session.shared);
+    let found = Arc::clone(&session.found);
+    tauri::async_runtime::spawn_blocking(move || findings_of(&shared, &found, arena, basis, limit as usize, whole))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// The findings of the tree on screen, worked out again only when it has
+/// changed since they last were.
+fn current_findings(state: &State, found: &Mutex<Option<Found>>, tree: &Tree) -> Result<Vec<Finding>, String> {
+    let mut found = found.lock().map_err(poisoned)?;
+    if let Some(held) = found.as_ref()
+        && held.arena == state.arena
+        && held.version == state.version
+    {
+        return Ok(held.findings.clone());
+    }
+    let findings = RuleSet::shipped().find(tree);
+    *found = Some(Found {
+        arena: state.arena,
+        version: state.version,
+        findings: findings.clone(),
+    });
+    Ok(findings)
+}
+
+fn findings_of(
+    shared: &RwLock<State>,
+    found: &Mutex<Option<Found>>,
+    arena: u64,
+    basis: SizeBasis,
+    limit: usize,
+    whole: Option<Group>,
+) -> Result<FindingsSummary, String> {
+    let state = shared.read().map_err(poisoned)?;
+    let tree = tree_of(&state, View::Index, Some(arena))?.tree();
+    let mut findings = current_findings(&state, found, tree)?;
+    // The core orders on disk; a reader looking at sizes gets their order.
+    findings.sort_by(|a, b| basis.of(b.frees).cmp(&basis.of(a.frees)).then_with(|| tree.scan_order(a.id, b.id)));
+    let rules = RuleSet::shipped();
+
+    let mut summary = FindingsSummary {
+        arena,
+        version: state.version,
+        groups: Vec::new(),
+        count: 0,
+        holds: Size::zero(),
+        frees: Size::zero(),
+        safe: Size::zero(),
+        caution: Size::zero(),
+    };
+    for group in GROUPS {
+        let mut row = GroupRow {
+            group,
+            rows: Vec::new(),
+            count: 0,
+            holds: Size::zero(),
+            frees: Size::zero(),
+            more: 0,
+            more_frees: Size::zero(),
+        };
+        let listed = if whole == Some(group) { usize::MAX } else { limit };
+        for finding in findings.iter().filter(|finding| rules.rule_of(finding).group == group) {
+            row.count += 1;
+            row.holds.add(finding.holds);
+            row.frees.add(finding.frees);
+            match rules.restore_of(finding).risk {
+                Risk::Safe => summary.safe.add(finding.frees),
+                Risk::Caution => summary.caution.add(finding.frees),
+            }
+            if row.rows.len() < listed {
+                row.rows.push(finding_row(tree, rules, finding));
+            } else {
+                row.more += 1;
+                row.more_frees.add(finding.frees);
+            }
+        }
+        if row.count > 0 {
+            summary.count += row.count;
+            summary.holds.add(row.holds);
+            summary.frees.add(row.frees);
+            summary.groups.push(row);
+        }
+    }
+    Ok(summary)
+}
+
+fn finding_row(tree: &Tree, rules: &RuleSet, finding: &Finding) -> FindingRow {
+    let rule = rules.rule_of(finding);
+    let restore = rules.restore_of(finding);
+    let node = tree.node(finding.id);
+    FindingRow {
+        id: finding.id,
+        path: tree.path_of(finding.id).to_string_lossy().into_owned(),
+        rule: rule.id.clone(),
+        name: rule.name.clone(),
+        risk: restore.risk,
+        command: restore.command.clone(),
+        explain: restore.explain.clone(),
+        holds: finding.holds,
+        frees: finding.frees,
+        entries: node.entries,
+        subtree_modified: node.subtree_modified.and_then(millis),
+        cleanup: rule.cleanup.as_ref().map(|cleanup| CleanupRow {
+            line: cleanup.line(),
+            explain: cleanup.explain.clone(),
+        }),
+    }
+}
+
+/// The folder of the finding `id` and its cleanup, from the findings of the
+/// tree on screen.
+fn cleanup_of(session: &Session, arena: u64, id: u32) -> Result<(PathBuf, rules::Cleanup), String> {
+    let state = session.shared.read().map_err(poisoned)?;
+    let tree = tree_of(&state, View::Index, Some(arena))?.tree();
+    let id = checked(tree, id)?;
+    let findings = current_findings(&state, &session.found, tree)?;
+    let finding = findings
+        .iter()
+        .find(|finding| finding.id == id)
+        .ok_or_else(|| "no rule names this folder now".to_owned())?;
+    let cleanup = RuleSet::shipped()
+        .rule_of(finding)
+        .cleanup
+        .clone()
+        .ok_or_else(|| "this folder has no cleanup of its own".to_owned())?;
+    Ok((tree.path_of(id), cleanup))
+}
+
+/// Whether the cleanup of the finding `id` would run: its tool is on this
+/// machine and says the folder it cleans is this one. Asks the tool, which
+/// only prints.
+///
+/// # Errors
+///
+/// `stale` when `arena` is not the tree on screen or the folder is gone;
+/// otherwise when the folder is no finding with a cleanup.
+#[tauri::command]
+pub async fn cleanup_reach(arena: u64, id: u32, session: tauri::State<'_, Session>) -> Result<Reach, String> {
+    let (folder, cleanup) = cleanup_of(&session, arena, id)?;
+    tauri::async_runtime::spawn_blocking(move || cleanup.reach(&folder, std::env::var_os("PATH").as_deref()))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Runs the cleanup of the finding `id` — after asking its tool once more
+/// that this is the folder it cleans — and reads the folder again whole, so
+/// what came back is measured rather than assumed.
+///
+/// # Errors
+///
+/// As [`cleanup_reach`], and when the tool is not there, cleans another
+/// folder, or could not be started. A tool that ran and failed is not an
+/// error: it says so in what it ran.
+#[tauri::command]
+pub async fn run_cleanup(arena: u64, id: u32, session: tauri::State<'_, Session>) -> Result<Cleaned, String> {
+    let (folder, cleanup) = cleanup_of(&session, arena, id)?;
+    let shared = Arc::clone(&session.shared);
+    tauri::async_runtime::spawn_blocking(move || clean(&shared, &folder, &cleanup, std::env::var_os("PATH").as_deref()))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Runs `cleanup` on `folder`, with its tool looked for on `search`, and
+/// reads the folder again whole.
+fn clean(shared: &RwLock<State>, folder: &Path, cleanup: &rules::Cleanup, search: Option<&std::ffi::OsStr>) -> Result<Cleaned, String> {
+    let before = size_at(shared, folder)?;
+    let ran = cleanup.run(folder, search)?;
+    // Read again whole: the journal or the watcher would report the files
+    // one by one, later; the reader is waiting now.
+    let observed = {
+        let state = shared.read().map_err(poisoned)?;
+        state.index.as_ref().map(|index| index.read_again(folder))
+    };
+    if let Some(observed) = observed {
+        let mut state = shared.write().map_err(poisoned)?;
+        if let Some(index) = state.index.as_mut() {
+            index.apply(observed);
+            state.version += 1;
+            state.applied_at = Some(SystemTime::now());
+        }
+    }
+    let after = size_at(shared, folder)?;
+    Ok(Cleaned { ran, before, after })
+}
+
+/// What the folder at `path` holds in the tree on screen: nothing, when the
+/// tree does not hold it.
+fn size_at(shared: &RwLock<State>, path: &Path) -> Result<Size, String> {
+    let state = shared.read().map_err(poisoned)?;
+    let index = state.index.as_ref().ok_or_else(|| "nothing has been read yet".to_owned())?;
+    let tree = index.tree();
+    let Some(names) = index.below_root(path) else {
+        return Ok(Size::zero());
+    };
+    let mut at = ROOT;
+    for name in &names {
+        match tree.child(at, name) {
+            Some(child) => at = child,
+            None => return Ok(Size::zero()),
+        }
+    }
+    Ok(tree.node(at).size)
+}
+
+/// Whether a folder is one of `units`: none are, when there are none.
+fn among(units: Option<&HashSet<NodeId>>) -> impl Fn(NodeId) -> bool + '_ {
+    move |id| units.is_some_and(|units| units.contains(&id))
 }
 
 /// The trail from the root down to `id`, root first.
@@ -1614,6 +1958,139 @@ mod tests {
             index: Some(index),
             ..State::default()
         })
+    }
+
+    /// A fresh session's place for findings.
+    fn nothing_found() -> Mutex<Option<Found>> {
+        Mutex::new(None)
+    }
+
+    #[test]
+    fn what_can_go_is_grouped_counted_and_worked_out_once_per_change() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path();
+        write(&root.join("app/package.json"), 10);
+        write(&root.join("app/pnpm-lock.yaml"), 10);
+        write(&root.join("app/node_modules/a/index.js"), 30_000);
+        write(&root.join("loose/package.json"), 10);
+        write(&root.join("loose/node_modules/b/index.js"), 20_000);
+        for name in ["one", "two", "three"] {
+            write(&root.join(format!("{name}/Cargo.toml")), 10);
+            write(&root.join(format!("{name}/target/debug/app.exe")), 50_000);
+        }
+        write(&root.join("site/package.json"), 10);
+        write(&root.join("site/dist/index.html"), 4_000);
+        let shared = opened(index_of(root));
+        let found = nothing_found();
+
+        let summary = findings_of(&shared, &found, 0, SizeBasis::Logical, 2, None).expect("findings");
+        let groups: Vec<_> = summary.groups.iter().map(|group| (group.group, group.count)).collect();
+        assert_eq!(groups, [(Group::Dependencies, 2), (Group::Build, 4)], "no caches here, so no group for them");
+        assert_eq!(summary.count, 6);
+        assert_eq!(summary.frees.logical, 30_000 + 20_000 + 150_000 + 4_000);
+        // A node_modules without a lockfile and a dist are the two to look
+        // at first; the rest come back as they were.
+        assert_eq!(summary.caution.logical, 20_000 + 4_000);
+        assert_eq!(summary.safe.logical, 30_000 + 150_000);
+
+        let build = &summary.groups[1];
+        assert_eq!(build.rows.len(), 2, "two listed");
+        assert_eq!((build.more, build.more_frees.logical), (2, 50_000 + 4_000), "and what the rest come to");
+        assert_eq!(build.rows[0].command.as_deref(), Some("cargo build"));
+        let dependencies = &summary.groups[0];
+        assert!(dependencies.rows[0].path.ends_with("node_modules") && dependencies.rows[0].risk == Risk::Safe);
+        assert_eq!(dependencies.rows[1].risk, Risk::Caution);
+
+        let whole = findings_of(&shared, &found, 0, SizeBasis::Logical, 2, Some(Group::Build)).expect("findings");
+        assert_eq!(
+            (whole.groups[1].rows.len(), whole.groups[1].more),
+            (4, 0),
+            "a group asked for whole is listed whole"
+        );
+
+        // The same tree is not searched again; a changed one is.
+        let held = |found: &Mutex<Option<Found>>| found.lock().expect("lock").as_ref().map(|held| held.version);
+        assert_eq!(held(&found), Some(0));
+        set(&shared, |state| state.version = 7);
+        findings_of(&shared, &found, 0, SizeBasis::Logical, 2, None).expect("findings");
+        assert_eq!(held(&found), Some(7));
+        assert_eq!(findings_of(&shared, &found, 99, SizeBasis::Logical, 2, None).expect_err("stale"), "stale");
+    }
+
+    #[test]
+    fn a_build_folder_is_one_line_of_what_grew_and_of_what_was_freed() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let data = tempfile::tempdir().expect("a data folder");
+        let root = dir.path();
+        write(&root.join("rust/Cargo.toml"), 10);
+        write(&root.join("web/package.json"), 10);
+        write(&root.join("web/package-lock.json"), 10);
+        write(&root.join("web/node_modules/big/a.js"), 60_000);
+        write(&root.join("web/node_modules/huge/b.js"), 80_000);
+        let saved = store::save(&index_of(root), &data.path().join("index"), SystemTime::now() - Duration::from_secs(3_600)).expect("save");
+        let folder = snapshot::folder_for(&data.path().join("snapshots"), root);
+        snapshot::keep_last(&folder, &saved).expect("keep last time");
+
+        // A build wrote two sizeable halves; the dependencies were deleted.
+        write(&root.join("rust/target/debug/app.exe"), 70_000);
+        write(&root.join("rust/target/release/app.exe"), 50_000);
+        std::fs::remove_dir_all(root.join("web/node_modules")).expect("delete the dependencies");
+        let shared = opened(index_of(root));
+        let summary = compare_in(&shared, &folder, root, "last.midx", None).expect("compare");
+
+        let state = shared.read().expect("read");
+        let top = top_of(&state, View::Compare, summary.arena, SizeBasis::Logical, 10).expect("the top");
+        let ends = |side: &GrowerSide| side.growers.iter().map(|grower| grower.path.replace('\\', "/")).collect::<Vec<_>>();
+        let grew = ends(&top.grew);
+        assert_eq!(grew.len(), 1, "{grew:?}");
+        assert!(grew[0].ends_with("rust/target"), "the build is one thing, not its debug and release: {grew:?}");
+        // What went is known to be one thing by the picture that still held it.
+        let freed = ends(top.freed.as_ref().expect("what was freed"));
+        assert_eq!(freed.len(), 1, "{freed:?}");
+        assert!(freed[0].ends_with("web/node_modules"), "{freed:?}");
+    }
+
+    #[test]
+    fn a_cleanup_reads_its_folder_again_and_says_what_came_back() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path();
+        write(&root.join("cache/blob"), 70_000);
+        write(&root.join("cache/keep"), 1_000);
+        let shared = opened(index_of(root));
+        let cache = root.join("cache");
+
+        // A tool that says it cleans `cache` and deletes its blob.
+        let tools = tempfile::tempdir().expect("a folder for the tool");
+        let shown = cache.display();
+        if cfg!(windows) {
+            let script = format!("@echo off\r\nif \"%~1\"==\"where\" (\r\n  echo {shown}\r\n  exit /b 0\r\n)\r\ndel /q \"{shown}\\blob\"\r\n");
+            std::fs::write(tools.path().join("cachetool.cmd"), script).expect("write the tool");
+        } else {
+            let script = format!("#!/bin/sh\nif [ \"$1\" = where ]; then echo '{shown}'; exit 0; fi\nrm -f '{shown}/blob'\n");
+            let path = tools.path().join("cachetool");
+            std::fs::write(&path, script).expect("write the tool");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("make it runnable");
+            }
+        }
+        let rules = RuleSet::parse(
+            "[[rule]]\nid = \"c\"\nname = \"c\"\ngroup = \"caches\"\npaths = [\"cache\"]\n\
+             [[rule.restore]]\nrisk = \"safe\"\nexplain = \"A cache.\"\n\
+             [rule.cleanup]\ntools = [[\"cachetool\"]]\nrun = [\"clean\"]\nlocate = [\"where\"]\nexplain = \"It cleans.\"\n",
+        )
+        .expect("the rule reads");
+        let cleanup = rules.rules()[0].cleanup.as_ref().expect("a cleanup");
+        let search = std::env::join_paths([tools.path()]).expect("a search path");
+        let version = shared.read().expect("read").version;
+
+        let cleaned = clean(&shared, &cache, cleanup, Some(&search)).expect("it ran");
+        assert!(cleaned.ran.succeeded, "{:?}", cleaned.ran);
+        assert_eq!((cleaned.before.logical, cleaned.after.logical), (71_000, 1_000), "measured, not assumed");
+        let state = shared.read().expect("read");
+        assert!(state.version > version, "the window is told the tree changed");
+        assert_eq!(state.index.as_ref().expect("an index").tree().root().size.logical, 1_000);
     }
 
     #[test]

@@ -72,11 +72,12 @@ impl Changes {
     /// by the rule a comparison's growers are named by ([`crate::growth`]).
     ///
     /// What each line carries is what the files written to hold now, not
-    /// what they grew by: the journal does not record a size before.
+    /// what they grew by: the journal does not record a size before. A
+    /// folder `unit` says is one thing is named whole.
     #[must_use]
-    pub fn growers(&self, basis: SizeBasis) -> Growers {
+    pub fn growers(&self, basis: SizeBasis, unit: impl Fn(NodeId) -> bool) -> Growers {
         let held = |id: NodeId| i64::try_from(basis.of(self.tree.node(id).size)).unwrap_or(i64::MAX);
-        growth::growers(&self.tree, basis.of(self.tree.root().size), held, |_| false)
+        growth::growers(&self.tree, basis.of(self.tree.root().size), held, unit)
     }
 }
 
@@ -321,7 +322,7 @@ mod tests {
             record(2, at - 2 * HOUR, 20, usn::DATA_EXTEND, "app.log"),
         ];
         let changes = written_since(&Index::new(tree(), now), &records, now - Duration::from_secs(24 * 3600), place);
-        let growers = changes.growers(SizeBasis::Logical);
+        let growers = changes.growers(SizeBasis::Logical, |_| false);
         let named: Vec<_> = growers.growers.iter().map(|grower| changes.tree.node(grower.id).name.as_str()).collect();
         assert_eq!(named, ["downloads"]);
         assert_eq!(growers.growers[0].own, 9_000_000_000);

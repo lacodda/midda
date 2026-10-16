@@ -85,9 +85,9 @@ type Span = 'all' | 'grown' | 'day' | 'week'
 /** The order each view opens in. A comparison's is its own question. */
 const SORTS: Record<View, Sort> = { index: DEFAULT_SORT, changes: DEFAULT_SORT, compare: GROWTH_SORT }
 
-/** How each view of growth opens: as the list of who is eating the disk,
- * which is the question both are asked. */
-const SHAPES: Record<'changes' | 'compare', Shape> = { changes: 'top', compare: 'top' }
+/** How each view opens: the folder as its tree, and each view of growth as
+ * the list of who is eating the disk, which is the question both are asked. */
+const SHAPES: Record<View, Shape> = { index: 'tree', changes: 'top', compare: 'top' }
 
 /** One trail and the ids it is in, per view. */
 interface Place {
@@ -335,12 +335,11 @@ export default function App() {
     }
   }, [showComparison])
 
-  /* A line of the list or a place in the report, chosen: its folder in the
-   * view's tree, with a file selected rather than entered - a file has
-   * nothing inside. */
+  /* A line of a list - who is eating the disk, what can go - or a place in
+   * the report, chosen: its folder in the view's tree, with a file selected
+   * rather than entered - a file has nothing inside. */
   const openPlace = useCallback(
     (id: number) => {
-      if (view === 'index') return
       void trailTo(view, places[view].arena, id)
         .then((steps) => {
           const last = steps.at(-1)
@@ -667,10 +666,8 @@ export default function App() {
               changes={changes}
               hours={hours}
               comparison={comparison}
-              shape={view === 'index' ? 'tree' : shapes[view]}
-              onShape={(shape) => {
-                if (view !== 'index') setShapes((shapes) => ({ ...shapes, [view]: shape }))
-              }}
+              shape={shapes[view]}
+              onShape={(shape) => setShapes((shapes) => ({ ...shapes, [view]: shape }))}
               onOpenPlace={openPlace}
               trail={place.trail}
               showing={showing}

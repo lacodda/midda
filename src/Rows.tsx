@@ -1,18 +1,21 @@
+import { useEffect, useState } from 'react'
+
 import { Segment, SegmentedControl } from '@/components/ui/segmented-control'
 import { ComparisonReport } from '@/ComparisonReport'
 import { EntryTable } from '@/EntryTable'
+import { SafeToDelete } from '@/SafeToDelete'
 import { TopGrowth } from '@/TopGrowth'
 import { Treemap } from '@/Treemap'
 import type { ChangesSummary, ComparisonSummary, Row, ScanResult, Size, SizeBasis, Sort, SortKey, View } from '@/core'
-import { growthOf, pick, sizeOf } from '@/core'
+import { findings, growthOf, pick, sizeOf } from '@/core'
 import { describeChanges, describeComparison, describeOverhead, describeScan, explainSize, formatBytes, formatCount, formatSigned } from '@/format'
 
 /**
- * How a view of growth is shown: who is eating the disk, as a list; the
- * folder's tree, with the picture; or - a comparison only - the page of what
- * came back and from where.
+ * How a view is shown: the folder's tree, with the picture; who is eating
+ * the disk, as a list, and - a comparison only - the page of what came back
+ * and from where; or - the folder as it is only - what can go.
  */
-export type Shape = 'top' | 'tree' | 'report'
+export type Shape = 'top' | 'tree' | 'report' | 'safe'
 
 interface RowsProps {
   /** Which tree is shown: the folder as it is, or what was written lately. */
@@ -81,6 +84,41 @@ export function Rows({
   onSelectById,
 }: RowsProps) {
   const compared = view === 'compare' && comparison !== null ? showing.compared : null
+  // What can go, added up, for the switch that opens the list of it: asked
+  // again whenever the folder's tree changes, which the core answers from
+  // what it worked out last unless the tree did change.
+  const [canGo, setCanGo] = useState<Size | null>(null)
+  useEffect(() => {
+    if (view !== 'index') return
+    let current = true
+    findings(arena, basis, 0, null)
+      .then((summary) => {
+        if (current) setCanGo(summary.count > 0 ? summary.frees : null)
+      })
+      .catch(() => {
+        // The next change asks again; the switch shows no figure meanwhile.
+      })
+    return () => {
+      current = false
+    }
+  }, [view, arena, version, basis])
+  /** The switch between the folder's tree and what can go in it. */
+  const indexShapes = (
+    <SegmentedControl
+      aria-label="How to show the folder"
+      className="ml-auto"
+      value={shape === 'safe' ? 'safe' : 'tree'}
+      onValueChange={(next) => {
+        if (next === 'tree' || next === 'safe') onShape(next)
+      }}
+    >
+      <Segment value="tree">Tree</Segment>
+      <Segment value="safe">
+        Safe to delete
+        {canGo !== null && <span className="tabular ml-1.5 text-accent">{formatBytes(pick(canGo, basis))}</span>}
+      </Segment>
+    </SegmentedControl>
+  )
   // In a comparison the bars are shares of what moved in the folder, as the
   // tiles are; anywhere else, of what it holds.
   const total = compared === null ? sizeOf(showing, basis) : pick(compared.moved, basis)
@@ -185,7 +223,16 @@ export function Rows({
         </div>
       )}
 
-      {compared !== null && comparison !== null && shape === 'report' ? (
+      {view === 'index' && shape === 'safe' && (
+        <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
+          <span className="text-sm text-text">What can go, and how each comes back</span>
+          {indexShapes}
+        </div>
+      )}
+
+      {view === 'index' && shape === 'safe' ? (
+        <SafeToDelete arena={arena} version={version} basis={basis} root={trail[0]?.path ?? showing.path} onOpen={onOpenPlace} />
+      ) : compared !== null && comparison !== null && shape === 'report' ? (
         <ComparisonReport summary={comparison} basis={basis} root={trail[0]?.path ?? showing.path} onOpen={onOpenPlace} />
       ) : (compared !== null && comparison !== null) || lately ? (
         shape !== 'tree' ? (
@@ -246,6 +293,7 @@ export function Rows({
                 scan, and repeating it inside every folder would read as a claim
                 about that folder — which nothing here knows. */}
             {showsSkipped && <span>{formatCount(result.skipped)} entries could not be read in this scan</span>}
+            {view === 'index' && indexShapes}
           </div>
         )}
 
