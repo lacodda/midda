@@ -46,4 +46,4 @@ jobs:
       - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          manifest-path: src-tauri/Cargo.toml
+          manifest-path: Cargo.toml
