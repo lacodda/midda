@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Testing
 - Write the top of a volume as the platform does
+
 ## [0.10.0] - 2026-10-16
 
 ### Documentation
@@ -16,6 +17,7 @@ All notable changes to this project are documented in this file.
 - Find what a tool makes again, and what deleting it frees
 - Read a folder again whole when nothing said what changed in it
 - Show what can go, and clean caches with their own tools
+
 ## [0.9.0] - 2026-10-12
 
 ### Documentation
@@ -27,6 +29,7 @@ All notable changes to this project are documented in this file.
 
 ### Refactoring
 - Ask the core how full a volume is
+
 ## [0.8.0] - 2026-10-08
 
 ### Bug Fixes
@@ -41,6 +44,7 @@ All notable changes to this project are documented in this file.
 
 ### Testing
 - Keep the old folder alive while its replacement is made
+
 ## [0.7.0] - 2026-10-04
 
 ### Bug Fixes
@@ -59,6 +63,7 @@ All notable changes to this project are documented in this file.
 
 ### Refactoring
 - Read the NTFS format in the core, without ntfs-reader
+
 ## [0.6.0] - 2026-09-26
 
 ### Bug Fixes
@@ -72,6 +77,7 @@ All notable changes to this project are documented in this file.
 
 ### Features
 - Draw the window's own frame and open on a splash
+
 ## [0.5.0] - 2026-09-23
 
 ### Bug Fixes
@@ -97,6 +103,7 @@ All notable changes to this project are documented in this file.
 - Compare every file both scanners saw, not only the totals
 - Tell a file written between two scans from a disagreement
 - Name what the walk could not open and what the system holds open
+
 ## [0.4.1] - 2026-09-20
 
 ### Documentation
@@ -104,6 +111,7 @@ All notable changes to this project are documented in this file.
 
 ### Testing
 - Find the owner by its mark, not by its name
+
 ## [0.4.0] - 2026-09-20
 
 ### Documentation
@@ -115,6 +123,7 @@ All notable changes to this project are documented in this file.
 - Count shared bytes once, and say where
 - Carry the traits and the shared count to the window
 - Account for every size the reader cannot explain
+
 ## [0.3.0] - 2026-09-19
 
 ### Documentation
@@ -128,6 +137,7 @@ All notable changes to this project are documented in this file.
 
 ### Testing
 - Hold every manifest to one version number
+
 ## [0.2.0] - 2026-09-18
 
 ### Bug Fixes
@@ -141,6 +151,7 @@ All notable changes to this project are documented in this file.
 - Order and page a folder's children in the core
 - Serve pages of rows, and the trail to a node
 - A sortable virtualized table, and an overview of the volumes
+
 ## [0.1.0] - 2026-09-18
 
 ### Bug Fixes

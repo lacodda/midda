@@ -19,6 +19,7 @@ body = """
 - {{ commit.message | upper_first }}
 {% endfor %}\
 {% endfor %}\
+\n
 """
 trim = true
 
