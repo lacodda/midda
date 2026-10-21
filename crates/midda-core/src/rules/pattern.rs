@@ -10,7 +10,12 @@
 //! called `v`-something in a folder `store` in a folder `pnpm`, wherever that
 //! is. The end is what a rule knows — a user's profile folder is called
 //! something different on every machine, and a drive letter is the reader's
-//! business — so a path is never anchored to a root.
+//! business — so a path is not anchored to a drive.
+//!
+//! It can be anchored to the top of one, though: a path written with a
+//! leading `/` starts there. `/Windows` is the system's folder, not every
+//! folder called `Windows` — `AppData\Local\Microsoft\Windows` is a profile's
+//! — and `/Users/*/AppData` is every profile's, on whichever volume.
 
 use std::path::{Component, Path};
 
@@ -99,36 +104,49 @@ fn wildcard(pattern: &[u8], name: &[u8]) -> bool {
     pattern[p..].iter().all(|&b| b == b'*')
 }
 
-/// A path read from its end: the last name is the folder itself, the ones
+/// A path read from its end: the last name is the entry itself, the ones
 /// before it the folders it sits in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Template {
     /// Outermost first, as written.
     names: Vec<Glob>,
+    /// The first name sits at the top of a volume, with nothing above it.
+    anchored: bool,
 }
 
 impl Template {
-    /// A path of names separated by `/`.
+    /// A path of names separated by `/`; a leading `/` anchors it to the top
+    /// of a volume.
     ///
     /// # Errors
     ///
     /// When it is empty or any of its names is not a name.
     pub fn new(path: &str) -> Result<Self, String> {
+        let (anchored, path) = path.strip_prefix('/').map_or((false, path), |rest| (true, rest));
         let names = path.split('/').map(Glob::new).collect::<Result<Vec<_>, _>>()?;
         if names.is_empty() {
             return Err("a path cannot be empty".to_owned());
         }
-        Ok(Self { names })
+        Ok(Self { names, anchored })
     }
 
     /// The path as written.
     #[must_use]
     pub fn as_string(&self) -> String {
-        self.names.iter().map(Glob::as_str).collect::<Vec<_>>().join("/")
+        let path = self.names.iter().map(Glob::as_str).collect::<Vec<_>>().join("/");
+        if self.anchored { format!("/{path}") } else { path }
     }
 
-    /// Whether `id` is the folder this path names: its own name is the last,
-    /// and each folder above it is the one before.
+    /// The last name: what the entry itself is called.
+    #[must_use]
+    pub fn last(&self) -> &Glob {
+        // `new` refuses a path with no names.
+        &self.names[self.names.len() - 1]
+    }
+
+    /// Whether `id` is the entry this path names: its own name is the last,
+    /// and each folder above it is the one before — and, when the path is
+    /// anchored, nothing is above the first.
     ///
     /// Above the root of the tree the names are the root's own path, as
     /// `outer` holds it — so `AppData/Local/npm-cache` is found by a scan of
@@ -136,7 +154,7 @@ impl Template {
     #[must_use]
     pub fn matches(&self, tree: &Tree, id: NodeId, outer: &Outer) -> bool {
         let mut names = upward(tree, id, outer);
-        self.names.iter().rev().all(|glob| names.next().is_some_and(|name| glob.matches(name)))
+        self.names.iter().rev().all(|glob| names.next().is_some_and(|name| glob.matches(name))) && (!self.anchored || names.next().is_none())
     }
 }
 
@@ -274,11 +292,39 @@ mod tests {
     }
 
     #[test]
+    fn an_anchored_path_starts_at_the_top_of_the_volume() {
+        let (tree, v10) = profile();
+        let outer = Outer::of(tree.root_path());
+        let path = |text: &str| Template::new(text).expect("a valid path");
+
+        assert!(path("/Users/*/AppData/Local/pnpm/store/v*").matches(&tree, v10, &outer));
+        assert!(!path("/AppData/Local/pnpm/store/v*").matches(&tree, v10, &outer), "AppData is not at the top");
+        assert!(
+            !path("/me/AppData/Local/pnpm/store/v*").matches(&tree, v10, &outer),
+            "nor is the root's own name"
+        );
+        assert_eq!(path("/Users/*/AppData").as_string(), "/Users/*/AppData");
+        assert!(Template::new("/").is_err() && Template::new("//Users").is_err(), "a slash is not a name");
+
+        // From inside the volume's top folder as well: the root's own path
+        // says where the top is.
+        let mut inner = Tree::new(PathBuf::from(format!("{VOLUME}Windows")), None);
+        let temp = inner.push(ROOT, Node::new("Temp".into(), ROOT, Kind::Directory));
+        let outer = Outer::of(inner.root_path());
+        assert!(path("/Windows/Temp").matches(&inner, temp, &outer));
+        assert!(!path("/Temp").matches(&inner, temp, &outer));
+    }
+
+    #[test]
     fn a_volume_root_has_nothing_above_it() {
         let mut tree = Tree::new(PathBuf::from(VOLUME), None);
         let modules = tree.push(ROOT, Node::new("node_modules".into(), ROOT, Kind::Directory));
         let outer = Outer::of(tree.root_path());
         assert!(Template::new("node_modules").expect("a path").matches(&tree, modules, &outer));
+        assert!(
+            Template::new("/node_modules").expect("a path").matches(&tree, modules, &outer),
+            "and is the top"
+        );
         assert!(
             !Template::new("*/node_modules").expect("a path").matches(&tree, modules, &outer),
             "the drive is not a folder"

@@ -1,0 +1,593 @@
+# What a disk is filled with, and who for: the places midda knows by name.
+#
+# A rule (dev.toml) says what can go. A place only says what something is -
+# Windows, a Steam library, a browser's profile - so that a whole volume can
+# be told as a handful of consumers rather than a million entries. Nothing
+# here says anything may be deleted.
+#
+# Every byte goes to exactly one consumer:
+#
+#   system         Windows and what it keeps beside it
+#   programs       installed programs and the data they keep
+#   games          game libraries, saves and shader caches
+#   development    toolchains, packages, build output, repositories
+#   browsers       browser profiles and caches
+#   virtual-disks  WSL, Docker and virtual machines: one file each, opaque
+#   media          video, audio, images and archives
+#   documents      documents, text and code
+#   unrecognised   whatever nothing here names
+#
+# [[place]] names a folder or a file:
+#
+#   id        kebab-case, unique across every rules file
+#   name      what a reader calls it in the middle of a sentence
+#   consumer  one of the above
+#   paths     where it is, read from its end as in dev.toml; a leading `/`
+#             puts the first name at the top of a volume - `/Windows` is the
+#             system's, not every folder called Windows
+#   beside    it counts only when one of these is next to it
+#   inside    it counts only when one of these is in it
+#   yields    a soft place: a file in it is what its own name says first -
+#             a video in Documents is media - and the place's only when its
+#             name says nothing
+#
+# Everything inside a place is that place's consumer until a place deeper
+# down says otherwise: Steam's library inside Program Files is games, Docker's
+# disk inside Docker's folder is a virtual disk. A folder a rule in dev.toml
+# finds, or closes, is development whatever place it is in. The first place
+# in this file that names an entry is the one that applies.
+#
+# [[file]] says what a file is by its name, where no place says otherwise:
+#
+#   consumer  one of the above
+#   names     names with `*` and `?` - `*.mp4`
+
+# ---------------------------------------------------------------------- system
+
+[[place]]
+id = "windows"
+name = "the Windows folder"
+consumer = "system"
+paths = ["/Windows"]
+
+[[place]]
+id = "component-store"
+name = "the component store"
+consumer = "system"
+paths = ["/Windows/WinSxS"]
+
+[[place]]
+id = "update-downloads"
+name = "Windows Update downloads"
+consumer = "system"
+paths = ["/Windows/SoftwareDistribution"]
+
+[[place]]
+id = "page-file"
+name = "the page file"
+consumer = "system"
+paths = ["/pagefile.sys", "/swapfile.sys"]
+
+[[place]]
+id = "hibernation-file"
+name = "the hibernation file"
+consumer = "system"
+paths = ["/hiberfil.sys"]
+
+[[place]]
+id = "restore-points"
+name = "restore points"
+consumer = "system"
+paths = ["/System Volume Information"]
+
+[[place]]
+id = "recycle-bin"
+name = "the Recycle Bin"
+consumer = "system"
+paths = ["/$Recycle.Bin"]
+
+[[place]]
+id = "previous-windows"
+name = "the previous Windows"
+consumer = "system"
+paths = ["/Windows.old"]
+
+[[place]]
+id = "windows-upgrade"
+name = "Windows upgrade files"
+consumer = "system"
+paths = ["/$WINDOWS.~BT", "/$Windows.~WS", "/$WinREAgent", "/$SysReset", "/$GetCurrent", "/ESD"]
+
+[[place]]
+id = "recovery"
+name = "Windows recovery"
+consumer = "system"
+paths = ["/Recovery"]
+
+[[place]]
+id = "temporary-files"
+name = "temporary files"
+consumer = "system"
+paths = ["/Users/*/AppData/Local/Temp", "/Windows/Temp"]
+
+[[place]]
+id = "crash-reports"
+name = "crash reports"
+consumer = "system"
+paths = [
+  "/ProgramData/Microsoft/Windows/WER",
+  "/Users/*/AppData/Local/CrashDumps",
+  "/Users/*/AppData/Local/Microsoft/Windows/WER",
+  "/Windows/Minidump",
+  "/Windows/LiveKernelReports",
+  "/Windows/MEMORY.DMP",
+  "/DumpStack.log*",
+]
+
+[[place]]
+id = "installer-cache"
+name = "installer caches"
+consumer = "system"
+paths = ["/ProgramData/Package Cache", "/Windows/Installer", "/Config.Msi", "/MSOCache"]
+
+# What a driver installer unpacks and leaves behind.
+[[place]]
+id = "driver-packages"
+name = "driver packages"
+consumer = "system"
+paths = ["/AMD", "/NVIDIA", "/Intel"]
+
+[[place]]
+id = "performance-logs"
+name = "performance logs"
+consumer = "system"
+paths = ["/PerfLogs"]
+
+# -------------------------------------------------------------------- programs
+
+[[place]]
+id = "program-files"
+name = "installed programs"
+consumer = "programs"
+paths = ["/Program Files", "/Program Files (x86)"]
+
+[[place]]
+id = "store-apps"
+name = "Store apps"
+consumer = "programs"
+paths = ["/Program Files/WindowsApps"]
+
+[[place]]
+id = "user-programs"
+name = "programs installed for one user"
+consumer = "programs"
+paths = ["/Users/*/AppData/Local/Programs", "/Users/*/scoop"]
+
+# What programs keep for everyone and for each profile. Deeper places name
+# what is not theirs: a browser's profile, a tool's cache, Windows' temp.
+[[place]]
+id = "program-data"
+name = "ProgramData"
+consumer = "programs"
+paths = ["/ProgramData"]
+
+[[place]]
+id = "app-data"
+name = "AppData"
+consumer = "programs"
+paths = ["/Users/*/AppData"]
+
+# ----------------------------------------------------------------------- games
+
+[[place]]
+id = "steam-library"
+name = "the Steam library"
+consumer = "games"
+paths = ["steamapps"]
+
+[[place]]
+id = "steam"
+name = "Steam"
+consumer = "games"
+paths = ["/Program Files (x86)/Steam", "/Program Files/Steam"]
+
+[[place]]
+id = "epic-games"
+name = "Epic Games"
+consumer = "games"
+paths = ["/Epic Games", "/Program Files/Epic Games", "/Program Files (x86)/Epic Games"]
+
+[[place]]
+id = "gog-games"
+name = "GOG games"
+consumer = "games"
+paths = ["/GOG Games", "/Program Files (x86)/GOG Galaxy/Games", "/Program Files/GOG Galaxy/Games"]
+
+[[place]]
+id = "xbox-games"
+name = "Xbox games"
+consumer = "games"
+paths = ["/XboxGames"]
+
+[[place]]
+id = "ea-games"
+name = "EA games"
+consumer = "games"
+paths = ["/Program Files/EA Games", "/Program Files/Electronic Arts", "/Program Files (x86)/Origin Games"]
+
+[[place]]
+id = "ubisoft-games"
+name = "Ubisoft games"
+consumer = "games"
+paths = ["/Program Files (x86)/Ubisoft/Ubisoft Game Launcher/games"]
+
+[[place]]
+id = "riot-games"
+name = "Riot Games"
+consumer = "games"
+paths = ["/Riot Games", "/Program Files/Riot Games"]
+
+[[place]]
+id = "rockstar-games"
+name = "Rockstar Games"
+consumer = "games"
+paths = ["/Program Files/Rockstar Games"]
+
+[[place]]
+id = "minecraft"
+name = "Minecraft"
+consumer = "games"
+paths = ["/Users/*/AppData/Roaming/.minecraft"]
+
+[[place]]
+id = "game-saves"
+name = "game saves"
+consumer = "games"
+paths = ["/Users/*/Documents/My Games", "/Users/*/Saved Games"]
+
+# What a graphics driver compiles for the games that ran, and keeps.
+[[place]]
+id = "shader-caches"
+name = "shader caches"
+consumer = "games"
+paths = [
+  "/Users/*/AppData/Local/NVIDIA/DXCache",
+  "/Users/*/AppData/Local/NVIDIA/GLCache",
+  "/Users/*/AppData/LocalLow/NVIDIA/PerDriverVersion",
+  "/Users/*/AppData/Local/AMD/DxCache",
+  "/Users/*/AppData/Local/AMD/DxcCache",
+  "/Users/*/AppData/Local/D3DSCache",
+]
+
+# ----------------------------------------------------------------- development
+
+# A repository's history: the objects every commit is made of.
+[[place]]
+id = "git"
+name = "Git history"
+consumer = "development"
+paths = [".git"]
+inside = ["HEAD"]
+
+[[place]]
+id = "python-environment"
+name = "a Python environment"
+consumer = "development"
+paths = [".venv", "venv"]
+inside = ["pyvenv.cfg"]
+
+[[place]]
+id = "rust-toolchains"
+name = "Rust toolchains"
+consumer = "development"
+paths = ["/Users/*/.rustup"]
+
+[[place]]
+id = "cargo-home"
+name = "Cargo"
+consumer = "development"
+paths = ["/Users/*/.cargo"]
+
+[[place]]
+id = "android-sdk"
+name = "the Android SDK"
+consumer = "development"
+paths = ["/Users/*/AppData/Local/Android"]
+
+[[place]]
+id = "android-emulators"
+name = "Android emulators"
+consumer = "development"
+paths = ["/Users/*/.android"]
+
+[[place]]
+id = "gradle-home"
+name = "Gradle"
+consumer = "development"
+paths = ["/Users/*/.gradle"]
+
+[[place]]
+id = "maven-repository"
+name = "the Maven repository"
+consumer = "development"
+paths = ["/Users/*/.m2"]
+
+[[place]]
+id = "nuget-packages"
+name = "NuGet packages"
+consumer = "development"
+paths = ["/Users/*/.nuget"]
+
+[[place]]
+id = "go-modules"
+name = "Go modules"
+consumer = "development"
+paths = ["/Users/*/go/pkg"]
+
+[[place]]
+id = "conda"
+name = "Conda"
+consumer = "development"
+paths = ["/Users/*/miniconda3", "/Users/*/anaconda3", "/Users/*/miniforge3", "/ProgramData/miniconda3", "/ProgramData/anaconda3"]
+
+[[place]]
+id = "python"
+name = "Python"
+consumer = "development"
+paths = ["/Users/*/AppData/Local/Programs/Python", "/Users/*/AppData/Local/uv", "/Users/*/AppData/Local/pip"]
+
+[[place]]
+id = "node-tools"
+name = "Node.js tools"
+consumer = "development"
+paths = ["/Program Files/nodejs", "/Users/*/AppData/Roaming/npm", "/Users/*/AppData/Local/pnpm", "/Users/*/AppData/Local/Yarn"]
+
+[[place]]
+id = "tool-caches"
+name = "tool caches"
+consumer = "development"
+paths = ["/Users/*/.cache"]
+
+[[place]]
+id = "editors"
+name = "code editors"
+consumer = "development"
+paths = [
+  "/Users/*/.vscode",
+  "/Users/*/.cursor",
+  "/Users/*/.windsurf",
+  "/Users/*/AppData/Local/Programs/Microsoft VS Code",
+  "/Program Files/Microsoft VS Code",
+  "/Users/*/AppData/Roaming/Code",
+  "/Users/*/AppData/Local/Programs/cursor",
+  "/Users/*/AppData/Roaming/Cursor",
+]
+
+[[place]]
+id = "jetbrains"
+name = "JetBrains IDEs"
+consumer = "development"
+paths = ["/Program Files/JetBrains", "/Users/*/AppData/Local/JetBrains", "/Users/*/AppData/Roaming/JetBrains"]
+
+[[place]]
+id = "visual-studio"
+name = "Visual Studio"
+consumer = "development"
+paths = [
+  "/Program Files/Microsoft Visual Studio",
+  "/Program Files (x86)/Microsoft Visual Studio",
+  "/ProgramData/Microsoft/VisualStudio",
+  "/Users/*/AppData/Local/Microsoft/VisualStudio",
+]
+
+[[place]]
+id = "windows-sdk"
+name = "the Windows SDK"
+consumer = "development"
+paths = ["/Program Files (x86)/Windows Kits", "/Program Files/Windows Kits"]
+
+[[place]]
+id = "dotnet"
+name = ".NET"
+consumer = "development"
+paths = ["/Program Files/dotnet"]
+
+[[place]]
+id = "git-for-windows"
+name = "Git for Windows"
+consumer = "development"
+paths = ["/Program Files/Git"]
+
+# Docker Desktop itself. Its disk is a virtual disk, named further down.
+[[place]]
+id = "docker"
+name = "Docker"
+consumer = "development"
+paths = ["/Program Files/Docker", "/ProgramData/DockerDesktop", "/Users/*/AppData/Local/Docker", "/Users/*/.docker"]
+
+[[place]]
+id = "playwright"
+name = "Playwright's browsers"
+consumer = "development"
+paths = ["/Users/*/AppData/Local/ms-playwright"]
+
+# -------------------------------------------------------------------- browsers
+
+[[place]]
+id = "chrome"
+name = "Chrome"
+consumer = "browsers"
+paths = ["/Users/*/AppData/Local/Google/Chrome/User Data"]
+
+[[place]]
+id = "edge"
+name = "Edge"
+consumer = "browsers"
+paths = ["/Users/*/AppData/Local/Microsoft/Edge/User Data"]
+
+[[place]]
+id = "firefox"
+name = "Firefox"
+consumer = "browsers"
+paths = ["/Users/*/AppData/Roaming/Mozilla/Firefox", "/Users/*/AppData/Local/Mozilla/Firefox"]
+
+[[place]]
+id = "brave"
+name = "Brave"
+consumer = "browsers"
+paths = ["/Users/*/AppData/Local/BraveSoftware/Brave-Browser/User Data"]
+
+[[place]]
+id = "opera"
+name = "Opera"
+consumer = "browsers"
+paths = ["/Users/*/AppData/Roaming/Opera Software", "/Users/*/AppData/Local/Opera Software"]
+
+[[place]]
+id = "vivaldi"
+name = "Vivaldi"
+consumer = "browsers"
+paths = ["/Users/*/AppData/Local/Vivaldi/User Data"]
+
+[[place]]
+id = "yandex-browser"
+name = "Yandex Browser"
+consumer = "browsers"
+paths = ["/Users/*/AppData/Local/Yandex/YandexBrowser/User Data"]
+
+[[place]]
+id = "chromium"
+name = "Chromium"
+consumer = "browsers"
+paths = ["/Users/*/AppData/Local/Chromium/User Data"]
+
+# --------------------------------------------------------------- virtual disks
+
+# Docker's disk first: it is a `.vhdx` too, and the first place that names an
+# entry is the one that applies.
+[[place]]
+id = "docker-disk"
+name = "Docker's disk"
+consumer = "virtual-disks"
+paths = ["Docker/wsl/*/*.vhdx"]
+
+[[place]]
+id = "wsl-disk"
+name = "a WSL distribution's disk"
+consumer = "virtual-disks"
+paths = ["ext4.vhdx"]
+
+[[place]]
+id = "virtual-disk"
+name = "a virtual disk"
+consumer = "virtual-disks"
+paths = ["*.vhdx", "*.vhd", "*.avhdx", "*.avhd", "*.vmdk", "*.vdi", "*.qcow2"]
+
+[[place]]
+id = "wsl"
+name = "WSL distributions"
+consumer = "virtual-disks"
+paths = ["/Users/*/AppData/Local/wsl"]
+
+[[place]]
+id = "hyper-v"
+name = "Hyper-V machines"
+consumer = "virtual-disks"
+paths = ["/ProgramData/Microsoft/Windows/Virtual Hard Disks", "/ProgramData/Microsoft/Windows/Hyper-V", "/Users/Public/Documents/Hyper-V"]
+
+[[place]]
+id = "virtualbox"
+name = "VirtualBox machines"
+consumer = "virtual-disks"
+paths = ["/Users/*/VirtualBox VMs"]
+
+[[place]]
+id = "vmware"
+name = "VMware machines"
+consumer = "virtual-disks"
+paths = ["/Users/*/Documents/Virtual Machines"]
+
+# ----------------------------------------------------------------------- media
+
+[[place]]
+id = "pictures"
+name = "Pictures"
+consumer = "media"
+paths = ["/Users/*/Pictures"]
+yields = true
+
+[[place]]
+id = "music"
+name = "Music"
+consumer = "media"
+paths = ["/Users/*/Music"]
+yields = true
+
+[[place]]
+id = "videos"
+name = "Videos"
+consumer = "media"
+paths = ["/Users/*/Videos"]
+yields = true
+
+[[file]]
+consumer = "media"
+names = [
+  # video
+  "*.mp4", "*.mkv", "*.mov", "*.avi", "*.webm", "*.wmv", "*.m4v", "*.mpg", "*.mpeg", "*.mts", "*.m2ts", "*.flv", "*.3gp", "*.vob",
+  # audio
+  "*.mp3", "*.wav", "*.flac", "*.ogg", "*.oga", "*.opus", "*.m4a", "*.aac", "*.wma", "*.aif", "*.aiff", "*.ape",
+  # images
+  "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.avif", "*.heic", "*.heif", "*.bmp", "*.tif", "*.tiff", "*.svg", "*.ico",
+  "*.psd", "*.raw", "*.cr2", "*.cr3", "*.nef", "*.arw", "*.dng", "*.orf", "*.rw2", "*.kra", "*.xcf",
+  # archives and disk images
+  "*.zip", "*.7z", "*.rar", "*.gz", "*.tgz", "*.bz2", "*.xz", "*.zst", "*.tar", "*.cab", "*.iso", "*.img", "*.dmg",
+]
+
+# ------------------------------------------------------------------- documents
+
+[[place]]
+id = "documents"
+name = "Documents"
+consumer = "documents"
+paths = ["/Users/*/Documents"]
+yields = true
+
+[[place]]
+id = "desktop"
+name = "the desktop"
+consumer = "documents"
+paths = ["/Users/*/Desktop"]
+yields = true
+
+[[place]]
+id = "downloads"
+name = "Downloads"
+consumer = "documents"
+paths = ["/Users/*/Downloads"]
+yields = true
+
+[[place]]
+id = "onedrive"
+name = "OneDrive"
+consumer = "documents"
+paths = ["/Users/*/OneDrive", "/Users/*/OneDrive - *"]
+yields = true
+
+[[file]]
+consumer = "documents"
+names = [
+  # documents
+  "*.pdf", "*.doc", "*.docx", "*.xls", "*.xlsx", "*.ppt", "*.pptx", "*.odt", "*.ods", "*.odp", "*.rtf", "*.epub", "*.djvu",
+  "*.txt", "*.md", "*.csv", "*.tsv", "*.jsonl", "*.ndjson",
+  # code and the files beside it
+  "*.rs", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs", "*.py", "*.go", "*.java", "*.kt", "*.c", "*.h", "*.cpp", "*.hpp",
+  "*.cs", "*.rb", "*.php", "*.swift", "*.sh", "*.ps1", "*.bat", "*.sql", "*.html", "*.css", "*.scss", "*.vue", "*.svelte",
+  "*.json", "*.toml", "*.yaml", "*.yml", "*.xml", "*.ini", "*.cfg", "*.lock",
+]
+
+# -------------------------------------------------------------------- programs
+
+[[file]]
+consumer = "programs"
+names = ["*.exe", "*.dll", "*.msi", "*.msix", "*.msixbundle", "*.appx", "*.appxbundle"]

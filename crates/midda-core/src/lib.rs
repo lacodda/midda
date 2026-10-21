@@ -79,6 +79,15 @@
 //! manager's own command, once the manager has said it is the cache found.
 //! See `docs/adr/0012-rules-that-explain-themselves.md`.
 //!
+//! # What fills the disk
+//!
+//! "C: is full" asks why. [`consumers`] gives every byte to one consumer -
+//! Windows, programs, games, development, browsers, virtual disks, media,
+//! documents, or what midda does not recognise - by places the same rules
+//! files name, says which folders hold most of each, and tells it as a
+//! paragraph a person and an assistant read alike ([`consumers::story`]).
+//! See `docs/adr/0014-what-fills-the-disk.md`.
+//!
 //! ```no_run
 //! use midda_core::{Progress, SizeBasis, scan};
 //!
@@ -93,6 +102,7 @@
 //! ```
 
 pub mod compare;
+pub mod consumers;
 pub mod error;
 pub mod fresh;
 pub mod growth;
@@ -108,8 +118,10 @@ pub mod traits;
 pub mod tree;
 pub mod treemap;
 pub mod walk;
+pub mod words;
 
 pub use compare::{Comparison, Mark, Place, PlaceKind, Totals, compare};
+pub use consumers::{Classified, Consumer, Summary};
 pub use error::{Error, Result};
 pub use fresh::{Applied, Index, JournalPosition, Observed};
 pub use growth::{Grower, Growers, Pace};

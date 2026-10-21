@@ -41,6 +41,17 @@
 //! shipped rules can say, a user's can. See
 //! `docs/adr/0012-rules-that-explain-themselves.md`.
 //!
+//! # Places
+//!
+//! The same files say what things are without saying they can go: a
+//! [`Place`] names a folder or a file — Windows, a Steam library, a
+//! browser's profile — and the [`Consumer`] its bytes are for; a
+//! [`FileKind`] says what a file is by its name where no place says
+//! otherwise. `rules/places.toml` holds the shipped ones, and
+//! [`crate::consumers`] gives every byte of a tree to one consumer by them.
+//! A folder a rule finds or closes is its group's consumer
+//! ([`Group::consumer`]). See `docs/adr/0014-what-fills-the-disk.md`.
+//!
 //! # A finding
 //!
 //! The first folder down from the root that a rule names. Nothing under it is
@@ -58,6 +69,7 @@
 
 pub mod cleanup;
 pub mod pattern;
+mod places;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -66,7 +78,9 @@ use serde::{Deserialize, Serialize};
 
 pub use cleanup::Cleanup;
 use pattern::{Glob, Outer, Template};
+pub use places::{FileKind, Place};
 
+use crate::consumers::Consumer;
 use crate::platform::FileIdentity;
 use crate::size::Size;
 use crate::tree::{NodeId, ROOT, Tree};
@@ -81,6 +95,21 @@ pub enum Group {
     Build,
     /// What a package manager downloaded once for every project.
     Caches,
+}
+
+impl Group {
+    /// Who the folders of this group are for.
+    ///
+    /// A group belongs to one consumer, so a rule does not say its own: a
+    /// rule that could say `group = "caches"` and `consumer = "games"` would
+    /// be two answers to one question. A group a game's cache needs is a
+    /// group of its own.
+    #[must_use]
+    pub const fn consumer(self) -> Consumer {
+        match self {
+            Self::Dependencies | Self::Build | Self::Caches => Consumer::Development,
+        }
+    }
 }
 
 /// How careful to be.
@@ -143,72 +172,139 @@ impl Rule {
 
     /// Which way back applies to `id`, when the rule names it.
     fn applies(&self, tree: &Tree, id: NodeId, outer: &Outer) -> Option<usize> {
-        if !self.paths.iter().any(|path| path.matches(tree, id, outer)) {
+        if !self.paths.iter().any(|path| path.matches(tree, id, outer)) || !explained(tree, id, &self.beside, &self.inside) {
             return None;
         }
-        let node = tree.node(id);
-        let siblings = &tree.node(node.parent).children;
-        let has = |among: &[NodeId], glob: &Glob| among.iter().any(|&other| glob.matches(&tree.node(other).name));
-        if !self.beside.is_empty() && !self.beside.iter().any(|glob| has(siblings, glob)) {
-            return None;
-        }
-        if !self.inside.is_empty() && !self.inside.iter().any(|glob| has(&node.children, glob)) {
-            return None;
-        }
-        self.restore.iter().position(|way| way.when.as_ref().is_none_or(|glob| has(siblings, glob)))
+        let siblings = &tree.node(tree.node(id).parent).children;
+        self.restore
+            .iter()
+            .position(|way| way.when.as_ref().is_none_or(|glob| has(tree, siblings, glob)))
     }
 }
 
-/// A set of rules, read and checked.
+/// Whether something `beside` names is next to `id`, and something `inside`
+/// names is in it — each only when asked for.
+fn explained(tree: &Tree, id: NodeId, beside: &[Glob], inside: &[Glob]) -> bool {
+    let node = tree.node(id);
+    (beside.is_empty() || beside.iter().any(|glob| has(tree, &tree.node(node.parent).children, glob)))
+        && (inside.is_empty() || inside.iter().any(|glob| has(tree, &node.children, glob)))
+}
+
+/// Whether an entry among `among` is one `glob` names.
+fn has(tree: &Tree, among: &[NodeId], glob: &Glob) -> bool {
+    among.iter().any(|&other| glob.matches(&tree.node(other).name))
+}
+
+/// A set of rules, places and kinds of file, read and checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleSet {
     rules: Vec<Rule>,
+    places: Vec<Place>,
+    files: Vec<FileKind>,
+    /// The places by the last name of their paths, so a volume's folders are
+    /// not each asked of every place.
+    index: places::Index,
 }
 
-/// The file the shipped rules are in.
+/// The files the shipped rules and places are in.
 const DEV: &str = include_str!("../../rules/dev.toml");
+const PLACES: &str = include_str!("../../rules/places.toml");
 
 impl RuleSet {
-    /// The rules midda ships with.
+    /// The rules and places midda ships with.
     ///
     /// # Panics
     ///
-    /// If the shipped file does not read — which a test of this crate rules
+    /// If a shipped file does not read — which a test of this crate rules
     /// out before anything is shipped.
     #[must_use]
     pub fn shipped() -> &'static Self {
         static SHIPPED: OnceLock<RuleSet> = OnceLock::new();
-        SHIPPED.get_or_init(|| Self::parse(DEV).expect("the shipped rules read"))
+        SHIPPED.get_or_init(|| Self::parse_all(&[DEV, PLACES]).expect("the shipped rules read"))
     }
 
-    /// Reads a set of rules written as `rules/dev.toml` is.
+    /// Reads a set written as `rules/dev.toml` and `rules/places.toml` are.
     ///
     /// # Errors
     ///
     /// When the text is not TOML of that shape, or a rule in it cannot
     /// explain itself: no way back, a last way back with a condition, an
-    /// empty sentence, a path that is not a path. The message names the rule.
+    /// empty sentence, a path that is not a path. The message names the rule
+    /// or the place.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let file: RawFile = toml::from_str(text).map_err(|error| error.to_string())?;
+        Self::parse_all(&[text])
+    }
+
+    /// Reads several files as one set: an id is unique across all of them,
+    /// and a rule or place in an earlier file is tried first.
+    ///
+    /// # Errors
+    ///
+    /// As [`RuleSet::parse`], for any of them.
+    pub fn parse_all(texts: &[&str]) -> Result<Self, String> {
         let mut seen = HashSet::new();
-        let rules = file
-            .rule
-            .into_iter()
-            .map(|raw| {
+        let mut once = |id: &str| {
+            if seen.insert(id.to_owned()) {
+                Ok(())
+            } else {
+                Err(format!("`{id}` is written twice"))
+            }
+        };
+        let (mut rules, mut places, mut files) = (Vec::new(), Vec::new(), Vec::new());
+        for text in texts {
+            let file: RawFile = toml::from_str(text).map_err(|error| error.to_string())?;
+            for raw in file.rule {
+                once(&raw.id)?;
                 let id = raw.id.clone();
-                if !seen.insert(id.clone()) {
-                    return Err(format!("rule `{id}` is written twice"));
-                }
-                raw.check().map_err(|why| format!("rule `{id}`: {why}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { rules })
+                rules.push(raw.check().map_err(|why| format!("rule `{id}`: {why}"))?);
+            }
+            for raw in file.place {
+                once(&raw.id)?;
+                let id = raw.id.clone();
+                places.push(raw.check().map_err(|why| format!("place `{id}`: {why}"))?);
+            }
+            for raw in file.file {
+                files.push(raw.check()?);
+            }
+        }
+        let index = places::Index::of(&places, &files);
+        Ok(Self { rules, places, files, index })
     }
 
     /// Every rule, in the order they are tried.
     #[must_use]
     pub fn rules(&self) -> &[Rule] {
         &self.rules
+    }
+
+    /// Every place, in the order they are tried.
+    #[must_use]
+    pub fn places(&self) -> &[Place] {
+        &self.places
+    }
+
+    /// What files are by their names.
+    #[must_use]
+    pub fn file_kinds(&self) -> &[FileKind] {
+        &self.files
+    }
+
+    /// The place that names `id`, by its index in [`RuleSet::places`]: the
+    /// first in the set's order. `scratch` is room to fold a name's case in,
+    /// kept by the caller so a walk of a volume does not allocate per entry.
+    #[must_use]
+    pub fn place_of(&self, tree: &Tree, id: NodeId, outer: &Outer, scratch: &mut String) -> Option<usize> {
+        self.index
+            .candidates(&tree.node(id).name, scratch)
+            .filter(|&(place, path)| self.places[place].names_by(path, tree, id, outer))
+            .map(|(place, _)| place)
+            .min()
+    }
+
+    /// What a file called `name` is by its name alone, when any kind says.
+    #[must_use]
+    pub fn kind_of(&self, name: &str, scratch: &mut String) -> Option<Consumer> {
+        self.index.kind_of(name, &self.files, scratch)
     }
 
     /// The rule a finding names.
@@ -240,16 +336,21 @@ impl RuleSet {
             .find_map(|(index, rule)| rule.applies(tree, id, outer).map(|way| (index, way)))
     }
 
-    /// Whether a closed rule's path names `id`: nothing in it is anybody's.
-    fn closes(&self, tree: &Tree, id: NodeId, outer: &Outer) -> bool {
+    /// The closed rule whose path names `id`, when one does: nothing in it is
+    /// anybody's.
+    fn closing(&self, tree: &Tree, id: NodeId, outer: &Outer) -> Option<usize> {
         self.rules
             .iter()
-            .any(|rule| rule.closed && rule.paths.iter().any(|path| path.matches(tree, id, outer)))
+            .position(|rule| rule.closed && rule.paths.iter().any(|path| path.matches(tree, id, outer)))
     }
 
-    /// The findings of `tree`, and the closed folders that are not findings,
-    /// in the order they were met.
-    fn survey(&self, tree: &Tree) -> (Vec<Finding>, Vec<NodeId>) {
+    /// What the rules say of `tree`: the folders they find, the most freed
+    /// first, and the closed folders that are not findings.
+    ///
+    /// The root is not a finding: it is what was opened, and a scan of a
+    /// `node_modules` is a look inside one.
+    #[must_use]
+    pub fn survey(&self, tree: &Tree) -> Survey {
         let outer = Outer::of(tree.root_path());
         let mut findings = Vec::new();
         let mut closed = Vec::new();
@@ -263,11 +364,20 @@ impl RuleSet {
                     holds: tree.node(id).size,
                     frees: freed_by(tree, id),
                 }),
-                None if self.closes(tree, id, &outer) => closed.push(id),
-                None => stack.extend(folders_in(tree, id)),
+                None => match self.closing(tree, id, &outer) {
+                    Some(rule) => closed.push(Closed { id, rule }),
+                    None => stack.extend(folders_in(tree, id)),
+                },
             }
         }
-        (findings, closed)
+        findings.sort_by(|a, b| {
+            b.frees
+                .allocated
+                .cmp(&a.frees.allocated)
+                .then_with(|| b.holds.allocated.cmp(&a.holds.allocated))
+                .then_with(|| tree.scan_order(a.id, b.id))
+        });
+        Survey { findings, closed }
     }
 
     /// The folders of `tree` that are one thing: every finding, and every
@@ -276,25 +386,81 @@ impl RuleSet {
     /// names whole ([`units_in`]).
     #[must_use]
     pub fn units(&self, tree: &Tree) -> HashSet<NodeId> {
-        let (findings, closed) = self.survey(tree);
-        findings.iter().map(|finding| finding.id).chain(closed).collect()
+        self.survey(tree).units()
     }
 
     /// Every folder of `tree` a rule names, the most freed first.
-    ///
-    /// The root is not one: it is what was opened, and a scan of a
-    /// `node_modules` is a look inside one, not a finding.
     #[must_use]
     pub fn find(&self, tree: &Tree) -> Vec<Finding> {
-        let (mut findings, _) = self.survey(tree);
-        findings.sort_by(|a, b| {
-            b.frees
-                .allocated
-                .cmp(&a.frees.allocated)
-                .then_with(|| b.holds.allocated.cmp(&a.holds.allocated))
-                .then_with(|| tree.scan_order(a.id, b.id))
-        });
-        findings
+        self.survey(tree).findings
+    }
+
+    /// Who the folder a rule claims is for: the consumer of the rule's group.
+    ///
+    /// # Panics
+    ///
+    /// If `claim` came from another set.
+    #[must_use]
+    pub fn consumer_of(&self, claim: Claim) -> Consumer {
+        let rule = match claim {
+            Claim::Found(finding) => finding.rule,
+            Claim::Closed(closed) => closed.rule,
+        };
+        self.rules[rule].group.consumer()
+    }
+}
+
+/// What the rules say of a tree ([`RuleSet::survey`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Survey {
+    /// The folders a rule names, the most freed first.
+    pub findings: Vec<Finding>,
+    /// The closed folders no rule names: one thing each, and nobody's to
+    /// delete.
+    pub closed: Vec<Closed>,
+}
+
+impl Survey {
+    /// The folders that are one thing: the findings and the closed folders.
+    #[must_use]
+    pub fn units(&self) -> HashSet<NodeId> {
+        self.claims().map(|claim| claim.id()).collect()
+    }
+
+    /// Every folder a rule claims whole.
+    pub fn claims(&self) -> impl Iterator<Item = Claim> + '_ {
+        self.findings
+            .iter()
+            .copied()
+            .map(Claim::Found)
+            .chain(self.closed.iter().copied().map(Claim::Closed))
+    }
+}
+
+/// A closed folder no rule names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed {
+    pub id: NodeId,
+    /// The rule that closes it, by its place in the set.
+    rule: usize,
+}
+
+/// A folder a rule claims whole: a finding, or a closed folder that is not
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    Found(Finding),
+    Closed(Closed),
+}
+
+impl Claim {
+    /// The folder.
+    #[must_use]
+    pub const fn id(self) -> NodeId {
+        match self {
+            Self::Found(finding) => finding.id,
+            Self::Closed(closed) => closed.id,
+        }
     }
 }
 
@@ -393,6 +559,10 @@ pub fn units_in(tree: &Tree, context: &Tree, found: &HashSet<NodeId>) -> HashSet
 struct RawFile {
     #[serde(default)]
     rule: Vec<RawRule>,
+    #[serde(default)]
+    place: Vec<places::RawPlace>,
+    #[serde(default)]
+    file: Vec<places::RawFileKind>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -421,26 +591,39 @@ struct RawRestore {
     explain: String,
 }
 
+/// Whether `id` is kebab-case: lowercase letters, digits and dashes, a dash
+/// at neither end.
+fn kebab(id: &str) -> Result<(), String> {
+    let kebab = !id.is_empty() && !id.starts_with('-') && !id.ends_with('-') && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if kebab {
+        Ok(())
+    } else {
+        Err("an id is lowercase letters, digits and dashes".to_owned())
+    }
+}
+
+/// The paths and names a rule or a place is written with, read.
+fn read_paths(paths: &[String]) -> Result<Vec<Template>, String> {
+    if paths.is_empty() {
+        return Err("at least one path is needed".to_owned());
+    }
+    paths.iter().map(|path| Template::new(path)).collect()
+}
+
+fn read_globs(names: &[String]) -> Result<Vec<Glob>, String> {
+    names.iter().map(|name| Glob::new(name)).collect()
+}
+
 impl RawRule {
     /// The rule, when it can explain itself.
     fn check(self) -> Result<Rule, String> {
-        let kebab = !self.id.is_empty()
-            && !self.id.starts_with('-')
-            && !self.id.ends_with('-')
-            && self.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-        if !kebab {
-            return Err("an id is lowercase letters, digits and dashes".to_owned());
-        }
+        kebab(&self.id)?;
         if self.name.trim().is_empty() {
             return Err("a rule needs a name a reader calls the thing by".to_owned());
         }
-        if self.paths.is_empty() {
-            return Err("a rule needs at least one path".to_owned());
-        }
-        let paths = self.paths.iter().map(|path| Template::new(path)).collect::<Result<Vec<_>, _>>()?;
-        let globs = |names: &[String]| names.iter().map(|name| Glob::new(name)).collect::<Result<Vec<_>, _>>();
-        let beside = globs(&self.beside)?;
-        let inside = globs(&self.inside)?;
+        let paths = read_paths(&self.paths)?;
+        let beside = read_globs(&self.beside)?;
+        let inside = read_globs(&self.inside)?;
 
         let Some((last, earlier)) = self.restore.split_last() else {
             return Err("a rule needs a way back: what brings the folder back, and what is lost".to_owned());

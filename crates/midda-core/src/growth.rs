@@ -111,83 +111,137 @@ pub struct Growers {
 /// it — and the lines add up to the whole because of it.
 #[must_use]
 pub fn growers(tree: &Tree, scale: u64, value: impl Fn(NodeId) -> i64, unit: impl Fn(NodeId) -> bool) -> Growers {
-    let threshold = (scale / SHARE).max(1);
-    let floor = i64::try_from(threshold).unwrap_or(i64::MAX);
+    let folders = Folders::of(tree, unit);
+    folders.growers(scale, |at| value(folders.folders[at]), &value)
+}
 
-    // Root first, each folder before what is in it; walked backwards, every
-    // folder is reached after everything under it. Not the arena's order: a
-    // tree kept up to date appends what arrives.
-    let mut order = Vec::new();
-    let mut stack = vec![ROOT];
-    while let Some(id) = stack.pop() {
-        order.push(id);
-        let node = tree.node(id);
-        // Nothing under a unit is looked at: it is one thing.
-        if id == ROOT || !unit(id) {
-            stack.extend(node.children.iter().copied().filter(|&child| tree.node(child).is_directory()));
-        }
-    }
+/// The folders of a tree a list of growers is read over: the root first,
+/// each folder before what is in it, nothing under a unit — and where each
+/// one's folder is in the list.
+///
+/// Worked out once for a tree and asked many questions: what fills a volume
+/// asks the same folders who holds each of nine consumers, and a walk of a
+/// system volume's three million entries for each would be nine walks where
+/// one does ([`crate::consumers`]).
+#[derive(Debug, Clone, Default)]
+pub struct Folders {
+    /// Root first, each folder before what is in it. Not the arena's order:
+    /// a tree kept up to date appends what arrives.
+    folders: Vec<NodeId>,
+    /// Where in `folders` each one's folder is; the root's is its own.
+    parents: Vec<u32>,
+    /// Whether each is a unit, with nothing under it in the list.
+    units: Vec<bool>,
+    /// The files directly in the root.
+    loose: Vec<NodeId>,
+}
 
-    // What of each folder's growth the lines at or under it account for, and
-    // how many lines those are.
-    let mut named = vec![0_i64; tree.nodes().map(|(id, _)| id as usize + 1).max().unwrap_or(1)];
-    let mut lines = vec![0_u32; named.len()];
-    let mut growers = Vec::new();
-    for &id in order.iter().rev() {
-        let node = tree.node(id);
-        let (below, inside) = if id != ROOT && unit(id) {
-            (0, 0)
-        } else {
-            node.children
-                .iter()
-                .filter(|&&child| tree.node(child).is_directory())
-                .fold((0_i64, 0_u32), |(bytes, count), &child| {
-                    (bytes.saturating_add(named[child as usize]), count + lines[child as usize])
-                })
+impl Folders {
+    /// The folders of `tree`, nothing under a folder `unit` says is one thing.
+    #[must_use]
+    pub fn of(tree: &Tree, unit: impl Fn(NodeId) -> bool) -> Self {
+        let mut folders = Self {
+            folders: Vec::new(),
+            parents: Vec::new(),
+            units: Vec::new(),
+            loose: tree.root().children.iter().copied().filter(|&child| !tree.node(child).is_directory()).collect(),
         };
-        if id == ROOT {
-            named[ROOT as usize] = below;
-            lines[ROOT as usize] = inside;
-            continue;
+        let mut stack = vec![(ROOT, 0_u32)];
+        while let Some((id, parent)) = stack.pop() {
+            let at = u32::try_from(folders.folders.len()).expect("fewer folders than entries");
+            let whole = id != ROOT && unit(id);
+            folders.folders.push(id);
+            folders.parents.push(parent);
+            folders.units.push(whole);
+            // Nothing under a unit is looked at: it is one thing.
+            if !whole {
+                stack.extend(
+                    tree.node(id)
+                        .children
+                        .iter()
+                        .copied()
+                        .filter(|&child| tree.node(child).is_directory())
+                        .map(|child| (child, at)),
+                );
+            }
         }
-        let growth = value(id);
-        let own = growth.saturating_sub(below);
-        if own >= floor {
+        folders
+    }
+
+    /// The folders, the root first and each before what is in it.
+    #[must_use]
+    pub fn folders(&self) -> &[NodeId] {
+        &self.folders
+    }
+
+    /// Where in [`Folders::folders`] the folder of each one is.
+    #[must_use]
+    pub fn parents(&self) -> &[u32] {
+        &self.parents
+    }
+
+    /// Whether the folder at each place is a unit.
+    #[must_use]
+    pub fn units(&self) -> &[bool] {
+        &self.units
+    }
+
+    /// The files directly in the root.
+    #[must_use]
+    pub fn loose(&self) -> &[NodeId] {
+        &self.loose
+    }
+
+    /// The growers by `value` of the folder at each place in
+    /// [`Folders::folders`], and `file` of each of the root's own files —
+    /// [`growers`], with the walk already made.
+    pub fn growers(&self, scale: u64, value: impl Fn(usize) -> i64, file: impl Fn(NodeId) -> i64) -> Growers {
+        let threshold = (scale / SHARE).max(1);
+        let floor = i64::try_from(threshold).unwrap_or(i64::MAX);
+
+        // What of each folder's growth the lines at or under it account
+        // for, and how many lines those are — gathered from what is in it:
+        // walked backwards, every folder is reached after everything under
+        // it, and hands its own on to the one above.
+        let mut below = vec![0_i64; self.folders.len()];
+        let mut inside = vec![0_u32; self.folders.len()];
+        let mut growers = Vec::new();
+        for at in (1..self.folders.len()).rev() {
+            let growth = value(at);
+            let own = growth.saturating_sub(below[at]);
+            let (named, lines) = if own >= floor {
+                growers.push(Grower {
+                    id: self.folders[at],
+                    growth,
+                    own,
+                    inside: inside[at],
+                    loose: false,
+                });
+                (growth, inside[at] + 1)
+            } else {
+                (below[at], inside[at])
+            };
+            let parent = self.parents[at] as usize;
+            below[parent] = below[parent].saturating_add(named);
+            inside[parent] += lines;
+        }
+
+        let mut rest = value(0).saturating_sub(below[0]);
+        let loose = self.loose.iter().fold(0_i64, |bytes, &child| bytes.saturating_add(file(child)));
+        if loose >= floor {
             growers.push(Grower {
-                id,
-                growth,
-                own,
-                inside,
-                loose: false,
+                id: ROOT,
+                growth: loose,
+                own: loose,
+                inside: 0,
+                loose: true,
             });
-            named[id as usize] = growth;
-            lines[id as usize] = inside + 1;
-        } else {
-            named[id as usize] = below;
-            lines[id as usize] = inside;
+            rest = rest.saturating_sub(loose);
         }
-    }
 
-    let root = tree.root();
-    let mut rest = value(ROOT).saturating_sub(named[ROOT as usize]);
-    let loose = root
-        .children
-        .iter()
-        .filter(|&&child| !tree.node(child).is_directory())
-        .fold(0_i64, |bytes, &child| bytes.saturating_add(value(child)));
-    if loose >= floor {
-        growers.push(Grower {
-            id: ROOT,
-            growth: loose,
-            own: loose,
-            inside: 0,
-            loose: true,
-        });
-        rest = rest.saturating_sub(loose);
+        growers.sort_by(|a, b| b.own.cmp(&a.own).then_with(|| a.id.cmp(&b.id)));
+        Growers { growers, rest, threshold }
     }
-
-    growers.sort_by(|a, b| b.own.cmp(&a.own).then_with(|| a.id.cmp(&b.id)));
-    Growers { growers, rest, threshold }
 }
 
 /// How fast something grew, and how long the free space lasts at that rate.
