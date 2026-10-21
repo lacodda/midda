@@ -52,6 +52,7 @@ pub fn run() {
             session::comparison_report,
             session::top_growth,
             session::findings,
+            session::fills,
             session::cleanup_reach,
             session::run_cleanup,
             elevate::acceleration,

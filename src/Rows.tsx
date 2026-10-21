@@ -6,6 +6,7 @@ import { EntryTable } from '@/EntryTable'
 import { SafeToDelete } from '@/SafeToDelete'
 import { TopGrowth } from '@/TopGrowth'
 import { Treemap } from '@/Treemap'
+import { WhatFills } from '@/WhatFills'
 import type { ChangesSummary, ComparisonSummary, Row, ScanResult, Size, SizeBasis, Sort, SortKey, View } from '@/core'
 import { findings, growthOf, pick, sizeOf } from '@/core'
 import { describeChanges, describeComparison, describeOverhead, describeScan, explainSize, formatBytes, formatCount, formatSigned } from '@/format'
@@ -13,9 +14,10 @@ import { describeChanges, describeComparison, describeOverhead, describeScan, ex
 /**
  * How a view is shown: the folder's tree, with the picture; who is eating
  * the disk, as a list, and - a comparison only - the page of what came back
- * and from where; or - the folder as it is only - what can go.
+ * and from where; or - the folder as it is only - what fills it, and what
+ * can go.
  */
-export type Shape = 'top' | 'tree' | 'report' | 'safe'
+export type Shape = 'top' | 'tree' | 'report' | 'fills' | 'safe'
 
 interface RowsProps {
   /** Which tree is shown: the folder as it is, or what was written lately. */
@@ -102,17 +104,19 @@ export function Rows({
       current = false
     }
   }, [view, arena, version, basis])
-  /** The switch between the folder's tree and what can go in it. */
+  /** The switch between the folder's tree, what fills it, and what can go
+   * in it. */
   const indexShapes = (
     <SegmentedControl
       aria-label="How to show the folder"
       className="ml-auto"
-      value={shape === 'safe' ? 'safe' : 'tree'}
+      value={shape === 'safe' || shape === 'fills' ? shape : 'tree'}
       onValueChange={(next) => {
-        if (next === 'tree' || next === 'safe') onShape(next)
+        if (next === 'tree' || next === 'fills' || next === 'safe') onShape(next)
       }}
     >
       <Segment value="tree">Tree</Segment>
+      <Segment value="fills">What fills it</Segment>
       <Segment value="safe">
         Safe to delete
         {canGo !== null && <span className="tabular ml-1.5 text-accent">{formatBytes(pick(canGo, basis))}</span>}
@@ -223,15 +227,24 @@ export function Rows({
         </div>
       )}
 
-      {view === 'index' && shape === 'safe' && (
+      {view === 'index' && (shape === 'safe' || shape === 'fills') && (
         <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
-          <span className="text-sm text-text">What can go, and how each comes back</span>
+          <span className="text-sm text-text">{shape === 'safe' ? 'What can go, and how each comes back' : 'Who the space is for, and why it is full'}</span>
           {indexShapes}
         </div>
       )}
 
       {view === 'index' && shape === 'safe' ? (
         <SafeToDelete arena={arena} version={version} basis={basis} root={trail[0]?.path ?? showing.path} onOpen={onOpenPlace} />
+      ) : view === 'index' && shape === 'fills' ? (
+        <WhatFills
+          arena={arena}
+          version={version}
+          basis={basis}
+          root={trail[0]?.path ?? showing.path}
+          onOpen={onOpenPlace}
+          onSafe={() => onShape('safe')}
+        />
       ) : compared !== null && comparison !== null && shape === 'report' ? (
         <ComparisonReport summary={comparison} basis={basis} root={trail[0]?.path ?? showing.path} onOpen={onOpenPlace} />
       ) : (compared !== null && comparison !== null) || lately ? (

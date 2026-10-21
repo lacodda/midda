@@ -23,10 +23,15 @@
 //! back as one rectangle that says how many entries are in it. A picture that
 //! silently dropped them would not add up to the folder it claims to show.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
+use crate::consumers::Consumer;
+use crate::rules::RuleSet;
+use crate::rules::pattern::Outer;
 use crate::size::SizeBasis;
-use crate::tree::{Kind, NodeId, Tree};
+use crate::tree::{NodeId, ROOT, Tree};
 
 /// A rectangle in fractions of the box being drawn.
 ///
@@ -119,110 +124,61 @@ pub struct Delta {
 
 /// What a tile is made of, as far as the colour is concerned.
 ///
-/// Deliberately coarse. The rules ([`crate::rules`]) say "this is 8.9 GB of
-/// `node_modules`, recreated by `npm install`" — that is a *finding*, with an
-/// explanation attached, and it is not this. This is the four-way read a person
-/// gets from the picture before they have read a single label: is this my work,
-/// is it media, is it something a build made, or is it something else.
+/// Deliberately coarse: the four-way read a person gets from the picture
+/// before they have read a single label — is this something a tool makes
+/// again, my work, media, or something else. Nothing here is a second list
+/// of what things are: what a tool makes again is what the rules found
+/// ([`crate::rules::RuleSet::units`]), and what a file is by its name is
+/// what the rules files say ([`crate::rules::FileKind`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Category {
-    /// Something a tool made and a tool can make again: build output, caches,
-    /// dependency directories. The colour the eye should go to first.
+    /// Something a tool made and a tool can make again: a folder a rule
+    /// found or closed, and everything in it. The colour the eye should go
+    /// to first.
     Build,
-    /// Source, documents, configuration — the things that are typed.
+    /// Documents and code: the things that are typed.
     Source,
-    /// Images, audio, video, archives, disk images.
+    /// Images, audio, video, archives and disk images.
     Media,
-    /// Everything not recognised.
+    /// Everything else.
     #[default]
     Other,
 }
 
-/// Directory names that are build output or a cache, whatever sits above them.
-///
-/// Names rather than paths on purpose: `node_modules` is `node_modules`
-/// wherever it is found, and a path pattern would need a project root to
-/// anchor to. The rules ([`crate::rules`]) do the anchored, explained version;
-/// this is the colour of a rectangle.
-const BUILD_DIRECTORIES: &[&str] = &[
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    "out",
-    "bin",
-    "obj",
-    ".next",
-    ".nuxt",
-    ".turbo",
-    ".parcel-cache",
-    ".gradle",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".cache",
-    "cache",
-    "caches",
-    ".ccache",
-    "vendor",
-    "packages",
-    "Debug",
-    "Release",
-];
-
-/// Extensions of things that are typed, or that describe what was typed.
-const SOURCE_EXTENSIONS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "c", "h", "cpp", "hpp", "cs", "rb", "php", "swift", "sh", "ps1", "sql", "html",
-    "css", "scss", "md", "txt", "json", "toml", "yaml", "yml", "xml", "ini", "cfg", "lock", "csv",
-];
-
-/// Extensions of things that were recorded, drawn or packed.
-const MEDIA_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "tiff", "svg", "psd", "mp3", "wav", "flac", "ogg", "m4a", "aac", "mp4", "mkv", "mov", "avi",
-    "webm", "wmv", "zip", "7z", "rar", "gz", "bz2", "xz", "zst", "tar", "iso", "vhd", "vhdx", "vmdk", "pdf",
-];
-
 impl Category {
-    /// What to colour a node.
-    ///
-    /// A directory is read by its name; a file by its extension. A directory
-    /// under a build directory is build output too — but that is not decided
-    /// here, because this sees one node: the caller passes the parent's
-    /// category down, and anything inside build output inherits it. Without
-    /// that, the inside of `node_modules` would be coloured as source, which
-    /// is exactly backwards.
+    /// What to colour `id`: a tool's, when it or a folder above it is one of
+    /// `units`; otherwise, for a file, what the rules say it is.
     #[must_use]
-    pub fn of(name: &str, kind: Kind, inherited: Option<Self>) -> Self {
-        // Inheritance wins over the node's own look: a `src` directory inside
-        // `node_modules` is still something `npm install` recreates.
-        if let Some(Self::Build) = inherited {
-            return Self::Build;
+    pub fn of(tree: &Tree, id: NodeId, rules: &RuleSet, units: &HashSet<NodeId>) -> Self {
+        // Inheritance wins over the node's own look: a `src` inside
+        // `node_modules` is still something an install writes again.
+        let mut at = id;
+        loop {
+            if units.contains(&at) {
+                return Self::Build;
+            }
+            if at == ROOT {
+                break;
+            }
+            at = tree.node(at).parent;
         }
-
-        match kind {
-            Kind::Directory => {
-                if BUILD_DIRECTORIES.iter().any(|known| known.eq_ignore_ascii_case(name)) {
-                    Self::Build
-                } else {
-                    Self::Other
-                }
-            }
-            Kind::File => {
-                let extension = name.rsplit_once('.').map_or("", |(_, tail)| tail).to_ascii_lowercase();
-                if extension.is_empty() {
-                    return Self::Other;
-                }
-                if SOURCE_EXTENSIONS.contains(&extension.as_str()) {
-                    Self::Source
-                } else if MEDIA_EXTENSIONS.contains(&extension.as_str()) {
-                    Self::Media
-                } else {
-                    Self::Other
-                }
-            }
+        let node = tree.node(id);
+        if node.is_directory() {
+            return Self::Other;
+        }
+        let mut scratch = String::new();
+        let outer = Outer::of(tree.root_path());
+        let consumer = rules
+            .place_of(tree, id, &outer, &mut scratch)
+            .map(|place| &rules.places()[place])
+            .filter(|place| !place.yields)
+            .map(|place| place.consumer)
+            .or_else(|| rules.kind_of(&node.name, &mut scratch));
+        match consumer {
+            Some(Consumer::Media | Consumer::VirtualDisks) => Self::Media,
+            Some(Consumer::Documents) => Self::Source,
+            _ => Self::Other,
         }
     }
 }
@@ -285,21 +241,37 @@ pub const MAX_TILES: usize = 1000;
 /// Children that would be too small to see are gathered into a final tile with
 /// `id: None`, so the picture still adds up to the folder. A folder whose
 /// children are all tiny gets one tile rather than a hundred thousand.
+///
+/// Each tile is coloured by what `rules` say of it, `units` being the
+/// folders they found or closed in `tree` ([`Category::of`]).
 #[must_use]
-pub fn tiles(tree: &Tree, id: NodeId, layout: Layout) -> Vec<Tile> {
-    weighted(tree, id, layout, |child| bytes_of(tree, child, layout.basis), |_| None)
+pub fn tiles(tree: &Tree, id: NodeId, layout: Layout, rules: &RuleSet, units: &HashSet<NodeId>) -> Vec<Tile> {
+    weighted(
+        tree,
+        id,
+        layout,
+        |child| bytes_of(tree, child, layout.basis),
+        |child| Category::of(tree, child, rules, units),
+        |_| None,
+    )
 }
 
 /// The rectangles for the children of `id`, each as large as `weight` says,
-/// and each carrying what `change` says it held at two moments.
+/// coloured as `category` says, and each carrying what `change` says it held
+/// at two moments.
 ///
 /// [`tiles`] is this with a node's own size for the weight. A comparison
 /// draws the same picture of a different quantity — how many bytes changed
 /// under each child — and gets the same order, cut-off and remainder rather
 /// than a second layout to keep in step.
-pub(crate) fn weighted(tree: &Tree, id: NodeId, layout: Layout, weight: impl Fn(NodeId) -> u64, change: impl Fn(NodeId) -> Option<Delta>) -> Vec<Tile> {
-    let parent_category = category_of(tree, id);
-
+pub(crate) fn weighted(
+    tree: &Tree,
+    id: NodeId,
+    layout: Layout,
+    weight: impl Fn(NodeId) -> u64,
+    category: impl Fn(NodeId) -> Category,
+    change: impl Fn(NodeId) -> Option<Delta>,
+) -> Vec<Tile> {
     let mut weighted: Vec<(NodeId, u64)> = tree
         .node(id)
         .children
@@ -367,7 +339,7 @@ pub(crate) fn weighted(tree: &Tree, id: NodeId, layout: Layout, weight: impl Fn(
                 bytes,
                 rect,
                 is_directory: node.is_directory(),
-                category: Category::of(&node.name, node.kind, parent_category),
+                category: category(child),
                 entries: node.entries,
                 path: tree.path_of(child).to_string_lossy().into_owned(),
                 change: change(child),
@@ -416,25 +388,6 @@ fn bytes_of(tree: &Tree, id: NodeId, basis: SizeBasis) -> u64 {
     match basis {
         SizeBasis::Allocated => size.allocated,
         SizeBasis::Logical => size.logical,
-    }
-}
-
-/// The category a node inherits to its children, walking up to the root.
-///
-/// Walks rather than caches: the depth of a path is tens, not thousands, and a
-/// cached column on every node would be a second thing to keep in step with the
-/// scan.
-fn category_of(tree: &Tree, id: NodeId) -> Option<Category> {
-    let mut at = id;
-    loop {
-        let node = tree.node(at);
-        if node.is_directory() && BUILD_DIRECTORIES.iter().any(|known| known.eq_ignore_ascii_case(&node.name)) {
-            return Some(Category::Build);
-        }
-        if at == crate::tree::ROOT {
-            return None;
-        }
-        at = node.parent;
     }
 }
 
@@ -624,7 +577,13 @@ mod tests {
 
     use super::*;
     use crate::size::Size;
-    use crate::tree::{Node, ROOT};
+    use crate::tree::{Kind, Node};
+
+    /// The picture of `id`'s children, coloured by the shipped rules.
+    fn tiles(tree: &Tree, id: NodeId, layout: Layout) -> Vec<Tile> {
+        let rules = RuleSet::shipped();
+        super::tiles(tree, id, layout, rules, &rules.units(tree))
+    }
 
     fn node(name: &str, parent: NodeId, kind: Kind, allocated: u64) -> Node {
         Node {
@@ -910,21 +869,86 @@ mod tests {
         assert!(tiles(&tree, ROOT, Layout::default()).is_empty());
     }
 
-    #[test]
-    fn build_output_is_coloured_apart_from_what_was_typed() {
-        assert_eq!(Category::of("node_modules", Kind::Directory, None), Category::Build);
-        assert_eq!(Category::of("target", Kind::Directory, None), Category::Build);
-        assert_eq!(Category::of("main.rs", Kind::File, None), Category::Source);
-        assert_eq!(Category::of("holiday.mp4", Kind::File, None), Category::Media);
-        assert_eq!(Category::of("something.qqq", Kind::File, None), Category::Other);
-        assert_eq!(Category::of("LICENSE", Kind::File, None), Category::Other);
+    /// root / app { package.json, node_modules / react / { src / index.ts, index.js } },
+    /// notes / { node_modules / mine.txt, target / shot.jpg }, and some files
+    /// by their names.
+    fn project() -> Tree {
+        let mut tree = Tree::new(PathBuf::from("C:/scan"), None);
+        let app = tree.insert(ROOT, node("app", ROOT, Kind::Directory, 0));
+        tree.insert(app, node("package.json", app, Kind::File, 1));
+        let modules = tree.insert(app, node("node_modules", app, Kind::Directory, 0));
+        let react = tree.insert(modules, node("react", modules, Kind::Directory, 0));
+        let src = tree.insert(react, node("src", react, Kind::Directory, 0));
+        tree.insert(src, node("index.ts", src, Kind::File, 100));
+        tree.insert(react, node("index.js", react, Kind::File, 1_000));
+        let notes = tree.insert(ROOT, node("notes", ROOT, Kind::Directory, 0));
+        let theirs = tree.insert(notes, node("node_modules", notes, Kind::Directory, 0));
+        tree.insert(theirs, node("mine.txt", theirs, Kind::File, 10));
+        let target = tree.insert(notes, node("target", notes, Kind::Directory, 0));
+        tree.insert(target, node("shot.jpg", target, Kind::File, 10));
+        for name in ["MAIN.RS", "holiday.mp4", "something.qqq", "LICENSE", "disk.vhdx", "setup.exe"] {
+            tree.insert(ROOT, node(name, ROOT, Kind::File, 10));
+        }
+        tree.roll_up();
+        tree
+    }
+
+    /// The category of the entry at `path` below the root.
+    fn category(tree: &Tree, path: &str) -> Category {
+        let id = path
+            .split('/')
+            .fold(ROOT, |at, part| tree.child(at, part).unwrap_or_else(|| panic!("{path} is in the tree")));
+        let rules = RuleSet::shipped();
+        Category::of(tree, id, rules, &rules.units(tree))
     }
 
     #[test]
-    fn a_name_is_matched_whatever_its_case() {
-        // `Debug` and `debug`, `Release` and `release` — MSBuild writes both.
-        assert_eq!(Category::of("NODE_MODULES", Kind::Directory, None), Category::Build);
-        assert_eq!(Category::of("MAIN.RS", Kind::File, None), Category::Source);
+    fn build_output_is_what_the_rules_found_not_a_name() {
+        let tree = project();
+        assert_eq!(category(&tree, "app/node_modules"), Category::Build);
+        assert_eq!(
+            category(&tree, "notes/node_modules"),
+            Category::Build,
+            "a node_modules holds installed packages whatever is beside it"
+        );
+        assert_eq!(
+            category(&tree, "notes/target"),
+            Category::Other,
+            "a folder called target with no Cargo.toml beside it is somebody's folder"
+        );
+        assert_eq!(category(&tree, "notes/target/shot.jpg"), Category::Media);
+        assert_eq!(category(&tree, "app"), Category::Other, "a project is not its build");
+    }
+
+    #[test]
+    fn a_file_is_coloured_by_what_the_rules_files_say_it_is() {
+        let tree = project();
+        assert_eq!(category(&tree, "MAIN.RS"), Category::Source, "whatever its case");
+        assert_eq!(category(&tree, "holiday.mp4"), Category::Media);
+        assert_eq!(category(&tree, "disk.vhdx"), Category::Media, "a disk image");
+        assert_eq!(category(&tree, "something.qqq"), Category::Other);
+        assert_eq!(category(&tree, "LICENSE"), Category::Other);
+        assert_eq!(category(&tree, "setup.exe"), Category::Other, "a program is not typed, nor media");
+    }
+
+    #[test]
+    fn a_soft_place_does_not_speak_over_a_files_own_name() {
+        let rules = RuleSet::parse(
+            "[[place]]\nid = \"notes\"\nname = \"notes\"\nconsumer = \"media\"\npaths = [\"notes.*\"]\nyields = true\n\
+             [[place]]\nid = \"firm\"\nname = \"firm\"\nconsumer = \"media\"\npaths = [\"firm.*\"]\n\
+             [[file]]\nconsumer = \"documents\"\nnames = [\"*.md\"]\n",
+        )
+        .expect("reads");
+        let mut tree = Tree::new(PathBuf::from("C:/scan"), None);
+        let soft = tree.insert(ROOT, node("notes.md", ROOT, Kind::File, 10));
+        let firm = tree.insert(ROOT, node("firm.md", ROOT, Kind::File, 10));
+        tree.roll_up();
+        assert_eq!(
+            Category::of(&tree, soft, &rules, &HashSet::new()),
+            Category::Source,
+            "the name says it is a document"
+        );
+        assert_eq!(Category::of(&tree, firm, &rules, &HashSet::new()), Category::Media, "a firm place decides");
     }
 
     #[test]
@@ -933,21 +957,21 @@ mod tests {
         // not source someone typed, it is something `npm install` will write
         // again. Without inheritance the inside of the biggest reclaimable
         // directory on the disk would be coloured as the thing you must keep.
-        assert_eq!(Category::of("src", Kind::Directory, Some(Category::Build)), Category::Build);
-        assert_eq!(Category::of("index.ts", Kind::File, Some(Category::Build)), Category::Build);
+        let tree = project();
+        assert_eq!(category(&tree, "app/node_modules/react/src"), Category::Build);
+        assert_eq!(category(&tree, "app/node_modules/react/src/index.ts"), Category::Build);
     }
 
     #[test]
     fn the_inheritance_is_read_from_the_tree_not_guessed() {
-        let mut tree = Tree::new(PathBuf::from("C:/scan"), None);
-        let modules = tree.push(ROOT, node("node_modules", ROOT, Kind::Directory, 0));
-        let package = tree.push(modules, node("react", modules, Kind::Directory, 0));
-        tree.push(package, node("index.js", package, Kind::File, 1_000));
-        tree.roll_up();
+        let tree = project();
+        let app = tree.child(ROOT, "app").expect("app");
+        let modules = tree.child(app, "node_modules").expect("node_modules");
+        let react = tree.child(modules, "react").expect("react");
 
         // Drawn from inside `node_modules/react`: a JavaScript file that would
         // otherwise read as source.
-        let tiles = tiles(&tree, package, Layout::default());
+        let tiles = tiles(&tree, react, Layout::default());
         assert_eq!(tiles[0].name, "index.js");
         assert_eq!(tiles[0].category, Category::Build);
     }

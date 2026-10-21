@@ -636,3 +636,24 @@ export function describeCleaned(cleaned: CleanedFacts, basis: 'allocated' | 'log
   if (after >= before) return `${ran.line} ran, and nothing came back: there was nothing it could let go of.`
   return `${ran.line} gave back ${formatBytes(before - after)}: ${formatBytes(before)} → ${formatBytes(after)}.`
 }
+
+/** A place that holds part of a consumer, as `describeFillLine` reads it.
+ * Mirrors `FillLine` without importing the bridge. */
+export interface FillLineFacts {
+  path: string
+  name: string | null
+  loose: boolean
+}
+
+/**
+ * What a place on the page of what fills a folder is called: the place's own
+ * name when one names it - "The Steam library" - with the path for its
+ * second line; the root's own files as what they are; otherwise the path
+ * from the folder opened, which is its name.
+ */
+export function describeFillLine(line: FillLineFacts, root: string): { title: string; path: string | null } {
+  const path = line.loose ? line.path : relativeTo(root, line.path)
+  if (line.name !== null) return { title: line.name.charAt(0).toUpperCase() + line.name.slice(1), path: line.loose ? `in ${path}` : path }
+  if (line.loose) return { title: `Files directly in ${path}`, path: null }
+  return { title: path, path: null }
+}

@@ -30,6 +30,12 @@
 //! cache whose own tool cleans it is cleaned by that tool, here, once the
 //! tool has said it is the cache found, and the folder is read again so the
 //! window can say how much came back (ADR 0012).
+//!
+//! And it can ask what fills it: every byte given to one consumer by the
+//! places the rules files name, the places that hold the most of each, and
+//! why the volume is as full as it is, as a paragraph — worked out once per
+//! version of the tree, the first time it is asked (ADR 0014). The picture's
+//! colours read the same rules: what they found is what a tool makes again.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -39,12 +45,15 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 use midda_core::compare::{Comparison, Mark, PlaceKind};
+use midda_core::consumers::story::{self, Story};
+use midda_core::consumers::{self, Classified, Consumer, Summary};
 use midda_core::fresh::since::{Change, Changes};
 use midda_core::fresh::store::{self, Unusable};
 use midda_core::growth::{self, Growers};
 use midda_core::order::{self, Sort, Span};
+use midda_core::platform::Space;
 use midda_core::rules::cleanup::{Ran, Reach};
-use midda_core::rules::{self, Finding, Group, Risk, RuleSet};
+use midda_core::rules::{self, Finding, Group, Risk, RuleSet, Survey};
 use midda_core::snapshot::{self, Kind, Snapshot};
 use midda_core::treemap::{self, Layout, Tile};
 use midda_core::{Index, JournalPosition, NodeId, Progress, ROOT, Size, SizeBasis, Tree, compare};
@@ -70,11 +79,20 @@ pub struct Session {
     found: Arc<Mutex<Option<Found>>>,
 }
 
-/// The findings of one version of the open folder's tree.
+/// What the rules say of one version of the open folder's tree: worked out
+/// once per version, and what fills it only once it is asked.
 struct Found {
     arena: u64,
     version: u64,
-    findings: Vec<Finding>,
+    survey: Survey,
+    /// The folders the rules claim whole: what the picture colours as a
+    /// tool's.
+    units: HashSet<NodeId>,
+    /// What fills it, once asked: every byte's consumer, the summary on
+    /// disk and by size, and why it is full.
+    classified: Option<Arc<Classified>>,
+    summaries: [Option<Arc<Summary>>; 2],
+    story: Option<Arc<Story>>,
 }
 
 impl Session {
@@ -771,19 +789,35 @@ pub fn trail_to_path(view: View, path: String, session: tauri::State<'_, Session
 
 /// The rectangles that draw the children of `id`.
 ///
+/// Off the window's thread: the folder as it is is coloured by what the
+/// rules find in it, and when the tree has changed since they last looked,
+/// they look again.
+///
 /// # Errors
 ///
 /// As [`list_children`].
 #[tauri::command]
-pub fn treemap(view: View, arena: u64, id: u32, layout: Layout, session: tauri::State<'_, Session>) -> Result<Vec<Tile>, String> {
-    let state = session.shared.read().map_err(poisoned)?;
+pub async fn treemap(view: View, arena: u64, id: u32, layout: Layout, session: tauri::State<'_, Session>) -> Result<Vec<Tile>, String> {
+    let shared = Arc::clone(&session.shared);
+    let found = Arc::clone(&session.found);
+    tauri::async_runtime::spawn_blocking(move || tiles_of(&shared, &found, view, arena, id, layout))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn tiles_of(shared: &RwLock<State>, found: &Mutex<Option<Found>>, view: View, arena: u64, id: u32, layout: Layout) -> Result<Vec<Tile>, String> {
+    let state = shared.read().map_err(poisoned)?;
     let shown = tree_of(&state, view, Some(arena))?;
     let id = checked(shown.tree(), id)?;
+    let rules = RuleSet::shipped();
     Ok(match shown {
         // Drawn by what moved, not by what is there.
         Shown::Compare(comparison) => comparison.tiles(id, layout),
-        Shown::Index(tree) => treemap::tiles(tree, id, layout),
-        Shown::Changes(changes) => treemap::tiles(&changes.tree, id, layout),
+        Shown::Index(tree) => {
+            let units = with_found(&state, found, tree, |found| found.units.clone())?;
+            treemap::tiles(tree, id, layout, rules, &units)
+        }
+        Shown::Changes(changes) => treemap::tiles(&changes.tree, id, layout, rules, &state.changes_units),
     })
 }
 
@@ -1223,23 +1257,67 @@ pub async fn findings(arena: u64, basis: SizeBasis, limit: u32, whole: Option<Gr
         .map_err(|error| error.to_string())?
 }
 
-/// The findings of the tree on screen, worked out again only when it has
-/// changed since they last were.
-fn current_findings(state: &State, found: &Mutex<Option<Found>>, tree: &Tree) -> Result<Vec<Finding>, String> {
+/// What the rules say of the tree on screen, worked out again only when it
+/// has changed since they last were, handed to `read`.
+fn with_found<T>(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, read: impl FnOnce(&mut Found) -> T) -> Result<T, String> {
     let mut found = found.lock().map_err(poisoned)?;
-    if let Some(held) = found.as_ref()
-        && held.arena == state.arena
-        && held.version == state.version
-    {
-        return Ok(held.findings.clone());
+    let current = found.as_ref().is_some_and(|held| held.arena == state.arena && held.version == state.version);
+    if !current {
+        let survey = RuleSet::shipped().survey(tree);
+        *found = Some(Found {
+            arena: state.arena,
+            version: state.version,
+            units: survey.units(),
+            survey,
+            classified: None,
+            summaries: [None, None],
+            story: None,
+        });
     }
-    let findings = RuleSet::shipped().find(tree);
-    *found = Some(Found {
-        arena: state.arena,
-        version: state.version,
-        findings: findings.clone(),
-    });
-    Ok(findings)
+    Ok(read(found.as_mut().expect("worked out above")))
+}
+
+/// The findings of the tree on screen.
+fn current_findings(state: &State, found: &Mutex<Option<Found>>, tree: &Tree) -> Result<Vec<Finding>, String> {
+    with_found(state, found, tree, |found| found.survey.findings.clone())
+}
+
+/// What fills a version of the tree, as one ask of it needs it.
+struct Filled {
+    classified: Arc<Classified>,
+    summary: Arc<Summary>,
+    story: Arc<Story>,
+}
+
+/// What fills the tree on screen: every byte given to its consumer, the
+/// summary on `basis` and why it is full — each worked out the first time it
+/// is asked of a version of the tree. The window asks again whenever the
+/// tree changes, and asks the same version as often as it redraws.
+fn current_fills(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, basis: SizeBasis, space: Option<Space>) -> Result<Filled, String> {
+    with_found(state, found, tree, |found| {
+        let rules = RuleSet::shipped();
+        let survey = &found.survey;
+        let classified = Arc::clone(found.classified.get_or_insert_with(|| Arc::new(consumers::classify(rules, tree, survey))));
+        let mut summary = |basis: SizeBasis| {
+            let slot = match basis {
+                SizeBasis::Allocated => 0,
+                SizeBasis::Logical => 1,
+            };
+            Arc::clone(found.summaries[slot].get_or_insert_with(|| Arc::new(classified.summary(tree, basis))))
+        };
+        let on_disk = summary(SizeBasis::Allocated);
+        let shown = summary(basis);
+        let told = Arc::clone(
+            found
+                .story
+                .get_or_insert_with(|| Arc::new(story::tell_from(rules, tree, &classified, &on_disk, space))),
+        );
+        Filled {
+            classified,
+            summary: shown,
+            story: told,
+        }
+    })
 }
 
 fn findings_of(
@@ -1301,6 +1379,157 @@ fn findings_of(
         }
     }
     Ok(summary)
+}
+
+/// A place that holds a sizeable part of one consumer, as the window lists
+/// it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FillLine {
+    /// The entry to open: the place the line is, its folder, or the root for
+    /// the root's own files.
+    pub id: u32,
+    pub path: String,
+    /// What a place calls it, when one does.
+    pub name: Option<String>,
+    /// What it holds of the consumer, on the size shown.
+    pub bytes: u64,
+    /// The line is the files directly in the root.
+    pub loose: bool,
+}
+
+/// One consumer, as the window lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FillShare {
+    pub consumer: Consumer,
+    /// What a reader calls it, and what is in it.
+    pub label: String,
+    pub about: String,
+    pub size: Size,
+    /// What of it a tool makes again: what its findings free.
+    pub frees: Size,
+    /// The places that hold the most of it, the most first, up to the limit
+    /// asked.
+    pub lines: Vec<FillLine>,
+    /// How many places past the ones listed.
+    pub more: u64,
+    /// What no place names, in pieces under `threshold` each.
+    pub rest: u64,
+    pub threshold: u64,
+}
+
+/// The size of a volume and what it has free.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceRow {
+    pub total: u64,
+    pub free: u64,
+}
+
+/// What fills the folder as it is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fills {
+    pub arena: u64,
+    /// The version of the tree this is of.
+    pub version: u64,
+    /// What the folder holds: what the shares add up to.
+    pub total: Size,
+    /// The volume's size and free space, when the folder is a whole volume.
+    pub space: Option<SpaceRow>,
+    /// Each consumer that holds anything, the most first.
+    pub shares: Vec<FillShare>,
+    /// Why it is as full as it is, as a paragraph - on disk, whatever size is
+    /// shown.
+    pub story: String,
+    /// The paragraph and every consumer's places, as Markdown: what an
+    /// assistant is given.
+    pub brief: String,
+}
+
+/// What fills the folder as it is: each consumer, the most on `basis` first,
+/// with `limit` of its places - every one of `whole`'s - and why the volume is
+/// as full as it is.
+///
+/// # Errors
+///
+/// `stale` when `arena` is not the tree on screen; otherwise when nothing
+/// has been read.
+#[tauri::command]
+pub async fn fills(arena: u64, basis: SizeBasis, limit: u32, whole: Option<Consumer>, session: tauri::State<'_, Session>) -> Result<Fills, String> {
+    let shared = Arc::clone(&session.shared);
+    let found = Arc::clone(&session.found);
+    tauri::async_runtime::spawn_blocking(move || fills_of(&shared, &found, arena, basis, limit as usize, whole))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn fills_of(
+    shared: &RwLock<State>,
+    found: &Mutex<Option<Found>>,
+    arena: u64,
+    basis: SizeBasis,
+    limit: usize,
+    whole: Option<Consumer>,
+) -> Result<Fills, String> {
+    // Asked before the tree is held: a network volume can be slow to say how
+    // full it is, and the keeper should not wait on it.
+    let root = shared.read().map_err(poisoned)?.root.clone();
+    let space = root.as_deref().filter(|root| story::is_volume(root)).and_then(midda_core::platform::space_of);
+
+    let state = shared.read().map_err(poisoned)?;
+    let tree = tree_of(&state, View::Index, Some(arena))?.tree();
+    let Filled {
+        classified,
+        summary,
+        story: told,
+    } = current_fills(&state, found, tree, basis, space)?;
+    let rules = RuleSet::shipped();
+    let shares = summary
+        .shares
+        .iter()
+        .map(|share| {
+            let listed = if whole == Some(share.consumer) { usize::MAX } else { limit };
+            FillShare {
+                consumer: share.consumer,
+                label: share.consumer.label().to_owned(),
+                about: share.consumer.about().to_owned(),
+                size: share.size,
+                frees: share.frees,
+                more: share.lines.len().saturating_sub(listed) as u64,
+                lines: share
+                    .lines
+                    .iter()
+                    .take(listed)
+                    .map(|line| {
+                        let entry = Classified::entry_of(line);
+                        FillLine {
+                            id: entry,
+                            path: tree.path_of(entry).to_string_lossy().into_owned(),
+                            name: classified.name_of(rules, tree, share.consumer, line),
+                            bytes: line.whole,
+                            loose: line.loose,
+                        }
+                    })
+                    .collect(),
+                rest: share.rest,
+                threshold: share.threshold,
+            }
+        })
+        .collect();
+    Ok(Fills {
+        arena,
+        version: state.version,
+        total: summary.total,
+        space: space.map(|space| SpaceRow {
+            total: space.total,
+            free: space.free,
+        }),
+        shares,
+        story: told.text.clone(),
+        brief: told.brief.clone(),
+    })
 }
 
 fn finding_row(tree: &Tree, rules: &RuleSet, finding: &Finding) -> FindingRow {

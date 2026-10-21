@@ -3,6 +3,7 @@ import {
   CHANGE_SPANS,
   describeChanges,
   describeCleaned,
+  describeFillLine,
   describeComparison,
   describeKept,
   describeLastWritten,
@@ -565,5 +566,31 @@ describe('describeCleaned', () => {
     const cleaned = { ran: failed, before: { logical: 1, allocated: 1 }, after: { logical: 1, allocated: 1 } }
     expect(describeCleaned(cleaned, 'allocated')).toBe('pnpm store prune did not succeed: ERR_PNPM_LOCKED the store is in use')
     expect(describeCleaned({ ...cleaned, ran: { ...failed, output: '' } }, 'allocated')).toBe('pnpm store prune did not succeed.')
+  })
+})
+
+describe('describeFillLine', () => {
+  const root = 'C:\\'
+
+  it('calls a place by its name, the path beside it', () => {
+    expect(describeFillLine({ path: 'C:\\Program Files (x86)\\Steam\\steamapps', name: 'the Steam library', loose: false }, root)).toEqual({
+      title: 'The Steam library',
+      path: 'Program Files (x86)\\Steam\\steamapps',
+    })
+  })
+
+  it("says what the root's own files are, and where", () => {
+    expect(describeFillLine({ path: 'C:\\', name: 'the page file and the hibernation file', loose: true }, root)).toEqual({
+      title: 'The page file and the hibernation file',
+      path: 'in C:\\',
+    })
+    expect(describeFillLine({ path: 'C:\\', name: null, loose: true }, root)).toEqual({ title: 'Files directly in C:\\', path: null })
+  })
+
+  it('calls anything else by its path from the folder opened', () => {
+    expect(describeFillLine({ path: 'C:\\Projects\\app\\target', name: null, loose: false }, 'C:\\Projects')).toEqual({
+      title: 'app\\target',
+      path: null,
+    })
   })
 })

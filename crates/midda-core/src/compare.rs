@@ -183,6 +183,8 @@ impl Comparison {
             id,
             layout,
             |child| basis.of(self.moved(child)),
+            // A comparison is coloured by which way each tile went.
+            |_| treemap::Category::Other,
             |child| {
                 Some(Delta {
                     before: basis.of(self.before(child)),

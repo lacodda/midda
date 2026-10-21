@@ -597,6 +597,78 @@ export function findings(arena: number, basis: SizeBasis, limit: number, whole: 
   return invoke<FindingsSummary>('findings', { arena, basis, limit, whole })
 }
 
+/** Who the bytes are for. Mirrors `Consumer` in midda-core. */
+export type Consumer =
+  | 'system'
+  | 'programs'
+  | 'games'
+  | 'development'
+  | 'browsers'
+  | 'virtual-disks'
+  | 'media'
+  | 'documents'
+  | 'unrecognised'
+
+/** A place that holds a sizeable part of one consumer. Mirrors `FillLine`. */
+export interface FillLine {
+  /** The entry to open: the place the line is, its folder, or the root for
+   * the root's own files. */
+  id: number
+  path: string
+  /** What a place calls it, when one does. */
+  name: string | null
+  /** What it holds of the consumer, on the size shown. */
+  bytes: number
+  /** The line is the files directly in the root. */
+  loose: boolean
+}
+
+/** One consumer of the folder. Mirrors `FillShare`. */
+export interface FillShare {
+  consumer: Consumer
+  label: string
+  /** What is in it, in a line. */
+  about: string
+  size: Size
+  /** What of it a tool makes again: what its findings free. */
+  frees: Size
+  /** The places that hold the most of it, up to the limit asked. */
+  lines: FillLine[]
+  /** How many places past the ones listed. */
+  more: number
+  /** What no place names, in pieces under `threshold` each. */
+  rest: number
+  threshold: number
+}
+
+/** The size of a volume and what it has free. Mirrors `SpaceRow`. */
+export interface SpaceRow {
+  total: number
+  free: number
+}
+
+/** What fills the folder as it is. Mirrors `Fills`. */
+export interface Fills {
+  arena: number
+  version: number
+  /** What the folder holds: what the shares add up to. */
+  total: Size
+  /** The volume's size and free space, when the folder is a whole volume. */
+  space: SpaceRow | null
+  /** Each consumer that holds anything, the most first. */
+  shares: FillShare[]
+  /** Why it is as full as it is, as a paragraph - always on disk. */
+  story: string
+  /** The paragraph and every consumer's places, as Markdown, for an assistant. */
+  brief: string
+}
+
+/** What fills the folder as it is in `arena`: each consumer with `limit` of
+ * its places, every one of `whole`'s, and why it is as full as it is. */
+export function fills(arena: number, basis: SizeBasis, limit: number, whole: Consumer | null): Promise<Fills> {
+  return invoke<Fills>('fills', { arena, basis, limit, whole })
+}
+
 /** Whether the cleanup of finding `id` would run: asks its tool where it
  * cleans, which only prints. */
 export function cleanupReach(arena: number, id: number): Promise<Reach> {
