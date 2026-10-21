@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.11.0] - 2026-10-21
+
+### CI
+- Audit the whole workspace, not only the window's crate
+
+### Documentation
+- Record what fills the disk in ADR 0014
+
+### Features
+- Give every byte to whom it is for, and tell why a disk is full
+- Show what fills a folder, coloured by what the rules found
+
 ## [0.10.1] - 2026-10-16
 
 ### Testing
