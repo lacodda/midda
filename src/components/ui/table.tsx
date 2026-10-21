@@ -77,8 +77,11 @@ export function TableHead({ sticky = false, className, ...props }: TableHeadProp
       className={cn(
         'text-xs text-dim',
         // The heading needs its own ground when it is sticky: transparent, it
-        // would have the body's rows sliding visibly beneath its text.
-        sticky && 'sticky top-0 z-sticky bg-bg',
+        // would have the body's rows sliding visibly beneath its text. The
+        // layer is read from the variable, because the ladder is not a
+        // Tailwind namespace: `z-sticky` compiled to nothing, and the body's
+        // pinned cells slid over the heading.
+        sticky && 'sticky top-0 [z-index:var(--z-sticky)] bg-bg',
         className,
       )}
       {...props}
