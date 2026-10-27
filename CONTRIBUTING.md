@@ -17,14 +17,14 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 pnpm lint
 ```
 
-Requires Rust 1.88 or newer — the number in the workspace manifest is measured
+Requires Rust 1.90 or newer — the number in the workspace manifest is measured
 against the crates actually resolved, and a CI job builds on it so it cannot
 silently rot.
 
-The brand assets are generated, not edited: `node docs/export-assets.mjs`
-rewrites the `.ico`, the PNGs, the desktop icons and the docs copies from the
-three master SVGs. `src-tauri/tests/brand_assets.rs` holds it to the line's rule
-about which master a given size comes from.
+The brand assets are generated, not edited: `lyrn assets` draws the `.ico`,
+the PNGs, the desktop icons and the docs copies from the three master SVGs.
+`src-tauri/tests/brand_assets.rs` reads each image in the `.ico` back and holds
+it to the line's rule about which master a given size comes from.
 
 ## Principles
 

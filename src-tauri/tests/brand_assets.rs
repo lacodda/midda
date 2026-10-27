@@ -15,6 +15,11 @@
 //! These read files in the repository on purpose. An earlier attempt in the
 //! line compared the SVGs against a registry kept in a notes vault, which CI
 //! does not have: the check passed by finding nothing to check.
+//!
+//! The rasters are drawn by `lyrn assets`, the line's one drawing of the rule.
+//! This is the independent reading of it: each image in the `.ico` is told
+//! apart by two of its own pixels, not compared with renders a second
+//! generator would have to make.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,7 +46,7 @@ const L: &str = "assets/logo.svg";
 ///
 /// The bands are the line's, not this project's: S up to 27 px, M to 63, L
 /// above. Kept beside the assertions rather than imported, because the
-/// generator that writes the files is JavaScript and this is the independent
+/// generator that writes the files is lyrn and this is the independent
 /// reading of the same rule.
 fn level_for(size: u32) -> &'static str {
     match size {
@@ -88,64 +93,76 @@ fn the_ico_lists_its_images_largest_first() {
     assert_eq!(widths, vec![256, 128, 64, 48, 32, 24, 16]);
 }
 
+/// The colour of a master's hexagon: its first polygon's fill.
+fn fill_of(master: &str) -> [u8; 3] {
+    let svg = String::from_utf8(read(master)).expect("a master is text");
+    let at = svg.find("fill=\"#").unwrap_or_else(|| panic!("{master} has no fill")) + 7;
+    let hex = |from: usize| u8::from_str_radix(&svg[at + from..at + from + 2], 16).expect("a hex colour");
+    [hex(0), hex(2), hex(4)]
+}
+
+/// The colour of a PNG at a point given in hundredths of its width and height.
+fn pixel(png: &[u8], across: u32, down: u32) -> [u8; 3] {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().expect("a PNG");
+    let mut image = vec![0; reader.output_buffer_size().expect("a size")];
+    let info = reader.next_frame(&mut image).expect("a frame");
+    let samples = info.color_type.samples();
+    let at = (info.height * down / 100) as usize * info.line_size + (info.width * across / 100) as usize * samples;
+    match samples {
+        1 | 2 => [image[at]; 3],
+        _ => [image[at], image[at + 1], image[at + 2]],
+    }
+}
+
+fn near(a: [u8; 3], b: [u8; 3]) -> bool {
+    a.iter().zip(b).all(|(&x, y)| x.abs_diff(y) <= 24)
+}
+
+/// Which master an image was cut from, by two of its pixels: the top of the
+/// hexagon, above the code, is the product's colour on S and the dark plate
+/// on M and L; the middle of L's layers, below the code, is tinted where M
+/// has the plate. Read off the masters' own geometry and colours.
+fn level_of(png: &[u8]) -> &'static str {
+    let accent = fill_of(S);
+    let plate = fill_of(M);
+    let top = pixel(png, 50, 18);
+    if near(top, accent) {
+        return S;
+    }
+    assert!(near(top, plate), "the top of the hexagon is neither the colour nor the plate: {top:?}");
+    if near(pixel(png, 50, 71), plate) { M } else { L }
+}
+
+#[test]
+fn the_reading_tells_the_three_levels_apart() {
+    // The reading is only worth anything if it can tell each master from the
+    // others. lyrn draws one raster of each on its own: the favicon from S, the
+    // 32 px window icon from M - the same size, the other master - and the
+    // bundle's icon from L.
+    assert_eq!(level_of(&read("assets/favicon-32.png")), S);
+    assert_eq!(level_of(&read("src-tauri/icons/32x32.png")), M);
+    assert_eq!(level_of(&read("src-tauri/icons/icon.png")), L);
+}
+
 #[test]
 fn every_icon_in_the_ico_is_cut_for_its_own_size() {
     // An `.ico` holds sizes from 16 to 256, and there is room in it for all
     // three levels. Taking every entry from S is what put a filled blob on
     // kilna's desktop at 48 px, and is what midda's generator did until v0.1.0.
     //
-    // Compared against a reference render per size, written by the same
-    // generator from the level the rule names. Weighing the entries instead
-    // cannot work and looks like it can: a PNG cut from the plain filled tile
-    // still grows with its size, so "the 32 px image is heavier than the 24 px
-    // one" holds whichever master both came from. Measured on this repository —
-    // with every entry wrongly cut from S the weights were 393, 487, 625, 784,
-    // 1040, 2183, 4594, rising just as neatly as the correct ones.
+    // Read, not weighed: a PNG cut from the plain filled tile still grows with
+    // its size, so "the 32 px image is heavier than the 24 px one" holds
+    // whichever master both came from - with every entry wrongly cut from S the
+    // weights were 393, 487, 625, 784, 1040, 2183, 4594, rising just as neatly
+    // as the correct ones.
     let entries = ico_entries(&read("assets/icon.ico"));
-    assert!(!entries.is_empty(), "the .ico holds no images at all");
-
+    assert_eq!(entries.len(), 7, "the .ico holds every size from 16 to 256");
     for (width, image) in entries {
-        let reference = read(format!("assets/icon-levels/{width}.png"));
-        assert_eq!(
-            image,
-            reference,
-            "the {width} px entry is not the {} master rendered at {width} px",
-            level_for(width)
-        );
+        assert_eq!(png_width(&image), width, "the {width} px entry holds an image of another size");
+        assert_eq!(level_of(&image), level_for(width), "the {width} px entry is cut from the wrong master");
     }
-}
-
-#[test]
-fn every_reference_render_names_the_master_the_rule_names() {
-    // The comparison above is only worth anything if the references themselves
-    // came from the right masters. A generator that took one master for the
-    // `.ico` *and* for the references would leave every byte matching and every
-    // icon wrong.
-    //
-    // So the generator writes down which master each size was cut from, and
-    // this reads that back against its own reading of the rule. Named rather
-    // than weighed, because weight cannot tell: cut wrongly from S the seven
-    // entries still grow 393 → 4594 bytes, and the step across the 48→64 px
-    // boundary is 132% where a correct set gives 139% — the two ranges overlap,
-    // so no threshold separates them.
-    let manifest = String::from_utf8(read("assets/icon-levels/manifest.json")).expect("the manifest is UTF-8");
-
-    let mut checked = 0;
-    for size in [16_u32, 24, 32, 48, 64, 128, 256] {
-        let expected = level_for(size).rsplit('/').next().expect("a master path has a file name");
-        let entry = manifest
-            .lines()
-            .find_map(|line| {
-                let (key, value) = line.split_once(':')?;
-                (key.trim().trim_matches(['"', ' ']) == size.to_string()).then(|| value.trim().trim_matches(['"', ',', ' ']).to_owned())
-            })
-            .unwrap_or_else(|| panic!("the manifest says nothing about {size} px"));
-
-        assert_eq!(entry, expected, "the {size} px reference was cut from {entry}, and the rule says {expected}");
-        checked += 1;
-    }
-
-    assert_eq!(checked, 7, "the rule was not checked at every size in the .ico");
 }
 
 #[test]
