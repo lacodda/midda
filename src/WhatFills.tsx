@@ -181,6 +181,17 @@ function ShareOf({ share, basis, total, root, onOpen, onSafe, onWhole }: ShareOf
                 </Button>
               </>
             )}
+            {/* What compacting gives back is room in a file: clusters, on
+                disk whichever size the figures above are in. */}
+            {share.compacts !== null && (
+              <>
+                {' '}
+                Compacting gives back about <span className="tabular font-medium text-text">{formatBytes(share.compacts)}</span> on disk.{' '}
+                <Button variant="link" className="text-xs" onClick={onSafe}>
+                  See how
+                </Button>
+              </>
+            )}
           </p>
         </div>
       </div>

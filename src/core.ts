@@ -632,6 +632,9 @@ export interface FillShare {
   size: Size
   /** What of it a tool makes again: what its findings free. */
   frees: Size
+  /** What compacting its virtual disks gives back, when worth saying: only
+   * the virtual disks have it. */
+  compacts: number | null
   /** The places that hold the most of it, up to the limit asked. */
   lines: FillLine[]
   /** How many places past the ones listed. */
@@ -678,6 +681,75 @@ export function cleanupReach(arena: number, id: number): Promise<Reach> {
 /** Runs the cleanup of finding `id` and reads its folder again. */
 export function runCleanup(arena: number, id: number): Promise<Cleaned> {
   return invoke<Cleaned>('run_cleanup', { arena, id })
+}
+
+/** Whose machine a virtual disk is. Mirrors `vdisk::Owner`. */
+export type Owner = 'docker' | 'wsl' | 'hyper-v'
+
+/** A virtual disk, read inside. Mirrors `DiskRow`. */
+export interface DiskRow {
+  /** The file, in the tree of the folder as it is. */
+  id: number
+  path: string
+  /** What it is: `Docker's disk`. */
+  name: string
+  owner: Owner | null
+  /** `VHDX`, when midda knows the kind of file. */
+  format: string | null
+  /** What the file takes. */
+  file: Size
+  /** What is inside, as measured. */
+  inside: string
+  /** Why the file is larger, and what compacting does. */
+  explain: string
+  /** What compacting gives back now, when that was measured - on disk. */
+  givesBack: number | null
+  /** Whether that is worth compacting for. */
+  worth: boolean
+  /** What has to stop first. */
+  first: string | null
+  /** What compacts it, for an administrator PowerShell. */
+  script: string | null
+}
+
+/** The virtual disks of the folder as it is. Mirrors `Disks`. */
+export interface Disks {
+  arena: number
+  version: number
+  /** The largest first. */
+  disks: DiskRow[]
+  /** What compacting the ones worth it gives back. */
+  givesBack: number
+}
+
+/** The virtual disks of the folder as it is, each read inside. */
+export function disks(arena: number): Promise<Disks> {
+  return invoke<Disks>('disks', { arena })
+}
+
+/** One kind of thing Docker keeps that nothing uses. Mirrors `PruneRow`. */
+export interface PruneRow {
+  what: string
+  count: number
+  bytes: number
+  risk: Risk
+  /** What removes them - or, for volumes, what lists them to look at. */
+  command: string
+  explain: string
+}
+
+/** What Docker keeps, as its engine says. Mirrors `DockerRow`. */
+export interface DockerRow {
+  size: number
+  /** What of it nothing uses, the safest first. */
+  prunes: PruneRow[]
+  /** What a prune is followed by. */
+  after: string
+}
+
+/** What Docker keeps and what of it nothing uses, asked of its engine. */
+export function dockerUsage(): Promise<DockerRow> {
+  return invoke<DockerRow>('docker_usage')
 }
 
 /** Picks the size a basis names out of a row. */

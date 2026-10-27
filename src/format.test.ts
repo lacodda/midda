@@ -3,6 +3,7 @@ import {
   CHANGE_SPANS,
   describeChanges,
   describeCleaned,
+  describeDiskFile,
   describeFillLine,
   describeComparison,
   describeKept,
@@ -513,6 +514,13 @@ describe('describeGrower', () => {
     // The figure on the line is its own share; the folder grew by more.
     expect(describeGrower({ ...line, growth: 6 * 1024 ** 3, inside: 1 }, 'grew')).toBe('3 entries changed · +6.0 GB counting the line under it')
     expect(describeGrower({ ...line, growth: 6 * 1024 ** 3, inside: 2 }, 'freed')).toBe('3 entries changed · 6.0 GB counting the 2 lines under it')
+  })
+})
+
+describe('describeDiskFile', () => {
+  it('says how big the file is, and what kind when it is known', () => {
+    expect(describeDiskFile(54 * 1024 * 1024 * 1024, 'VHDX')).toBe('a 54 GB VHDX file')
+    expect(describeDiskFile(9_000, null)).toBe('a 8.8 KB file')
   })
 })
 

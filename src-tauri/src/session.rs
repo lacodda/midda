@@ -36,6 +36,11 @@
 //! why the volume is as full as it is, as a paragraph — worked out once per
 //! version of the tree, the first time it is asked (ADR 0014). The picture's
 //! colours read the same rules: what they found is what a tool makes again.
+//!
+//! Of the virtual disks in it - WSL's, Docker's, a Hyper-V machine's - it can
+//! ask what is inside each and what compacting it gives back, read from the
+//! files once per version of the tree; and of Docker's engine, what it keeps
+//! that nothing uses (ADR 0015).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -56,6 +61,7 @@ use midda_core::rules::cleanup::{Ran, Reach};
 use midda_core::rules::{self, Finding, Group, Risk, RuleSet, Survey};
 use midda_core::snapshot::{self, Kind, Snapshot};
 use midda_core::treemap::{self, Layout, Tile};
+use midda_core::vdisk::{self, Looked, Owner, docker};
 use midda_core::{Index, JournalPosition, NodeId, Progress, ROOT, Size, SizeBasis, Tree, compare};
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +99,8 @@ struct Found {
     classified: Option<Arc<Classified>>,
     summaries: [Option<Arc<Summary>>; 2],
     story: Option<Arc<Story>>,
+    /// The virtual disks in it, read inside, once asked.
+    disks: Option<Arc<Vec<Looked>>>,
 }
 
 impl Session {
@@ -1272,6 +1280,7 @@ fn with_found<T>(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, read:
             classified: None,
             summaries: [None, None],
             story: None,
+            disks: None,
         });
     }
     Ok(read(found.as_mut().expect("worked out above")))
@@ -1289,15 +1298,26 @@ struct Filled {
     story: Arc<Story>,
 }
 
+/// Every byte of a version of the tree given to its consumer, worked out the
+/// first time it is asked.
+fn classified_in(found: &mut Found, tree: &Tree) -> Arc<Classified> {
+    let survey = &found.survey;
+    Arc::clone(
+        found
+            .classified
+            .get_or_insert_with(|| Arc::new(consumers::classify(RuleSet::shipped(), tree, survey))),
+    )
+}
+
 /// What fills the tree on screen: every byte given to its consumer, the
 /// summary on `basis` and why it is full — each worked out the first time it
-/// is asked of a version of the tree. The window asks again whenever the
-/// tree changes, and asks the same version as often as it redraws.
-fn current_fills(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, basis: SizeBasis, space: Option<Space>) -> Result<Filled, String> {
+/// is asked of a version of the tree, the story with `disks` read inside.
+/// The window asks again whenever the tree changes, and asks the same version
+/// as often as it redraws.
+fn current_fills(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, basis: SizeBasis, space: Option<Space>, disks: &[Looked]) -> Result<Filled, String> {
     with_found(state, found, tree, |found| {
         let rules = RuleSet::shipped();
-        let survey = &found.survey;
-        let classified = Arc::clone(found.classified.get_or_insert_with(|| Arc::new(consumers::classify(rules, tree, survey))));
+        let classified = classified_in(found, tree);
         let mut summary = |basis: SizeBasis| {
             let slot = match basis {
                 SizeBasis::Allocated => 0,
@@ -1310,7 +1330,7 @@ fn current_fills(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, basis
         let told = Arc::clone(
             found
                 .story
-                .get_or_insert_with(|| Arc::new(story::tell_from(rules, tree, &classified, &on_disk, space))),
+                .get_or_insert_with(|| Arc::new(story::tell_from(rules, tree, &classified, &on_disk, space, disks))),
         );
         Filled {
             classified,
@@ -1409,6 +1429,9 @@ pub struct FillShare {
     pub size: Size,
     /// What of it a tool makes again: what its findings free.
     pub frees: Size,
+    /// What compacting its virtual disks gives back, when that is worth
+    /// saying: only the virtual disks have it.
+    pub compacts: Option<u64>,
     /// The places that hold the most of it, the most first, up to the limit
     /// asked.
     pub lines: Vec<FillLine>,
@@ -1477,6 +1500,7 @@ fn fills_of(
     // full it is, and the keeper should not wait on it.
     let root = shared.read().map_err(poisoned)?.root.clone();
     let space = root.as_deref().filter(|root| story::is_volume(root)).and_then(midda_core::platform::space_of);
+    let disks = current_disks(shared, found, arena)?;
 
     let state = shared.read().map_err(poisoned)?;
     let tree = tree_of(&state, View::Index, Some(arena))?.tree();
@@ -1484,7 +1508,7 @@ fn fills_of(
         classified,
         summary,
         story: told,
-    } = current_fills(&state, found, tree, basis, space)?;
+    } = current_fills(&state, found, tree, basis, space, &disks)?;
     let rules = RuleSet::shipped();
     let shares = summary
         .shares
@@ -1497,6 +1521,9 @@ fn fills_of(
                 about: share.consumer.about().to_owned(),
                 size: share.size,
                 frees: share.frees,
+                compacts: (share.consumer == Consumer::VirtualDisks)
+                    .then(|| vdisk::gives_back(&disks, share.size.allocated))
+                    .flatten(),
                 more: share.lines.len().saturating_sub(listed) as u64,
                 lines: share
                     .lines
@@ -1530,6 +1557,174 @@ fn fills_of(
         story: told.text.clone(),
         brief: told.brief.clone(),
     })
+}
+
+/// The virtual disks of the tree on screen, read inside — once per version
+/// of the tree. The files are read with no lock held: the keeper is not to
+/// wait on a disk being read, and a version that moved on meanwhile is read
+/// again the next time it is asked.
+fn current_disks(shared: &RwLock<State>, found: &Mutex<Option<Found>>, arena: u64) -> Result<Arc<Vec<Looked>>, String> {
+    let (version, disks) = {
+        let state = shared.read().map_err(poisoned)?;
+        let tree = tree_of(&state, View::Index, Some(arena))?.tree();
+        let held = with_found(&state, found, tree, |found| match &found.disks {
+            Some(looked) => Ok(Arc::clone(looked)),
+            None => Err(vdisk::find(RuleSet::shipped(), tree, &classified_in(found, tree))),
+        })?;
+        match held {
+            Ok(looked) => return Ok(looked),
+            Err(disks) => (state.version, disks),
+        }
+    };
+    let looked = Arc::new(vdisk::look_all(disks));
+    if let Some(held) = found
+        .lock()
+        .map_err(poisoned)?
+        .as_mut()
+        .filter(|held| held.arena == arena && held.version == version)
+    {
+        held.disks = Some(Arc::clone(&looked));
+    }
+    Ok(looked)
+}
+
+/// A virtual disk, as the window lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskRow {
+    /// The file, in the tree of the folder as it is.
+    pub id: u32,
+    pub path: String,
+    /// What it is: `Docker's disk`.
+    pub name: String,
+    pub owner: Option<Owner>,
+    /// `VHDX`, when midda knows the kind of file.
+    pub format: Option<String>,
+    /// What the file takes.
+    pub file: Size,
+    /// What is inside, as measured.
+    pub inside: String,
+    /// Why the file is larger, and what compacting does.
+    pub explain: String,
+    /// What compacting gives back now, when that was measured.
+    pub gives_back: Option<u64>,
+    /// Whether that is worth compacting for.
+    pub worth: bool,
+    /// What has to stop first.
+    pub first: Option<String>,
+    /// What compacts it, for an administrator PowerShell.
+    pub script: Option<String>,
+}
+
+/// The virtual disks of the folder as it is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Disks {
+    pub arena: u64,
+    /// The version of the tree these are of.
+    pub version: u64,
+    /// The largest first.
+    pub disks: Vec<DiskRow>,
+    /// What compacting the ones worth it gives back.
+    pub gives_back: u64,
+}
+
+/// The virtual disks of the folder as it is, each read inside: what it
+/// holds, what compacting it gives back and how.
+///
+/// # Errors
+///
+/// `stale` when `arena` is not the tree on screen; otherwise when nothing
+/// has been read.
+#[tauri::command]
+pub async fn disks(arena: u64, session: tauri::State<'_, Session>) -> Result<Disks, String> {
+    let shared = Arc::clone(&session.shared);
+    let found = Arc::clone(&session.found);
+    tauri::async_runtime::spawn_blocking(move || disks_of(&shared, &found, arena))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn disks_of(shared: &RwLock<State>, found: &Mutex<Option<Found>>, arena: u64) -> Result<Disks, String> {
+    let looked = current_disks(shared, found, arena)?;
+    let version = shared.read().map_err(poisoned)?.version;
+    Ok(Disks {
+        arena,
+        version,
+        gives_back: vdisk::worth_compacting(&looked),
+        disks: looked
+            .iter()
+            .map(|Looked { disk, look, told }| DiskRow {
+                id: disk.id,
+                path: disk.path.to_string_lossy().into_owned(),
+                name: told.name.clone(),
+                owner: disk.owner,
+                format: look.format.map(|format| format.name().to_owned()),
+                file: disk.size,
+                inside: told.inside.clone(),
+                explain: told.explain.clone(),
+                gives_back: told.gives_back,
+                worth: told.worth,
+                first: told.first.clone(),
+                script: told.script.clone(),
+            })
+            .collect(),
+    })
+}
+
+/// One kind of thing Docker keeps that nothing uses, as the window lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneRow {
+    pub what: String,
+    pub count: u64,
+    pub bytes: u64,
+    pub risk: Risk,
+    pub command: String,
+    pub explain: String,
+}
+
+/// What Docker keeps, as its engine says.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerRow {
+    /// What it keeps in all: images, containers, volumes, build cache.
+    pub size: u64,
+    /// What of it nothing uses, the safest first.
+    pub prunes: Vec<PruneRow>,
+    /// What a prune is followed by.
+    pub after: String,
+}
+
+/// What Docker keeps and what of it nothing uses, asked of its engine over
+/// the pipe or socket the `docker` command talks to.
+///
+/// # Errors
+///
+/// When Docker is not running, refuses this account, or does not answer in
+/// time - said as it is.
+#[tauri::command]
+pub async fn docker_usage() -> Result<DockerRow, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let usage = docker::ask(&docker::Endpoint::of_environment()?, docker::WITHIN)?;
+        Ok(DockerRow {
+            size: usage.size(),
+            prunes: vdisk::prunes(&usage)
+                .into_iter()
+                .map(|prune| PruneRow {
+                    what: prune.what.to_owned(),
+                    count: prune.count,
+                    bytes: prune.bytes,
+                    risk: prune.risk,
+                    command: prune.command.to_owned(),
+                    explain: prune.explain.to_owned(),
+                })
+                .collect(),
+            after: vdisk::AFTER_PRUNE.to_owned(),
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn finding_row(tree: &Tree, rules: &RuleSet, finding: &Finding) -> FindingRow {
@@ -2244,6 +2439,59 @@ mod tests {
         findings_of(&shared, &found, 0, SizeBasis::Logical, 2, None).expect("findings");
         assert_eq!(held(&found), Some(7));
         assert_eq!(findings_of(&shared, &found, 99, SizeBasis::Logical, 2, None).expect_err("stale"), "stale");
+    }
+
+    #[test]
+    fn the_virtual_disks_are_read_inside_once_per_change() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path();
+        // Docker's disk by where it is - but not a disk file inside - and a
+        // VirtualBox disk by its own signature.
+        write(&root.join("Docker/wsl/disk/docker_data.vhdx"), 9_000);
+        let mut vdi = vec![0_u8; 4_000];
+        vdi[0x40..0x44].copy_from_slice(&[0x7F, 0x10, 0xDA, 0xBE]);
+        std::fs::write(root.join("box.vdi"), vdi).expect("write the disk");
+        let shared = opened(index_of(root));
+        let found = nothing_found();
+
+        let disks = disks_of(&shared, &found, 0).expect("the disks");
+        let rows: Vec<(&str, Option<Owner>, Option<&str>)> = disks
+            .disks
+            .iter()
+            .map(|disk| (disk.name.as_str(), disk.owner, disk.format.as_deref()))
+            .collect();
+        assert_eq!(
+            rows,
+            [("Docker's disk", Some(Owner::Docker), None), ("A virtual disk", None, Some("VDI"))],
+            "the largest first"
+        );
+        assert_eq!(disks.disks[0].inside, "midda cannot see inside it: it is not a disk file midda knows.");
+        assert_eq!(disks.disks[0].gives_back, None);
+        assert!(
+            disks.disks[1]
+                .script
+                .as_deref()
+                .is_some_and(|script| script.starts_with("VBoxManage modifymedium disk"))
+        );
+        assert_eq!(disks.gives_back, 0, "nothing was measured");
+
+        let fills = fills_of(&shared, &found, 0, SizeBasis::Logical, 5, None).expect("what fills it");
+        let virtual_disks = fills
+            .shares
+            .iter()
+            .find(|share| share.consumer == Consumer::VirtualDisks)
+            .expect("the disks' share");
+        assert_eq!(virtual_disks.compacts, None, "nothing measured, nothing said");
+        assert!(fills.story.contains("midda cannot see inside them."), "{}", fills.story);
+
+        // The files are not read again for the same tree; for a changed one
+        // they are.
+        std::fs::remove_file(root.join("box.vdi")).expect("delete the disk");
+        assert_eq!(disks_of(&shared, &found, 0).expect("the disks").disks[1].format.as_deref(), Some("VDI"));
+        set(&shared, |state| state.version = 3);
+        let again = disks_of(&shared, &found, 0).expect("the disks");
+        assert!(again.disks[1].inside.contains("could not be opened"), "{:?}", again.disks[1]);
+        assert_eq!(disks_of(&shared, &found, 99).expect_err("stale"), "stale");
     }
 
     #[test]

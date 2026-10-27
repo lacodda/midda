@@ -55,6 +55,8 @@ pub fn run() {
             session::fills,
             session::cleanup_reach,
             session::run_cleanup,
+            session::disks,
+            session::docker_usage,
             elevate::acceleration,
             elevate::accelerate,
             elevate::launch_request,

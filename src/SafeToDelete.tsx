@@ -28,6 +28,7 @@ import {
   type SizeBasis,
 } from '@/core'
 import { GROUP_WORDS, describeCleaned, describeKept, describeLastWritten, formatBytes, formatCount, relativeTo } from '@/format'
+import { VirtualDisks } from '@/VirtualDisks'
 
 /** How many findings each group lists before adding up the rest. A build
  * folder per project is a few dozen on a working disk; bytecode folders can
@@ -63,7 +64,8 @@ interface Asked {
  * is the next version's, with its own confirmation (v0.15). What a cache's
  * own tool can clean, it cleans: midda asks the tool where its cache is,
  * runs its command only when that is the folder found, and reads the folder
- * again to say how much came back (ADR 0012).
+ * again to say how much came back (ADR 0012). Below them, the virtual disks:
+ * what is inside each, and what compacting it gives back (ADR 0015).
  */
 export function SafeToDelete({ arena, version, basis, root, onOpen }: SafeToDeleteProps) {
   const [summary, setSummary] = useState<FindingsSummary | null>(null)
@@ -155,6 +157,8 @@ export function SafeToDelete({ arena, version, basis, root, onOpen }: SafeToDele
         {summary?.groups.map((group) => (
           <Findings key={group.group} group={group} basis={basis} root={root} onOpen={onOpen} onClean={ask} onWhole={() => setWhole(group.group)} />
         ))}
+
+        <VirtualDisks arena={arena} version={version} root={root} onOpen={onOpen} />
       </div>
 
       <CleanupDialog asked={asked} basis={basis} onRun={run} onClose={() => setAsked(null)} />

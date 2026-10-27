@@ -585,6 +585,19 @@ export const GROUP_WORDS = {
   caches: 'Package caches',
 } as const
 
+/** Whose machine a virtual disk is, as a badge says it. Keys mirror `Owner`. */
+export const OWNER_WORDS = {
+  docker: 'Docker',
+  wsl: 'WSL',
+  'hyper-v': 'Hyper-V',
+} as const
+
+/** A virtual disk's file as a line under its name says it: how big, and
+ * what kind when midda knows. */
+export function describeDiskFile(bytes: number, format: string | null): string {
+  return format === null ? `a ${formatBytes(bytes)} file` : `a ${formatBytes(bytes)} ${format} file`
+}
+
 /**
  * What deleting a finding would not give back, in words - or `null` when it
  * gives back what it holds.
