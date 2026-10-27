@@ -20,6 +20,7 @@ use crate::platform::Space;
 use crate::rules::RuleSet;
 use crate::size::SizeBasis;
 use crate::tree::{NodeId, ROOT, Tree};
+use crate::vdisk::{self, Looked};
 use crate::words;
 
 /// The most consumers the paragraph names: five reasons are an answer, nine
@@ -51,16 +52,19 @@ pub struct Story {
 }
 
 /// Tells why `tree` is as full as it is. `space` is the volume's, when the
-/// tree is of a whole volume and its size could be read.
+/// tree is of a whole volume and its size could be read. Reads inside the
+/// virtual disks in it ([`vdisk::look_all`]).
 #[must_use]
 pub fn tell(rules: &RuleSet, tree: &Tree, classified: &Classified, space: Option<Space>) -> Story {
-    tell_from(rules, tree, classified, &classified.summary(tree, SizeBasis::Allocated), space)
+    let disks = vdisk::look_all(vdisk::find(rules, tree, classified));
+    tell_from(rules, tree, classified, &classified.summary(tree, SizeBasis::Allocated), space, &disks)
 }
 
-/// [`tell`], from a summary already made. One on another size than on disk
-/// is made again on disk: the paragraph does not mix the two.
+/// [`tell`], from a summary already made and the virtual disks already looked
+/// into. A summary on another size than on disk is made again on disk: the
+/// paragraph does not mix the two.
 #[must_use]
-pub fn tell_from(rules: &RuleSet, tree: &Tree, classified: &Classified, summary: &Summary, space: Option<Space>) -> Story {
+pub fn tell_from(rules: &RuleSet, tree: &Tree, classified: &Classified, summary: &Summary, space: Option<Space>, disks: &[Looked]) -> Story {
     let on_disk;
     let summary = if summary.basis == SizeBasis::Allocated {
         summary
@@ -74,6 +78,7 @@ pub fn tell_from(rules: &RuleSet, tree: &Tree, classified: &Classified, summary:
         classified,
         summary,
         space: space.filter(|_| is_volume(tree.root_path())),
+        disks,
     };
     Story {
         text: teller.paragraph(false),
@@ -93,6 +98,7 @@ struct Teller<'a> {
     classified: &'a Classified,
     summary: &'a Summary,
     space: Option<Space>,
+    disks: &'a [Looked],
 }
 
 impl Teller<'_> {
@@ -198,9 +204,32 @@ impl Teller<'_> {
             let _ = write!(text, " A tool makes {} of it again.", words::bytes(share.frees.allocated));
         }
         if consumer == Consumer::VirtualDisks {
-            text.push_str(" midda sees each as one file, not what is inside it.");
+            text.push_str(&self.compacting(share));
         }
         text
+    }
+
+    /// What compacting the virtual disks gives back, as a sentence after
+    /// theirs: what was read inside them, or that nothing could be.
+    fn compacting(&self, share: &Share) -> String {
+        if self.disks.is_empty() {
+            return String::new();
+        }
+        let them = if self.disks.len() == 1 { "it" } else { "them" };
+        if self.disks.iter().all(|disk| disk.told.gives_back.is_none()) {
+            return format!(" midda cannot see inside {them}.");
+        }
+        match vdisk::gives_back(self.disks, share.size.allocated) {
+            Some(back) => format!(" Compacting {them} gives back about {}.", words::bytes(back)),
+            None => format!(" Compacting {them} would give back next to nothing."),
+        }
+    }
+
+    /// What compacting the virtual disks gives back, when it is worth saying.
+    fn compacts(&self, share: &Share) -> Option<u64> {
+        (share.consumer == Consumer::VirtualDisks)
+            .then(|| vdisk::gives_back(self.disks, share.size.allocated))
+            .flatten()
     }
 
     /// The places a reason names: the largest that hold a notable part of
@@ -267,6 +296,9 @@ impl Teller<'_> {
             );
             if share.frees.allocated > 0 {
                 let _ = write!(brief, "; a tool makes {} of it again", words::bytes(share.frees.allocated));
+            }
+            if let Some(back) = self.compacts(share) {
+                let _ = write!(brief, "; compacting gives back about {}", words::bytes(back));
             }
             for line in share.lines.iter().take(PLACES_LISTED) {
                 let path = format!("`{}`", self.tree.path_of(Classified::entry_of(line)).display());

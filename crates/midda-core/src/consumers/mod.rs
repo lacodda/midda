@@ -65,8 +65,8 @@ pub enum Consumer {
     Development,
     /// Browser profiles and caches.
     Browsers,
-    /// WSL, Docker and virtual machines: each one file, whose inside midda
-    /// does not see.
+    /// WSL, Docker and virtual machines: each one file with a whole disk
+    /// inside ([`crate::vdisk`]).
     VirtualDisks,
     /// Video, audio, images and archives.
     Media,
@@ -131,7 +131,9 @@ impl Consumer {
             Self::Games => "Game libraries, saves and shader caches.",
             Self::Development => "Toolchains, packages, build output and repositories.",
             Self::Browsers => "Browser profiles and their caches.",
-            Self::VirtualDisks => "WSL, Docker and virtual machines: each one file, whose inside midda does not see.",
+            Self::VirtualDisks => {
+                "WSL, Docker and virtual machines: each one file that grows as the machine inside writes, and does not shrink when it deletes."
+            }
             Self::Media => "Video, audio, images and archives.",
             Self::Documents => "Documents, text and code.",
             Self::Unrecognised => "What no place or name midda knows says anything about.",
@@ -299,6 +301,11 @@ impl Classified {
     #[must_use]
     pub fn place(&self, id: NodeId) -> Option<usize> {
         self.named.get(&id).map(|&(place, _)| place)
+    }
+
+    /// Every entry a place names, with the place's index in the set.
+    pub fn places(&self) -> impl Iterator<Item = (NodeId, usize)> + '_ {
+        self.named.iter().map(|(&id, &(place, _))| (id, place))
     }
 
     /// The place that names `id` as `consumer`'s.

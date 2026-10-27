@@ -16,6 +16,7 @@ use super::pattern::{Glob, Outer, Template};
 use super::{explained, kebab, read_globs, read_paths};
 use crate::consumers::Consumer;
 use crate::tree::{NodeId, Tree};
+use crate::vdisk::Owner;
 
 /// A folder or a file midda knows by where it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +34,9 @@ pub struct Place {
     /// place's only when its name says nothing — a video in Documents is
     /// media, a file called `notes` there is a document.
     pub yields: bool,
+    /// Whose machine the virtual disks in it are: what has to stop before
+    /// one is compacted ([`crate::vdisk`]).
+    pub owner: Option<Owner>,
 }
 
 impl Place {
@@ -68,6 +72,7 @@ pub(super) struct RawPlace {
     inside: Vec<String>,
     #[serde(default)]
     yields: bool,
+    owner: Option<Owner>,
 }
 
 impl RawPlace {
@@ -79,6 +84,9 @@ impl RawPlace {
         if self.consumer == Consumer::Unrecognised {
             return Err("a place that names something recognises it: `unrecognised` is what no place names".to_owned());
         }
+        if self.owner.is_some() && self.consumer != Consumer::VirtualDisks {
+            return Err("an owner says whose machine a virtual disk is: only a place of `virtual-disks` has one".to_owned());
+        }
         Ok(Place {
             paths: read_paths(&self.paths)?,
             beside: read_globs(&self.beside)?,
@@ -87,6 +95,7 @@ impl RawPlace {
             name: self.name,
             consumer: self.consumer,
             yields: self.yields,
+            owner: self.owner,
         })
     }
 }

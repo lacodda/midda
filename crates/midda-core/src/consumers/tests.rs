@@ -329,7 +329,7 @@ fn the_story_says_how_full_and_why() {
         "{text}"
     );
     assert!(
-        text.contains("Virtual disks take 30 GB (15%): Docker's disk 30 GB. midda sees each as one file"),
+        text.contains("Virtual disks take 30 GB (15%): Docker's disk 30 GB. midda cannot see inside it."),
         "{text}"
     );
     assert!(!text.contains('`'), "paths are plain for a person");
@@ -339,6 +339,51 @@ fn the_story_says_how_full_and_why() {
     assert!(brief.starts_with("**What fills"), "{brief}");
     assert!(brief.contains("- **Browsers** 3.0 GB"), "every consumer is in the brief: {brief}");
     assert!(brief.contains("`"), "paths are code for a chat: {brief}");
+}
+
+/// The virtual disks of `tree`, told as if compacting each gave back `back`.
+fn looked(tree: &Tree, classified: &Classified, back: u64) -> Vec<crate::vdisk::Looked> {
+    crate::vdisk::find(RuleSet::shipped(), tree, classified)
+        .into_iter()
+        .map(|disk| {
+            let look = crate::vdisk::Look {
+                format: Some(crate::vdisk::Format::Vhdx),
+                inside: crate::vdisk::Inside::Unread(String::new()),
+                distribution: None,
+            };
+            let mut told = crate::vdisk::tell(&disk, &look);
+            told.gives_back = Some(back);
+            told.worth = true;
+            crate::vdisk::Looked { disk, look, told }
+        })
+        .collect()
+}
+
+#[test]
+fn the_story_says_what_compacting_the_virtual_disks_gives_back() {
+    let tree = volume();
+    let rules = RuleSet::shipped();
+    let classified = classified(&tree);
+    let summary = classified.summary(&tree, SizeBasis::Allocated);
+    let story = super::story::tell_from(rules, &tree, &classified, &summary, None, &looked(&tree, &classified, 20 * GB));
+    assert!(
+        story.text.contains("Docker's disk 30 GB. Compacting it gives back about 20 GB."),
+        "{}",
+        story.text
+    );
+    assert!(
+        story.brief.contains("- **Virtual disks** 30 GB (15%); compacting gives back about 20 GB"),
+        "{}",
+        story.brief
+    );
+
+    let little = super::story::tell_from(rules, &tree, &classified, &summary, None, &looked(&tree, &classified, 100 * MB));
+    assert!(
+        little.text.contains("Docker's disk 30 GB. Compacting it would give back next to nothing."),
+        "{}",
+        little.text
+    );
+    assert!(!little.brief.contains("compacting"), "{}", little.brief);
 }
 
 #[test]

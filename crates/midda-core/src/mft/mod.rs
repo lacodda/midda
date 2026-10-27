@@ -42,7 +42,7 @@
 //! a file nobody is writing, the two are the same number.
 
 mod assemble;
-mod format;
+pub(crate) mod format;
 #[cfg(windows)]
 pub(crate) mod volume;
 

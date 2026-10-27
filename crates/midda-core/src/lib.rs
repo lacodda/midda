@@ -117,6 +117,7 @@ pub mod snapshot;
 pub mod traits;
 pub mod tree;
 pub mod treemap;
+pub mod vdisk;
 pub mod walk;
 pub mod words;
 

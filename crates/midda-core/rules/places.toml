@@ -12,7 +12,8 @@
 #   games          game libraries, saves and shader caches
 #   development    toolchains, packages, build output, repositories
 #   browsers       browser profiles and caches
-#   virtual-disks  WSL, Docker and virtual machines: one file each, opaque
+#   virtual-disks  WSL, Docker and virtual machines: one file each, a disk
+#                  inside
 #   media          video, audio, images and archives
 #   documents      documents, text and code
 #   unrecognised   whatever nothing here names
@@ -30,6 +31,12 @@
 #   yields    a soft place: a file in it is what its own name says first -
 #             a video in Documents is media - and the place's only when its
 #             name says nothing
+#   owner     for virtual disks: whose machine they are - docker, wsl or
+#             hyper-v - which is what has to stop before one is compacted.
+#             A disk without one takes that of the nearest place above it
+#
+# A file a place of virtual disks names is a virtual disk: midda reads inside
+# it, says what it holds and what compacting it gives back.
 #
 # Everything inside a place is that place's consumer until a place deeper
 # down says otherwise: Steam's library inside Program Files is games, Docker's
@@ -463,19 +470,30 @@ paths = ["/Users/*/AppData/Local/Chromium/User Data"]
 
 # --------------------------------------------------------------- virtual disks
 
-# Docker's disk first: it is a `.vhdx` too, and the first place that names an
-# entry is the one that applies.
+# Docker's disks first: they are `.vhdx` files too, and the first place that
+# names an entry is the one that applies. Docker Desktop keeps the Linux it
+# runs on in one disk (`main`, `distro` before 4.30) and its images, containers
+# and volumes in another (`disk`, `data` before 4.30).
+[[place]]
+id = "docker-system-disk"
+name = "Docker's system disk"
+consumer = "virtual-disks"
+paths = ["Docker/wsl/main/*.vhdx", "Docker/wsl/distro/*.vhdx"]
+owner = "docker"
+
 [[place]]
 id = "docker-disk"
 name = "Docker's disk"
 consumer = "virtual-disks"
 paths = ["Docker/wsl/*/*.vhdx"]
+owner = "docker"
 
 [[place]]
 id = "wsl-disk"
 name = "a WSL distribution's disk"
 consumer = "virtual-disks"
 paths = ["ext4.vhdx"]
+owner = "wsl"
 
 [[place]]
 id = "virtual-disk"
@@ -488,12 +506,14 @@ id = "wsl"
 name = "WSL distributions"
 consumer = "virtual-disks"
 paths = ["/Users/*/AppData/Local/wsl"]
+owner = "wsl"
 
 [[place]]
 id = "hyper-v"
 name = "Hyper-V machines"
 consumer = "virtual-disks"
 paths = ["/ProgramData/Microsoft/Windows/Virtual Hard Disks", "/ProgramData/Microsoft/Windows/Hyper-V", "/Users/Public/Documents/Hyper-V"]
+owner = "hyper-v"
 
 [[place]]
 id = "virtualbox"

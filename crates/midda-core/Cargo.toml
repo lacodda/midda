@@ -19,6 +19,9 @@ rayon = "1"
 # be written in: a reader of rules needs comments beside them saying why.
 # Already in the lock through tauri-build; only the reading half is taken.
 toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
+# Docker's engine answers in JSON (vdisk::docker). Already in the lock through
+# tauri; a JSON reader of our own would be the worse copy of it.
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 # Allocated size, compression and sparseness are not in `std::fs::Metadata`:
@@ -30,6 +33,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Ioctl",
+    # WSL lists its distributions and their disks in the registry (vdisk::wsl).
+    "Win32_System_Registry",
     "Win32_System_Threading",
 ] }
 
