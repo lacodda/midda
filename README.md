@@ -31,7 +31,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.11.0. A volume as a table and a treemap, kept current and saved between runs; why it is full, what grew, and what a tool makes again, with package caches cleaned by their own tools. Before 1.0 the formats of the index and the rules may still change - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.12.0. A volume as a table and a treemap, kept current and saved between runs; why it is full, what grew, and what a tool makes again, with package caches cleaned by their own tools; WSL, Docker and Hyper-V disks read inside, with what compacting gives back. Before 1.0 the formats of the index and the rules may still change - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 

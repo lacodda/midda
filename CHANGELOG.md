@@ -8,6 +8,15 @@ last release, which follow [Conventional Commits](https://www.conventionalcommit
 $ git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md
 ```
 
+## [0.12.0] - 2026-10-27
+
+### Documentation
+- Record what is inside a virtual disk in ADR 0015
+
+### Features
+- Read inside virtual disks and ask Docker what it keeps
+- Show what is inside each virtual disk and how to compact it
+
 ## [0.11.0] - 2026-10-21
 
 ### CI
