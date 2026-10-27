@@ -95,7 +95,7 @@ Negative:
   where Windows, launchers and tools keep things, and will grow.
 - A soft place yields to names only: a `.dat` in Videos is media, a `.txt`
   there a document.
-- A virtual disk is one file: what is inside it is v0.12's.
+- A virtual disk is one file: what is inside it is v0.12's (ADR 0015).
 
 Rejected alternatives:
 
