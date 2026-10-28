@@ -8,6 +8,15 @@ last release, which follow [Conventional Commits](https://www.conventionalcommit
 $ git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md
 ```
 
+## [0.13.0] - 2026-10-28
+
+### Documentation
+- Record what Windows and downloads leave behind in ADR 0016
+
+### Features
+- Name what Windows and downloads leave behind
+- List system cleanups on Safe to delete
+
 ## [0.12.0] - 2026-10-27
 
 ### Bug Fixes
