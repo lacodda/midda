@@ -23,6 +23,8 @@ The name comes from *midden* — the archaeological refuse layer. A disk is stra
 
 **Domain knowledge.** Not "here are big folders" but "here are 40 GB that a build regenerates": `node_modules`, `target/`, `.next`, `dist`, `__pycache__`, `.gradle` and the npm, pnpm, cargo, pip and Gradle caches. Every finding explains itself — what brings it back, what is lost, how careful to be — and counts what deleting it really gives back: a `node_modules` linked from pnpm's store frees almost nothing, and says so. A cache is cleaned by its own tool, once the tool confirms it is the cache found.
 
+**What Windows leaves behind.** The Recycle Bin, what nothing has written to in a temporary folder for a week, crash reports and memory dumps, unfinished and old downloads, disc images, installers of programs already installed, empty folders and shortcuts to nothing - each with what is lost and how careful to be. An installer is checked against what Windows says is installed; a shortcut is read to see whether its target is still there.
+
 ## Privileges
 
 Reading the MFT means opening the volume as a device, bypassing the filesystem. Windows grants that to administrators only — otherwise any program could sidestep file permissions.
@@ -31,7 +33,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.12.0. A volume as a table and a treemap, kept current and saved between runs; why it is full, what grew, and what a tool makes again, with package caches cleaned by their own tools; WSL, Docker and Hyper-V disks read inside, with what compacting gives back. Before 1.0 the formats of the index and the rules may still change - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.12.0. A volume as a table and a treemap, kept current; why it is full and what grew; what a tool makes again, and what Windows and downloads leave behind; virtual disks read inside, with what compacting gives back. The formats of the index and the rules may change before 1.0 - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
