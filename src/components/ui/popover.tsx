@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import { Popover as Base } from '@base-ui/react/popover'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from 'dowel-ui'
-import { LayerProvider, usePopupContainer } from './layer'
+import { LayerProvider, popupRoom, usePopupContainer } from './layer'
 
 /*
  * Popover.
@@ -32,6 +32,10 @@ import { LayerProvider, usePopupContainer } from './layer'
 export const popoverPopupVariants = cva(
   [
     'rounded-lg border border-line bg-raise p-4 text-text shadow-raise',
+    // The size is a width the panel asks for; the room is what it gets. The
+    // arrow is placed against the positioner, not the panel, so the scroll
+    // does not clip it.
+    popupRoom,
     'focus-visible:outline-none',
     // The enter and the leave. `duration-*` reads the token directly because
     // Tailwind's own utility takes a literal number.

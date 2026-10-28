@@ -83,7 +83,12 @@ export function AppShell({
 
   return (
     <div
-      className={cn('grid h-full w-full overflow-hidden bg-bg text-text', className)}
+      /* On paper the frame lets go: no window to fill, so no height to hold
+         and nothing to scroll - the screen runs on over as many pages as it
+         takes - and the bar and the rail, which are for getting somewhere,
+         are left off. A block, not a grid, or the screen would print in the
+         rail's 216px column with the rail gone from beside it. */
+      className={cn('grid h-full w-full overflow-hidden bg-bg text-text print:block print:h-auto print:overflow-visible', className)}
       style={{ gridTemplateColumns: columns, gridTemplateRows: rows, ...style } as CSSProperties}
       {...props}
     >
@@ -93,13 +98,13 @@ export function AppShell({
           after the rail left a notch in the top-left corner that nothing
           could fill. */}
       {top === undefined ? null : (
-        <div className="col-span-full min-w-0" style={{ gridColumn: '1 / -1' }}>
+        <div className="col-span-full min-w-0 print:hidden" style={{ gridColumn: '1 / -1' }}>
           {top}
         </div>
       )}
       {/* `min-h-0`: without it the rail measures its content rather than the
           track, and a short nav in a tall window ends its border in mid-air. */}
-      {side === undefined ? null : <div className="min-h-0">{side}</div>}
+      {side === undefined ? null : <div className="min-h-0 print:hidden">{side}</div>}
       {/* `min-w-0` beside it, on the other axis and for the same reason: a
           wide table inside this column grew the column instead of scrolling
           inside it. `relative` so a product can portal something over the
@@ -109,7 +114,7 @@ export function AppShell({
   )
 }
 
-export const screenVariants = cva('min-h-0 flex-1', {
+export const screenVariants = cva('min-h-0 flex-1 print:overflow-visible', {
   variants: {
     /*
      * Where the scrolling happens.

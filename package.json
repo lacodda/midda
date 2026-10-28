@@ -17,10 +17,10 @@
   "dependencies": {
     "@base-ui/react": "^1.9.0",
     "@tauri-apps/api": "^2.12.4",
-    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "dowel-ui": "^0.38.1",
+    "dowel-ui": "^0.40.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "tailwind-merge": "^3.7.0"
@@ -40,9 +40,9 @@
     "sharp": "^0.35.5",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.72.0",
+    "typescript-eslint": "^8.72.1",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
   },
-  "packageManager": "pnpm@10.34.6"
+  "packageManager": "pnpm@10.34.7"
 }

@@ -32,7 +32,7 @@ import { cn } from 'dowel-ui'
  * and a component cannot know which figure it is holding.
  */
 
-export const statTileVariants = cva('min-w-0', {
+export const statTileVariants = cva('min-w-0 print:break-inside-avoid', {
   variants: {
     size: {
       /* The dashboard default: a row of these under a heading. */

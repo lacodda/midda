@@ -105,7 +105,7 @@ export function WindowButtons({ labels, className }: WindowButtonsProps) {
   ]
 
   return (
-    <div className={cn('flex h-full shrink-0 items-stretch', className)}>
+    <div className={cn('flex h-full shrink-0 items-stretch print:hidden', className)}>
       {controls.map(([name, act]) => (
         <button
           key={name}
@@ -244,7 +244,7 @@ export function ResizeEdges({ className }: ResizeEdgesProps) {
           key={direction}
           aria-hidden
           data-resize-edge={direction}
-          className={cn('fixed [z-index:var(--z-floating)]', className)}
+          className={cn('fixed [z-index:var(--z-floating)] print:hidden', className)}
           style={EDGE_STYLE[direction]}
           onPointerDown={(event) => {
             if (event.button !== 0) return
@@ -291,7 +291,8 @@ export interface TitleBarProps {
  * had. */
 export function TitleBar({ labels, mark, children, actions, center, className }: TitleBarProps) {
   const gestures = useTitleBarGestures()
-  const bar = 'h-titlebar shrink-0 items-stretch border-b border-line bg-raise select-none'
+  // A window's chrome has nothing to say on paper.
+  const bar = 'h-titlebar shrink-0 items-stretch border-b border-line bg-raise select-none print:hidden'
 
   const start = (
     <>
