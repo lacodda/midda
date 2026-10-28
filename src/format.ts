@@ -8,6 +8,8 @@
 
 import { documentLocale } from 'dowel-ui'
 
+import type { Group } from '@/core'
+
 /**
  * Bytes as a person reads them: `1.2 GB`.
  *
@@ -578,12 +580,18 @@ export function relativeTo(root: string, path: string): string {
   return path
 }
 
-/** What each group of findings is called on the page. Keys mirror `Group`. */
+/** What each group of findings is called on the page. Keys mirror `Group`;
+ * a group the core lists and this does not name fails the build. */
 export const GROUP_WORDS = {
   dependencies: 'Installed dependencies',
   build: 'Build output',
   caches: 'Package caches',
-} as const
+  'recycle-bin': 'Recycle Bin',
+  temporary: 'Temporary files',
+  'crash-reports': 'Crash reports',
+  downloads: 'Downloads',
+  leftovers: 'Empty folders and broken shortcuts',
+} as const satisfies Record<Group, string>
 
 /** Whose machine a virtual disk is, as a badge says it. Keys mirror `Owner`. */
 export const OWNER_WORDS = {

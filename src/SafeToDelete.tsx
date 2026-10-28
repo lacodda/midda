@@ -55,13 +55,15 @@ interface Asked {
 }
 
 /**
- * What can go: the folders the rules find, grouped, the most freed first,
- * each with how it comes back, what is lost and how careful to be.
+ * What can go: what the rules find, grouped, the most freed first, each with
+ * how it comes back, what is lost and how careful to be - a developer's
+ * dependencies, builds and caches, and what Windows and the reader's
+ * downloads leave behind (ADR 0016).
  *
  * Every figure is what deleting would give back, not what the folder holds:
  * a `node_modules` linked from a package store holds a gigabyte and frees a
  * few megabytes, and its line says both. Nothing is deleted from here - that
- * is the next version's, with its own confirmation (v0.15). What a cache's
+ * is a later version's, with its own confirmation (v0.15). What a cache's
  * own tool can clean, it cleans: midda asks the tool where its cache is,
  * runs its command only when that is the folder found, and reads the folder
  * again to say how much came back (ADR 0012). Below them, the virtual disks:
@@ -129,7 +131,7 @@ export function SafeToDelete({ arena, version, basis, root, onOpen }: SafeToDele
             What can go in {root}
           </h2>
           <p className="text-sm text-dim">
-            Folders a tool makes again, each with how it comes back · {basis === 'allocated' ? 'on disk' : 'by size'}
+            What a tool makes again or nothing needs, each with what is lost · {basis === 'allocated' ? 'on disk' : 'by size'}
           </p>
         </header>
 
@@ -141,16 +143,17 @@ export function SafeToDelete({ arena, version, basis, root, onOpen }: SafeToDele
               label="Can be freed"
               tone="accent"
               value={formatBytes(pick(summary.frees, basis))}
-              delta={`${formatCount(summary.count)} ${summary.count === 1 ? 'folder' : 'folders'}, holding ${formatBytes(pick(summary.holds, basis))}`}
+              delta={`${formatCount(summary.count)} found, holding ${formatBytes(pick(summary.holds, basis))}`}
             />
-            <StatTile label="Comes back as it was" value={formatBytes(pick(summary.safe, basis))} delta="by a build or an install" />
+            <StatTile label="Nothing needed is lost" value={formatBytes(pick(summary.safe, basis))} delta="comes back, or nothing uses it" />
             <StatTile label="Look first" value={formatBytes(pick(summary.caution, basis))} delta="may not come back as it was" />
           </StatRow>
         )}
 
         {summary !== null && summary.count === 0 && (
           <p className="text-sm text-dim">
-            Nothing here that a rule knows a tool makes again: no installed dependencies, build output or package caches in this folder.
+            Nothing here that a rule knows can go: no installed dependencies, build output or package caches, nothing in a Recycle Bin, temporary folder or
+            crash report, no old downloads, empty folders or broken shortcuts.
           </p>
         )}
 
@@ -191,9 +194,7 @@ function Findings({ group, basis, root, onOpen, onClean, onWhole }: FindingsProp
         {group.more > 0 && (
           <li className="flex items-center gap-3 px-3 py-2 text-sm text-dim">
             <span className="tabular w-20 shrink-0 text-right">{formatBytes(pick(group.moreFrees, basis))}</span>
-            <span>
-              {formatCount(group.more)} more {group.more === 1 ? 'folder' : 'folders'}
-            </span>
+            <span>{formatCount(group.more)} more</span>
             <Button variant="link" className="ml-auto" onClick={onWhole}>
               Show all
             </Button>
@@ -234,6 +235,9 @@ function Finding({ finding, basis, root, onOpen, onClean }: FindingProps) {
           <Badge variant={finding.risk === 'safe' ? 'good' : 'warn'}>{finding.risk === 'safe' ? 'Safe' : 'Caution'}</Badge>
         </div>
         <p className="mt-1 text-xs text-dim">{finding.explain}</p>
+        {/* What only this one says: where a shortcut points, what of an
+            installer is installed, how much of a folder goes. */}
+        {finding.detail !== null && <p className="mt-0.5 text-xs text-text">{finding.detail}</p>}
         <p className="mt-0.5 text-xs text-dim">
           {[
             finding.command === null ? null : (

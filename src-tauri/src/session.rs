@@ -29,7 +29,9 @@
 //! would give back — worked out again only when the tree has changed. A
 //! cache whose own tool cleans it is cleaned by that tool, here, once the
 //! tool has said it is the cache found, and the folder is read again so the
-//! window can say how much came back (ADR 0012).
+//! window can say how much came back (ADR 0012). What only a file can say —
+//! where a shortcut points, what an installer installs — is read away from
+//! the tree, once per change of the file (ADR 0016).
 //!
 //! And it can ask what fills it: every byte given to one consumer by the
 //! places the rules files name, the places that hold the most of each, and
@@ -49,6 +51,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
+use midda_core::checks::{self, Check, Kept, Machine, Seen};
 use midda_core::compare::{Comparison, Mark, PlaceKind};
 use midda_core::consumers::story::{self, Story};
 use midda_core::consumers::{self, Classified, Consumer, Summary};
@@ -58,7 +61,7 @@ use midda_core::growth::{self, Growers};
 use midda_core::order::{self, Sort, Span};
 use midda_core::platform::Space;
 use midda_core::rules::cleanup::{Ran, Reach};
-use midda_core::rules::{self, Finding, Group, Risk, RuleSet, Survey};
+use midda_core::rules::{self, Finding, Goes, Group, Risk, RuleSet, Survey};
 use midda_core::snapshot::{self, Kind, Snapshot};
 use midda_core::treemap::{self, Layout, Tile};
 use midda_core::vdisk::{self, Looked, Owner, docker};
@@ -83,6 +86,9 @@ pub struct Session {
     /// What the rules found in the folder as it is, as of the tree it was
     /// worked out from.
     found: Arc<Mutex<Option<Found>>>,
+    /// What the checks saw of files, by path: kept between versions of the
+    /// tree, since most versions change none of them.
+    seen: Arc<Mutex<Kept>>,
 }
 
 /// What the rules say of one version of the open folder's tree: worked out
@@ -101,6 +107,8 @@ struct Found {
     story: Option<Arc<Story>>,
     /// The virtual disks in it, read inside, once asked.
     disks: Option<Arc<Vec<Looked>>>,
+    /// Every finding, the ones a check waited on settled, once asked.
+    settled: Option<Arc<Vec<Settled>>>,
 }
 
 impl Session {
@@ -114,6 +122,7 @@ impl Session {
             store: data.join("index"),
             snapshots: data.join("snapshots"),
             found: Arc::new(Mutex::new(None)),
+            seen: Arc::new(Mutex::new(Kept::default())),
         }
     }
 
@@ -1167,7 +1176,8 @@ fn top_of(state: &State, view: View, arena: u64, basis: SizeBasis, limit: usize)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FindingRow {
-    /// The folder, in the tree of the folder as it is.
+    /// The entry, in the tree of the folder as it is: for a folder that is
+    /// emptied, the folder.
     pub id: u32,
     pub path: String,
     /// Which rule found it, and what the rule calls what it found.
@@ -1178,13 +1188,20 @@ pub struct FindingRow {
     pub command: Option<String>,
     /// What it is, how it comes back and what is lost.
     pub explain: String,
-    /// What the tree counts for it.
+    /// What else the reader is told of this one: what its check saw, or how
+    /// much of the folder goes.
+    pub detail: Option<String>,
+    /// Whether it is a file, a folder, or what is in a folder that goes.
+    pub goes: Goes,
+    pub folder: bool,
+    /// What the tree counts for what goes.
     pub holds: Size,
     /// What deleting it would give back: what it holds less the files with
     /// a name somewhere else.
     pub frees: Size,
+    /// How many entries go.
     pub entries: u64,
-    /// When anything in it was last written.
+    /// When anything that goes was last written.
     pub subtree_modified: Option<i64>,
     /// The cache's own cleanup, when it has one.
     pub cleanup: Option<CleanupRow>,
@@ -1244,10 +1261,6 @@ pub struct Cleaned {
     pub after: Size,
 }
 
-/// The order groups are listed in: what a project installed, what it built,
-/// what every project shares.
-const GROUPS: [Group; 3] = [Group::Dependencies, Group::Build, Group::Caches];
-
 /// What the rules find in the folder as it is: each group's findings, the
 /// most freed on `basis` first, `limit` of each — every one of `whole` —
 /// and what each group and the whole add up to.
@@ -1260,9 +1273,57 @@ const GROUPS: [Group; 3] = [Group::Dependencies, Group::Build, Group::Caches];
 pub async fn findings(arena: u64, basis: SizeBasis, limit: u32, whole: Option<Group>, session: tauri::State<'_, Session>) -> Result<FindingsSummary, String> {
     let shared = Arc::clone(&session.shared);
     let found = Arc::clone(&session.found);
-    tauri::async_runtime::spawn_blocking(move || findings_of(&shared, &found, arena, basis, limit as usize, whole))
+    let seen = Arc::clone(&session.seen);
+    tauri::async_runtime::spawn_blocking(move || findings_of(&shared, &found, &seen, arena, basis, limit as usize, whole))
         .await
         .map_err(|error| error.to_string())?
+}
+
+/// A finding, with what its check saw when it has one.
+type Settled = (Finding, Option<Seen>);
+
+/// Every finding of the tree on screen, the checked ones settled — once per
+/// version of the tree. The files are read with no lock on the tree held, as
+/// the virtual disks are; what a check saw of a file is kept between
+/// versions, and asked again only of a file that changed.
+fn current_settled(shared: &RwLock<State>, found: &Mutex<Option<Found>>, seen: &Mutex<Kept>, arena: u64) -> Result<Arc<Vec<Settled>>, String> {
+    let (version, findings, waiting) = {
+        let state = shared.read().map_err(poisoned)?;
+        let tree = tree_of(&state, View::Index, Some(arena))?.tree();
+        let held = with_found(&state, found, tree, |found| match &found.settled {
+            Some(settled) => Ok(Arc::clone(settled)),
+            None => Err((found.survey.findings.clone(), found.survey.waiting.clone())),
+        })?;
+        match held {
+            Ok(settled) => return Ok(settled),
+            Err((findings, waiting)) => (state.version, findings, waiting),
+        }
+    };
+    let mut machine: Option<Machine> = None;
+    let checked = seen
+        .lock()
+        .map_err(poisoned)?
+        .settle(RuleSet::shipped(), &waiting, &mut |entry| match entry.check {
+            // The programs installed are read once, by the first installer that
+            // is asked, for every one after it.
+            Check::Installer => checks::look(&entry.path, entry.check, machine.get_or_insert_with(Machine::read)),
+            Check::Shortcut => checks::look(&entry.path, entry.check, &Machine::default()),
+        });
+    let settled: Vec<Settled> = findings
+        .into_iter()
+        .map(|finding| (finding, None))
+        .chain(checked.into_iter().map(|(finding, seen)| (finding, Some(seen))))
+        .collect();
+    let settled = Arc::new(settled);
+    if let Some(held) = found
+        .lock()
+        .map_err(poisoned)?
+        .as_mut()
+        .filter(|held| held.arena == arena && held.version == version)
+    {
+        held.settled = Some(Arc::clone(&settled));
+    }
+    Ok(settled)
 }
 
 /// What the rules say of the tree on screen, worked out again only when it
@@ -1281,6 +1342,7 @@ fn with_found<T>(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, read:
             summaries: [None, None],
             story: None,
             disks: None,
+            settled: None,
         });
     }
     Ok(read(found.as_mut().expect("worked out above")))
@@ -1343,16 +1405,18 @@ fn current_fills(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, basis
 fn findings_of(
     shared: &RwLock<State>,
     found: &Mutex<Option<Found>>,
+    seen: &Mutex<Kept>,
     arena: u64,
     basis: SizeBasis,
     limit: usize,
     whole: Option<Group>,
 ) -> Result<FindingsSummary, String> {
+    let settled = current_settled(shared, found, seen, arena)?;
     let state = shared.read().map_err(poisoned)?;
     let tree = tree_of(&state, View::Index, Some(arena))?.tree();
-    let mut findings = current_findings(&state, found, tree)?;
+    let mut findings: Vec<&Settled> = settled.iter().collect();
     // The core orders on disk; a reader looking at sizes gets their order.
-    findings.sort_by(|a, b| basis.of(b.frees).cmp(&basis.of(a.frees)).then_with(|| tree.scan_order(a.id, b.id)));
+    findings.sort_by(|(a, _), (b, _)| basis.of(b.frees).cmp(&basis.of(a.frees)).then_with(|| tree.scan_order(a.id, b.id)));
     let rules = RuleSet::shipped();
 
     let mut summary = FindingsSummary {
@@ -1365,7 +1429,7 @@ fn findings_of(
         safe: Size::zero(),
         caution: Size::zero(),
     };
-    for group in GROUPS {
+    for group in Group::ALL {
         let mut row = GroupRow {
             group,
             rows: Vec::new(),
@@ -1376,7 +1440,7 @@ fn findings_of(
             more_frees: Size::zero(),
         };
         let listed = if whole == Some(group) { usize::MAX } else { limit };
-        for finding in findings.iter().filter(|finding| rules.rule_of(finding).group == group) {
+        for (finding, seen) in findings.iter().copied().filter(|(finding, _)| finding.group == group) {
             row.count += 1;
             row.holds.add(finding.holds);
             row.frees.add(finding.frees);
@@ -1385,7 +1449,7 @@ fn findings_of(
                 Risk::Caution => summary.caution.add(finding.frees),
             }
             if row.rows.len() < listed {
-                row.rows.push(finding_row(tree, rules, finding));
+                row.rows.push(finding_row(tree, rules, finding, seen.as_ref()));
             } else {
                 row.more += 1;
                 row.more_frees.add(finding.frees);
@@ -1727,10 +1791,9 @@ pub async fn docker_usage() -> Result<DockerRow, String> {
     .map_err(|error| error.to_string())?
 }
 
-fn finding_row(tree: &Tree, rules: &RuleSet, finding: &Finding) -> FindingRow {
+fn finding_row(tree: &Tree, rules: &RuleSet, finding: &Finding, seen: Option<&Seen>) -> FindingRow {
     let rule = rules.rule_of(finding);
     let restore = rules.restore_of(finding);
-    let node = tree.node(finding.id);
     FindingRow {
         id: finding.id,
         path: tree.path_of(finding.id).to_string_lossy().into_owned(),
@@ -1739,10 +1802,13 @@ fn finding_row(tree: &Tree, rules: &RuleSet, finding: &Finding) -> FindingRow {
         risk: restore.risk,
         command: restore.command.clone(),
         explain: restore.explain.clone(),
+        detail: rules.detail(finding, seen),
+        goes: finding.goes,
+        folder: tree.node(finding.id).is_directory(),
         holds: finding.holds,
         frees: finding.frees,
-        entries: node.entries,
-        subtree_modified: node.subtree_modified.and_then(millis),
+        entries: finding.entries,
+        subtree_modified: finding.newest.and_then(millis),
         cleanup: rule.cleanup.as_ref().map(|cleanup| CleanupRow {
             line: cleanup.line(),
             explain: cleanup.explain.clone(),
@@ -2389,6 +2455,11 @@ mod tests {
         Mutex::new(None)
     }
 
+    /// And for what its checks saw.
+    fn nothing_seen() -> Mutex<Kept> {
+        Mutex::new(Kept::default())
+    }
+
     #[test]
     fn what_can_go_is_grouped_counted_and_worked_out_once_per_change() {
         let dir = tempfile::tempdir().expect("a folder");
@@ -2407,7 +2478,7 @@ mod tests {
         let shared = opened(index_of(root));
         let found = nothing_found();
 
-        let summary = findings_of(&shared, &found, 0, SizeBasis::Logical, 2, None).expect("findings");
+        let summary = findings_of(&shared, &found, &nothing_seen(), 0, SizeBasis::Logical, 2, None).expect("findings");
         let groups: Vec<_> = summary.groups.iter().map(|group| (group.group, group.count)).collect();
         assert_eq!(groups, [(Group::Dependencies, 2), (Group::Build, 4)], "no caches here, so no group for them");
         assert_eq!(summary.count, 6);
@@ -2425,7 +2496,7 @@ mod tests {
         assert!(dependencies.rows[0].path.ends_with("node_modules") && dependencies.rows[0].risk == Risk::Safe);
         assert_eq!(dependencies.rows[1].risk, Risk::Caution);
 
-        let whole = findings_of(&shared, &found, 0, SizeBasis::Logical, 2, Some(Group::Build)).expect("findings");
+        let whole = findings_of(&shared, &found, &nothing_seen(), 0, SizeBasis::Logical, 2, Some(Group::Build)).expect("findings");
         assert_eq!(
             (whole.groups[1].rows.len(), whole.groups[1].more),
             (4, 0),
@@ -2436,9 +2507,12 @@ mod tests {
         let held = |found: &Mutex<Option<Found>>| found.lock().expect("lock").as_ref().map(|held| held.version);
         assert_eq!(held(&found), Some(0));
         set(&shared, |state| state.version = 7);
-        findings_of(&shared, &found, 0, SizeBasis::Logical, 2, None).expect("findings");
+        findings_of(&shared, &found, &nothing_seen(), 0, SizeBasis::Logical, 2, None).expect("findings");
         assert_eq!(held(&found), Some(7));
-        assert_eq!(findings_of(&shared, &found, 99, SizeBasis::Logical, 2, None).expect_err("stale"), "stale");
+        assert_eq!(
+            findings_of(&shared, &found, &nothing_seen(), 99, SizeBasis::Logical, 2, None).expect_err("stale"),
+            "stale"
+        );
     }
 
     #[test]

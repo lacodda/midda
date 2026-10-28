@@ -172,10 +172,20 @@ function ShareOf({ share, basis, total, root, onOpen, onSafe, onWhole }: ShareOf
           </span>
           <p className="mt-1.5 text-xs text-dim">
             {share.about}
+            {/* As the core's story says it: a tool makes a developer's again,
+                what Windows keeps only goes. */}
             {frees > 0 && (
               <>
                 {' '}
-                A tool makes <span className="tabular font-medium text-text">{formatBytes(frees)}</span> of it again.{' '}
+                {share.consumer === 'development' ? (
+                  <>
+                    A tool makes <span className="tabular font-medium text-text">{formatBytes(frees)}</span> of it again.
+                  </>
+                ) : (
+                  <>
+                    <span className="tabular font-medium text-text">{formatBytes(frees)}</span> of it can go.
+                  </>
+                )}{' '}
                 <Button variant="link" className="text-xs" onClick={onSafe}>
                   See what can go
                 </Button>

@@ -499,12 +499,17 @@ export function topGrowth(view: View, arena: number, basis: SizeBasis, limit: nu
   return invoke<Top>('top_growth', { view, arena, basis, limit })
 }
 
-/** Where a finding is listed. Mirrors `Group` in midda-core. */
-export type Group = 'dependencies' | 'build' | 'caches'
+/** Where a finding is listed. Mirrors `Group` in midda-core, in the order
+ * `Group::ALL` lists them. */
+export type Group = 'dependencies' | 'build' | 'caches' | 'recycle-bin' | 'temporary' | 'crash-reports' | 'downloads' | 'leftovers'
 
-/** How careful to be. Mirrors `Risk`: `safe` comes back as it was,
- * `caution` may not, or may hold something no tool made. */
+/** How careful to be. Mirrors `Risk`: with `safe` nothing anyone needs is
+ * lost; `caution` may not come back as it was, or may be the only copy. */
 export type Risk = 'safe' | 'caution'
+
+/** What deleting a finding takes. Mirrors `Goes`: the entry itself, or what
+ * is in the folder - `taken` of the `of` entries in it - which stays. */
+export type Goes = { kind: 'whole' } | { kind: 'contents'; taken: number; of: number }
 
 /** A cache's own cleanup, before its tool is asked. Mirrors `CleanupRow`. */
 export interface CleanupRow {
@@ -513,9 +518,10 @@ export interface CleanupRow {
   explain: string
 }
 
-/** One folder a rule found. Mirrors `FindingRow`. */
+/** One entry a rule found. Mirrors `FindingRow`. */
 export interface FindingRow {
-  /** The folder, in the tree of the folder as it is. */
+  /** The entry, in the tree of the folder as it is: for a folder that is
+   * emptied, the folder. */
   id: number
   path: string
   /** The rule's id, and what it calls what it found. */
@@ -526,13 +532,20 @@ export interface FindingRow {
   command: string | null
   /** What it is, how it comes back and what is lost. */
   explain: string
-  /** What the tree counts for it. */
+  /** What else is said of this one: what its check saw, or how much of the
+   * folder goes. */
+  detail: string | null
+  goes: Goes
+  folder: boolean
+  /** What the tree counts for what goes. */
   holds: Size
   /** What deleting it would give back: what it holds less the files with a
    * name somewhere else. */
   frees: Size
+  /** How many entries go. */
   entries: number
-  /** When anything in it was last written, as milliseconds since the epoch. */
+  /** When anything that goes was last written, as milliseconds since the
+   * epoch. */
   subtreeModified: number | null
   cleanup: CleanupRow | null
 }
