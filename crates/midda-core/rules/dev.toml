@@ -27,6 +27,10 @@
 #
 # The first rule that names a folder is the one that applies, and nothing
 # inside a folder a rule names is looked at: it is one thing.
+#
+# system.toml uses the rest of the format: files as well as folders, ages,
+# folders that are emptied rather than deleted, empty folders, whose an entry
+# is, and checks of what only a file can say.
 
 # ---------------------------------------------------------------- dependencies
 

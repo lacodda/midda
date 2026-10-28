@@ -41,8 +41,11 @@
 # Everything inside a place is that place's consumer until a place deeper
 # down says otherwise: Steam's library inside Program Files is games, Docker's
 # disk inside Docker's folder is a virtual disk. A folder a rule in dev.toml
-# finds, or closes, is development whatever place it is in. The first place
-# in this file that names an entry is the one that applies.
+# finds, or closes, is development whatever place it is in; what system.toml
+# finds in the Recycle Bin, a temporary folder or crash reports is system,
+# and what it finds in Downloads and among leftovers is what places and names
+# say. The first place in this file that names an entry is the one that
+# applies.
 #
 # [[file]] says what a file is by its name, where no place says otherwise:
 #
@@ -143,6 +146,14 @@ id = "driver-packages"
 name = "driver packages"
 consumer = "system"
 paths = ["/AMD", "/NVIDIA", "/Intel"]
+
+# Windows' web server. An update of April 2025 makes it empty on every
+# computer, as a fix, and Microsoft asks that it is not deleted.
+[[place]]
+id = "web-server"
+name = "Internet Information Services"
+consumer = "system"
+paths = ["/inetpub"]
 
 [[place]]
 id = "performance-logs"

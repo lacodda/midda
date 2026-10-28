@@ -104,14 +104,29 @@ fn wildcard(pattern: &[u8], name: &[u8]) -> bool {
     pattern[p..].iter().all(|&b| b == b'*')
 }
 
+/// One step of a path: a name, or `**` — any number of folders, none
+/// included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Step {
+    Name(Glob),
+    Folders,
+}
+
 /// A path read from its end: the last name is the entry itself, the ones
 /// before it the folders it sits in.
+///
+/// `**` between two names stands for any number of folders, none included:
+/// `Start Menu/**/*.lnk` is a shortcut in the Start Menu or anywhere under
+/// it, as a menu nests its programs in folders of their own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Template {
     /// Outermost first, as written.
-    names: Vec<Glob>,
+    steps: Vec<Step>,
     /// The first name sits at the top of a volume, with nothing above it.
     anchored: bool,
+    /// Whether any step is `**`: a path without one is matched name for name,
+    /// with nothing collected — the overwhelming majority.
+    deep: bool,
 }
 
 impl Template {
@@ -120,28 +135,49 @@ impl Template {
     ///
     /// # Errors
     ///
-    /// When it is empty or any of its names is not a name.
+    /// When it is empty or any of its names is not a name; when it ends in
+    /// `**`, which would name no entry, or says `**` twice in a row.
     pub fn new(path: &str) -> Result<Self, String> {
         let (anchored, path) = path.strip_prefix('/').map_or((false, path), |rest| (true, rest));
-        let names = path.split('/').map(Glob::new).collect::<Result<Vec<_>, _>>()?;
-        if names.is_empty() {
-            return Err("a path cannot be empty".to_owned());
+        let steps = path
+            .split('/')
+            .map(|name| if name == "**" { Ok(Step::Folders) } else { Glob::new(name).map(Step::Name) })
+            .collect::<Result<Vec<_>, _>>()?;
+        match steps.last() {
+            None => return Err("a path cannot be empty".to_owned()),
+            Some(Step::Folders) => return Err(format!("`{path}` ends in `**`: a path ends in the name of what it names")),
+            Some(Step::Name(_)) => {}
         }
-        Ok(Self { names, anchored })
+        if steps.windows(2).any(|pair| pair.iter().all(|step| *step == Step::Folders)) {
+            return Err(format!("`{path}` says `**` twice in a row"));
+        }
+        let deep = steps.contains(&Step::Folders);
+        Ok(Self { steps, anchored, deep })
     }
 
     /// The path as written.
     #[must_use]
     pub fn as_string(&self) -> String {
-        let path = self.names.iter().map(Glob::as_str).collect::<Vec<_>>().join("/");
+        let path = self
+            .steps
+            .iter()
+            .map(|step| match step {
+                Step::Name(glob) => glob.as_str(),
+                Step::Folders => "**",
+            })
+            .collect::<Vec<_>>()
+            .join("/");
         if self.anchored { format!("/{path}") } else { path }
     }
 
     /// The last name: what the entry itself is called.
     #[must_use]
     pub fn last(&self) -> &Glob {
-        // `new` refuses a path with no names.
-        &self.names[self.names.len() - 1]
+        // `new` refuses a path with no names, and one that ends in `**`.
+        match &self.steps[self.steps.len() - 1] {
+            Step::Name(glob) => glob,
+            Step::Folders => unreachable!("a path ends in a name"),
+        }
     }
 
     /// Whether `id` is the entry this path names: its own name is the last,
@@ -153,8 +189,39 @@ impl Template {
     /// `C:\Users\me\AppData\Local` as well as by a scan of `C:\`.
     #[must_use]
     pub fn matches(&self, tree: &Tree, id: NodeId, outer: &Outer) -> bool {
-        let mut names = upward(tree, id, outer);
-        self.names.iter().rev().all(|glob| names.next().is_some_and(|name| glob.matches(name))) && (!self.anchored || names.next().is_none())
+        self.matches_names(upward(tree, id, outer))
+    }
+
+    /// Whether this path names a folder above the root of a scan: the one
+    /// `up` folders above it, which is not in the tree but in its path.
+    #[must_use]
+    pub fn matches_above(&self, outer: &Outer, up: usize) -> bool {
+        up > 0 && up < outer.names.len() && self.matches_names(outer.names[up..].iter().map(String::as_str))
+    }
+
+    /// Whether this path names the entry whose name and whose folders' names
+    /// are `names`, its own first.
+    fn matches_names<'a>(&self, mut names: impl Iterator<Item = &'a str>) -> bool {
+        if self.deep {
+            let names: Vec<&str> = names.collect();
+            let steps: Vec<&Step> = self.steps.iter().rev().collect();
+            return deep_match(&steps, &names, self.anchored);
+        }
+        self.steps
+            .iter()
+            .rev()
+            .all(|step| matches!(step, Step::Name(glob) if names.next().is_some_and(|name| glob.matches(name))))
+            && (!self.anchored || names.next().is_none())
+    }
+}
+
+/// `steps` against `names`, both innermost first: a name takes one, `**`
+/// any number — tried from none up, as few as the rest allows.
+fn deep_match(steps: &[&Step], names: &[&str], anchored: bool) -> bool {
+    match steps.split_first() {
+        None => !anchored || names.is_empty(),
+        Some((Step::Name(glob), rest)) => names.first().is_some_and(|name| glob.matches(name)) && deep_match(rest, &names[1..], anchored),
+        Some((Step::Folders, rest)) => (0..=names.len()).any(|taken| deep_match(rest, &names[taken..], anchored)),
     }
 }
 
@@ -179,6 +246,13 @@ impl Outer {
             .collect();
         names.reverse();
         Self { names }
+    }
+
+    /// How many folders are above the root of the scan, the root's own name
+    /// not counted.
+    #[must_use]
+    pub fn above_root(&self) -> usize {
+        self.names.len().saturating_sub(1)
     }
 }
 
@@ -329,5 +403,45 @@ mod tests {
             !Template::new("*/node_modules").expect("a path").matches(&tree, modules, &outer),
             "the drive is not a folder"
         );
+    }
+
+    /// root (the volume) / Users / me / Start Menu / Programs / Tool / x.lnk,
+    /// and the shortcut at each depth from Start Menu down.
+    fn menu() -> (Tree, [NodeId; 3]) {
+        let mut tree = Tree::new(PathBuf::from(VOLUME), None);
+        let mut at = ROOT;
+        let mut shortcuts = Vec::new();
+        for name in ["Users", "me", "Start Menu", "Programs", "Tool"] {
+            at = tree.push(at, Node::new(name.into(), at, Kind::Directory));
+            if tree.node(at).name == "Start Menu" || tree.node(at).name == "Programs" || tree.node(at).name == "Tool" {
+                shortcuts.push(tree.push(at, Node::new("x.lnk".into(), at, Kind::File)));
+            }
+        }
+        (tree, shortcuts.try_into().expect("three shortcuts"))
+    }
+
+    #[test]
+    fn two_stars_stand_for_any_number_of_folders_none_included() {
+        let (tree, [top, programs, deep]) = menu();
+        let outer = Outer::of(tree.root_path());
+        let path = |text: &str| Template::new(text).expect("a valid path");
+
+        let anywhere = path("/Users/*/Start Menu/**/*.lnk");
+        for shortcut in [top, programs, deep] {
+            assert!(anywhere.matches(&tree, shortcut, &outer), "{}", tree.path_of(shortcut).display());
+        }
+        assert!(
+            !path("/Users/*/Start Menu/**/Programs/*.lnk").matches(&tree, top, &outer),
+            "a name after ** is still a name"
+        );
+        assert!(path("/Users/*/Start Menu/**/Programs/*.lnk").matches(&tree, programs, &outer));
+        assert!(path("/Users/*/Start Menu/**/Programs/**/*.lnk").matches(&tree, deep, &outer), "two of them");
+        assert!(!path("/me/**/*.lnk").matches(&tree, deep, &outer), "anchored still means the top");
+        assert!(path("/**/Tool/*.lnk").matches(&tree, deep, &outer));
+        assert!(path("Start Menu/**/x.lnk").matches(&tree, deep, &outer), "and unanchored, from anywhere");
+        assert_eq!(anywhere.as_string(), "/Users/*/Start Menu/**/*.lnk");
+
+        assert!(Template::new("Start Menu/**").is_err(), "a path ends in what it names");
+        assert!(Template::new("a/**/**/b").is_err());
     }
 }

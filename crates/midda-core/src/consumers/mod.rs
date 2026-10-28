@@ -16,7 +16,9 @@
 //!
 //! 1. A folder a rule finds or closes — a `node_modules`, a Cargo `target` —
 //!    is its group's consumer whole, whatever place it is in: what is inside
-//!    it is not looked at.
+//!    it is not looked at. A group that says no consumer — an old download,
+//!    an empty folder — claims nothing, and what it found is told by the
+//!    steps below.
 //! 2. The deepest place that names the file or a folder above it — Steam's
 //!    library inside Program Files is games, Docker's disk inside Docker's
 //!    folder a virtual disk.
@@ -159,7 +161,7 @@ const NEARLY: u64 = 10;
 
 /// What a walk carries down: who the place above says the bytes are for.
 #[derive(Debug, Clone, Copy, Default)]
-struct Above {
+pub(crate) struct Above {
     /// A place that decides.
     firm: Option<Consumer>,
     /// A soft place: what a file's own name does not say.
@@ -167,7 +169,13 @@ struct Above {
 }
 
 impl Above {
-    fn of(place: &crate::rules::Place) -> Self {
+    /// Who the place says what is in it is for, whatever its name: the firm
+    /// place, else the soft one, else nobody midda knows.
+    pub(crate) fn consumer(self) -> Consumer {
+        self.firm.or(self.soft).unwrap_or(Consumer::Unrecognised)
+    }
+
+    pub(crate) fn of(place: &crate::rules::Place) -> Self {
         if place.yields {
             Self {
                 firm: None,

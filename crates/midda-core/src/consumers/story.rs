@@ -201,7 +201,7 @@ impl Teller<'_> {
         }
         text.push('.');
         if share.frees.allocated > 0 {
-            let _ = write!(text, " A tool makes {} of it again.", words::bytes(share.frees.allocated));
+            let _ = write!(text, " {}.", goes(consumer, share.frees.allocated, true));
         }
         if consumer == Consumer::VirtualDisks {
             text.push_str(&self.compacting(share));
@@ -295,7 +295,7 @@ impl Teller<'_> {
                 words::share(size, total)
             );
             if share.frees.allocated > 0 {
-                let _ = write!(brief, "; a tool makes {} of it again", words::bytes(share.frees.allocated));
+                let _ = write!(brief, "; {}", goes(share.consumer, share.frees.allocated, false));
             }
             if let Some(back) = self.compacts(share) {
                 let _ = write!(brief, "; compacting gives back about {}", words::bytes(back));
@@ -318,6 +318,18 @@ impl Teller<'_> {
         brief.push('\n');
         brief
     }
+}
+
+/// What of `consumer` its findings free, said as what it is: a developer's
+/// is made again by a tool; what Windows keeps — the Recycle Bin, old
+/// temporary files, crash reports — only goes. `whole` starts a sentence.
+fn goes(consumer: Consumer, bytes: u64, whole: bool) -> String {
+    let said = if consumer == Consumer::Development {
+        format!("a tool makes {} of it again", words::bytes(bytes))
+    } else {
+        format!("{} of it can go", words::bytes(bytes))
+    };
+    if whole { capitalised(&said) } else { said }
 }
 
 fn count_in_words(count: usize) -> &'static str {

@@ -50,6 +50,15 @@ impl Place {
     pub fn paths(&self) -> Vec<String> {
         self.paths.iter().map(Template::as_string).collect()
     }
+
+    /// Whether this place is the folder `up` above the root of a scan. That
+    /// folder is not in the tree, so what is beside it or in it cannot be
+    /// asked: the place is taken on its path alone — the careful side for a
+    /// rule that asks whose an entry is, since a folder taken for a
+    /// program's is one not called a leftover.
+    pub(super) fn names_above(&self, outer: &Outer, up: usize) -> bool {
+        self.paths.iter().any(|path| path.matches_above(outer, up))
+    }
 }
 
 /// What a file is by its name, where no place says otherwise.
@@ -145,13 +154,13 @@ pub(super) struct Index {
 
 /// The extension a `*.ext` pattern names, folded to lower case — `None` for
 /// any other pattern.
-fn extension_of(pattern: &str) -> Option<String> {
+pub(super) fn extension_of(pattern: &str) -> Option<String> {
     let extension = pattern.strip_prefix("*.")?;
     (!extension.is_empty() && !extension.contains(['*', '?', '.'])).then(|| extension.to_ascii_lowercase())
 }
 
 /// What follows the last dot of `name`, folded into `scratch`.
-fn extension_in<'a>(name: &str, scratch: &'a mut String) -> Option<&'a str> {
+pub(super) fn extension_in<'a>(name: &str, scratch: &'a mut String) -> Option<&'a str> {
     let (_, extension) = name.rsplit_once('.')?;
     fold(extension, scratch);
     Some(scratch.as_str())
@@ -159,7 +168,7 @@ fn extension_in<'a>(name: &str, scratch: &'a mut String) -> Option<&'a str> {
 
 /// `text` in lower case, in `scratch`: the ASCII folding names are matched
 /// with.
-fn fold(text: &str, scratch: &mut String) {
+pub(super) fn fold(text: &str, scratch: &mut String) {
     scratch.clear();
     scratch.extend(text.chars().map(|c| c.to_ascii_lowercase()));
 }

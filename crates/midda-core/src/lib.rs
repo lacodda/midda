@@ -79,6 +79,14 @@
 //! manager's own command, once the manager has said it is the cache found.
 //! See `docs/adr/0012-rules-that-explain-themselves.md`.
 //!
+//! The same rules say what Windows and the reader's downloads leave behind:
+//! the Recycle Bin, what nobody wrote to in a temporary folder for a week,
+//! crash reports, installers of what is installed, old and unfinished
+//! downloads, empty folders and shortcuts to nothing. What only a file can
+//! say — where a shortcut points, what an installer installs — [`checks`]
+//! reads, away from the tree. See
+//! `docs/adr/0016-what-windows-and-downloads-leave-behind.md`.
+//!
 //! # What fills the disk
 //!
 //! "C: is full" asks why. [`consumers`] gives every byte to one consumer -
@@ -101,6 +109,7 @@
 //! # Ok::<(), midda_core::Error>(())
 //! ```
 
+pub mod checks;
 pub mod compare;
 pub mod consumers;
 pub mod error;

@@ -48,6 +48,21 @@ pub fn share(part: u64, total: u64) -> String {
     format!("{:.*}%", digits, rounded(share, digits))
 }
 
+/// A count, its thousands set apart as the window's `formatCount` sets them
+/// in the page's language, English: `2,345`.
+#[must_use]
+pub fn count(count: u64) -> String {
+    let digits = count.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 /// `value` rounded to `digits` decimals, a half upwards - as JavaScript's
 /// `toFixed` rounds, where Rust's own formatting would round a half to even
 /// and write 2.2 where the window writes 2.3.
@@ -108,6 +123,14 @@ mod tests {
         // 2.25 GB is exact in binary; half-to-even would write 2.2.
         assert_eq!(bytes(2 * GB + GB / 4), "2.3 GB");
         assert_eq!(share(1, 8), "13%", "12.5 rounds up");
+    }
+
+    #[test]
+    fn sets_the_thousands_of_a_count_apart() {
+        assert_eq!(count(0), "0");
+        assert_eq!(count(999), "999");
+        assert_eq!(count(1000), "1,000");
+        assert_eq!(count(2_345_678), "2,345,678");
     }
 
     #[test]

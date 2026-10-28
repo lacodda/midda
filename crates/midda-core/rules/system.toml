@@ -1,0 +1,216 @@
+# What Windows, a browser and the reader's downloads leave behind.
+#
+# The format is dev.toml's; this file uses what that one does not need:
+#
+#   entries  folders (the default) | files | all: what the paths name
+#   older    an age - `7 days`, `2 weeks`, `3 months`, `1 year`: only an
+#            entry nothing in which was written for that long. A time the
+#            volume did not give is not old
+#   goes     whole (the default) | contents: what deleting it takes - the
+#            entry, or what is in the folder, which stays. With `older`,
+#            only what in it is that old goes
+#   hollow   only a folder with no file anywhere in it, and nothing in it
+#            the scan could not read
+#   within   only strictly inside what these consumers hold (as places.toml
+#            names them; unrecognised is inside no place) - and never a
+#            place itself
+#   except   paths, read as `paths` are, the rule never names, and that
+#            never go with a folder it empties
+#   check    what only the file can say, asked after the walk: `shortcut`
+#            (only a shortcut to nothing is the rule's) or `installer`
+#            (whether what it installs is installed here)
+#   if       on a way back, what the check says for it to be taken:
+#            `installed` (this version or a newer one is) or
+#            `older-installed`
+#
+# Nothing here is deleted by midda yet: a finding says what it is, what is
+# lost and how careful to be.
+
+# ------------------------------------------------------------------ recycle bin
+
+[[rule]]
+id = "deleted-files"
+name = "Recycle Bin"
+group = "recycle-bin"
+# One folder per account on every volume, named by the account's SID.
+paths = ["/$Recycle.Bin/S-*"]
+goes = "contents"
+# How the shell shows the bin; emptying it keeps that.
+except = ["desktop.ini"]
+
+[[rule.restore]]
+risk = "caution"
+explain = "What was deleted on this volume by one account, kept in case it is wanted back. Emptying the bin deletes it for good: look in the Recycle Bin first."
+
+# --------------------------------------------------------------------- temporary
+
+[[rule]]
+id = "old-temporary-files"
+name = "Temporary files"
+group = "temporary"
+paths = ["/Users/*/AppData/Local/Temp", "/Windows/Temp"]
+# A program that finds the temporary folder gone does not make it again.
+goes = "contents"
+# What a running program uses it has written lately; a week is what Disk
+# Cleanup waits.
+older = "7 days"
+
+[[rule.restore]]
+risk = "safe"
+explain = "What programs left in the temporary folder and nothing has written to for over a week. Programs make what they need there again."
+
+# ----------------------------------------------------------------- crash reports
+
+[[rule]]
+id = "error-reports"
+name = "Error reports"
+group = "crash-reports"
+paths = [
+  "/ProgramData/Microsoft/Windows/WER/ReportArchive",
+  "/ProgramData/Microsoft/Windows/WER/ReportQueue",
+  "/Users/*/AppData/Local/Microsoft/Windows/WER/ReportArchive",
+  "/Users/*/AppData/Local/Microsoft/Windows/WER/ReportQueue",
+]
+goes = "contents"
+
+[[rule.restore]]
+risk = "safe"
+explain = "Reports Windows wrote when a program stopped working, sent or waiting to be sent. Nothing reads them again unless that crash is being looked into."
+
+[[rule]]
+id = "crash-dumps"
+name = "Crash dumps"
+group = "crash-reports"
+paths = ["/Users/*/AppData/Local/CrashDumps", "/Windows/Minidump", "/Windows/LiveKernelReports"]
+goes = "contents"
+
+[[rule.restore]]
+risk = "safe"
+explain = "Copies of a program's or of Windows' memory, taken when it crashed. They are worth keeping only to find out why it crashed."
+
+[[rule]]
+id = "memory-dump"
+name = "Memory dump"
+group = "crash-reports"
+entries = "files"
+paths = ["/Windows/MEMORY.DMP"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "What Windows held in memory when it last stopped with an error. It is worth keeping only to find out why that happened."
+
+# --------------------------------------------------------------------- downloads
+
+[[rule]]
+id = "unfinished-download"
+name = "Unfinished download"
+group = "downloads"
+entries = "files"
+paths = [
+  "/Users/*/Downloads/*.crdownload",
+  "/Users/*/Downloads/*.part",
+  "/Users/*/Downloads/*.partial",
+  "/Users/*/Downloads/*.download",
+  "/Users/*/Downloads/*.opdownload",
+]
+# A download still going is written every second.
+older = "1 day"
+
+[[rule.restore]]
+risk = "safe"
+explain = "A download that stopped before it finished, and has not moved for a day. The browser starts it again from the beginning."
+
+[[rule]]
+id = "downloaded-installer"
+name = "Installer"
+group = "downloads"
+entries = "files"
+paths = ["/Users/*/Downloads/*.msi", "/Users/*/Downloads/*.exe"]
+check = "installer"
+
+[[rule.restore]]
+if = "installed"
+risk = "safe"
+explain = "An installer of a program that is installed here, in this version or a newer one. Its maker has it to download again when it is needed."
+
+[[rule.restore]]
+if = "older-installed"
+risk = "caution"
+explain = "An installer of a newer version than the one installed here: perhaps an update not yet run."
+
+[[rule.restore]]
+risk = "caution"
+explain = "An installer of nothing midda finds installed here - or a program run from Downloads rather than installed. Look before deleting it."
+
+[[rule]]
+id = "disc-image"
+name = "Disc image"
+group = "downloads"
+entries = "files"
+paths = ["/Users/*/Downloads/*.iso", "/Users/*/Downloads/*.img"]
+
+[[rule.restore]]
+risk = "caution"
+explain = "A disc image: once what was on it is installed or written out, it is rarely needed again, and it can usually be downloaded again."
+
+[[rule]]
+id = "old-download"
+name = "Old download"
+group = "downloads"
+entries = "all"
+paths = ["/Users/*/Downloads/*"]
+older = "3 months"
+# What the shell keeps there to show the folder by its name and icon.
+except = ["desktop.ini"]
+
+[[rule.restore]]
+risk = "caution"
+explain = "Downloaded, and nothing in it written for over three months. Most downloads can be downloaded again; only you know whether this one is still needed."
+
+# --------------------------------------------------------------------- leftovers
+
+[[rule]]
+id = "broken-shortcut"
+name = "Broken shortcut"
+group = "leftovers"
+entries = "files"
+# Among the reader's own files, wherever their Desktop and Documents are -
+# OneDrive moves them into its folder, under names in the reader's language.
+paths = ["*.lnk"]
+within = ["documents", "media", "unrecognised"]
+check = "shortcut"
+
+[[rule.restore]]
+risk = "safe"
+explain = "A shortcut to something that is not there any more - usually a program that was uninstalled. Nothing is lost with it; a new shortcut takes a moment if the target only moved."
+
+[[rule]]
+id = "broken-menu-shortcut"
+name = "Broken shortcut"
+group = "leftovers"
+entries = "files"
+paths = ["/Users/*/AppData/Roaming/Microsoft/Windows/Start Menu/**/*.lnk", "/ProgramData/Microsoft/Windows/Start Menu/**/*.lnk"]
+check = "shortcut"
+
+[[rule.restore]]
+risk = "safe"
+explain = "A Start menu shortcut to something that is not there any more - usually a program that was uninstalled. Nothing is lost with it."
+
+# Last: a folder another rule names is that rule's, empty or not.
+[[rule]]
+id = "empty-folder"
+name = "Empty folder"
+group = "leftovers"
+paths = ["*"]
+hollow = true
+# Among the reader's own files: a program's empty folder in AppData or
+# Program Files may be one it expects to find.
+within = ["documents", "media", "unrecognised"]
+# The folders at the top of OneDrive: where it moves the Desktop, Documents
+# and Pictures, under whatever names they have, and where an empty one is
+# still the place a program saves to.
+except = ["/Users/*/OneDrive/*", "/Users/*/OneDrive - */*"]
+
+[[rule.restore]]
+risk = "caution"
+explain = "Holds nothing, so deleting it gives back no space - only tidiness. A program that made it may still expect it to be there."
