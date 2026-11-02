@@ -2,3 +2,11 @@
 # what has fallen behind it: a gate run against older packages than the lock
 # names passes for something other than what ships.
 verifyDepsBeforeRun: install
+
+# minimatch below 11.0.1 can be made to take exponential time by a glob
+# pattern (GHSA-g3hv-75wg-m249), and eslint - pulled into the shipped
+# dependencies by dowel-ui's lint plugin - asks for ^10, which has no fix.
+# 11 is 10 with Node 18 dropped; the lint over this repository is what shows
+# eslint works with it.
+overrides:
+  minimatch@<11.0.1: ^11.0.4
