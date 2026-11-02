@@ -87,6 +87,18 @@
 //! reads, away from the tree. See
 //! `docs/adr/0016-what-windows-and-downloads-leave-behind.md`.
 //!
+//! # The age of the layers
+//!
+//! A disk lies in layers. [`layers`] says how old they are - a folder's bytes
+//! by the age of each file - and which have turned to stone: the largest
+//! folders and files nothing has written to for a year, each inside no
+//! larger one, adding up to the old bands. One measure of age serves them and
+//! the rules' `older`. A fossil kept rather than deleted can be compressed in
+//! place ([`compress`]): NTFS compression, with what compresses already or
+//! must not be compressed left as it is, and Windows' own files not offered.
+//! When a file was last opened is read beside the age, where the volume keeps
+//! it. See `docs/adr/0017-the-age-of-the-layers.md`.
+//!
 //! # What fills the disk
 //!
 //! "C: is full" asks why. [`consumers`] gives every byte to one consumer -

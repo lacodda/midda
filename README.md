@@ -23,6 +23,8 @@ The name comes from *midden* — the archaeological refuse layer. A disk is stra
 
 **Domain knowledge.** Not "here are big folders" but "here are 40 GB that a build regenerates": `node_modules`, `target/`, `.next`, `dist`, `__pycache__`, `.gradle` and the npm, pnpm, cargo, pip and Gradle caches. Every finding explains itself — what brings it back, what is lost, how careful to be — and counts what deleting it really gives back: a `node_modules` linked from pnpm's store frees almost nothing, and says so. A cache is cleaned by its own tool, once the tool confirms it is the cache found.
 
+**The age of the layers.** How old the bytes on a disk are, in bands from this month to over five years, and the fossils: the largest folders nothing has written to in a year, each named whole when nothing in it moved. Where Windows keeps it, each says when a file in it was last opened. A fossil worth keeping is compressed in place - NTFS compression, files where they are, undone in Explorer - and midda measures what came back.
+
 **What Windows leaves behind.** The Recycle Bin, what nothing has written to in a temporary folder for a week, crash reports and memory dumps, unfinished and old downloads, disc images, installers of programs already installed, empty folders and shortcuts to nothing - each with what is lost and how careful to be. An installer is checked against what Windows says is installed; a shortcut is read to see whether its target is still there.
 
 ## Privileges
@@ -33,7 +35,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.13.0. A volume as a table and a treemap, kept current; why it is full and what grew; what a tool makes again, and what Windows and downloads leave behind; virtual disks read inside, with what compacting gives back. The formats of the index and the rules may change before 1.0 - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.14.0. A volume as a table and a treemap, kept current; why it is full and what grew; how old its layers are, and the fossils compressed in place; what a tool makes again, and what Windows and downloads leave behind; virtual disks read inside, with what compacting gives back. The formats of the index and the rules may change before 1.0 - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
