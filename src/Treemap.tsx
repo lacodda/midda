@@ -92,7 +92,15 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
     const element = frame.current
     if (!element) return
 
-    const measure = () => setSize({ width: element.clientWidth, height: element.clientHeight })
+    // The box inside the frame's padding, which is where the canvas sits: the
+    // client size counts the padding too, and a canvas that size ran past the
+    // window's edge by it (found on screen, v0.14).
+    const measure = () => {
+      const style = getComputedStyle(element)
+      const across = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight)
+      const down = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom)
+      setSize({ width: Math.max(0, element.clientWidth - across), height: Math.max(0, element.clientHeight - down) })
+    }
     measure()
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(measure)

@@ -99,15 +99,16 @@ body {
  * Mixed from dowel's own tokens with the ground rather than written as hexes,
  * so each band is the right colour in both themes, and each stays a step the
  * eye tells apart from the next. Every band is a mix with the ground of at
- * most a little over half, which is what keeps the picture's labels - in
- * `--text` on every band - readable in both: light on a dark ground, dark on
- * a light one. Opaque, as a canvas fill has to be. */
+ * most half, which is what keeps the picture's labels - in `--text` on every
+ * band - readable in both: measured 2026-11-02, the oldest band 4.7:1 on the
+ * dark ground and 6:1 on the light one, the freshest 5:1 and 5.2:1. Opaque,
+ * as a canvas fill has to be. */
 :root {
-  --stratum-month: color-mix(in oklab, var(--accent) 60%, var(--bg));
-  --stratum-half-year: color-mix(in oklab, var(--accent) 38%, var(--bg));
-  --stratum-year: color-mix(in oklab, var(--accent) 20%, var(--bg));
-  --stratum-two-years: color-mix(in oklab, var(--warn) 28%, var(--bg));
-  --stratum-five-years: color-mix(in oklab, var(--warn) 42%, var(--bg));
-  --stratum-older: color-mix(in oklab, var(--warn) 56%, var(--bg));
+  --stratum-month: color-mix(in oklab, var(--accent) 56%, var(--bg));
+  --stratum-half-year: color-mix(in oklab, var(--accent) 36%, var(--bg));
+  --stratum-year: color-mix(in oklab, var(--accent) 18%, var(--bg));
+  --stratum-two-years: color-mix(in oklab, var(--warn) 26%, var(--bg));
+  --stratum-five-years: color-mix(in oklab, var(--warn) 38%, var(--bg));
+  --stratum-older: color-mix(in oklab, var(--warn) 50%, var(--bg));
   --stratum-undated: var(--raise);
 }
