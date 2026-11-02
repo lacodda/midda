@@ -136,6 +136,19 @@ fn an_age_is_what_nothing_in_an_entry_was_written_for() {
 }
 
 #[test]
+fn an_age_reached_to_the_day_is_old_enough() {
+    // The rules' `older` and the strata's fossils are one measure
+    // (`layers::untouched`); the edge is where it says.
+    let rules = RuleSet::parse(
+        "[[rule]]\nid = \"w\"\nname = \"w\"\ngroup = \"temporary\"\nentries = \"files\"\nolder = \"7 days\"\npaths = [\"/Scratch/*\"]\n\
+         [[rule.restore]]\nrisk = \"safe\"\nexplain = \"Old.\"\n",
+    )
+    .expect("the rule reads");
+    let tree = volume(&[("Scratch/", 0, Some(1)), ("Scratch/six.tmp", 10, Some(6)), ("Scratch/week.tmp", 10, Some(7))]);
+    let findings = rules.survey_at(&tree, now()).findings;
+    assert_eq!(said(&rules, &tree, &findings), ["w Scratch/week.tmp"]);
+}
+#[test]
 fn a_temporary_folder_is_emptied_of_what_is_old_and_stays() {
     let tree = volume(&[
         ("Users/", 0, Some(1)),

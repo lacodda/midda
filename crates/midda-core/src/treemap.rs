@@ -24,10 +24,12 @@
 //! silently dropped them would not add up to the folder it claims to show.
 
 use std::collections::HashSet;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
 use crate::consumers::Consumer;
+use crate::layers::Stratum;
 use crate::rules::RuleSet;
 use crate::rules::pattern::Outer;
 use crate::size::SizeBasis;
@@ -93,6 +95,12 @@ pub struct Tile {
     pub is_directory: bool,
     /// What kind of thing this is, for the colour.
     pub category: Category,
+    /// How long nothing in it has been written, as a band of the strata
+    /// ([`crate::layers`]): what the picture is coloured by when it is asked
+    /// how old the layers are, and what marks a fossil. `None` for the tile
+    /// that gathers the rest, which is many ages, and in a picture of two
+    /// moments, which is of what moved.
+    pub stratum: Option<Stratum>,
     /// How many entries this tile stands for. One for a file, the subtree count
     /// for a directory, and the number gathered for the remainder tile.
     pub entries: u64,
@@ -243,22 +251,24 @@ pub const MAX_TILES: usize = 1000;
 /// children are all tiny gets one tile rather than a hundred thousand.
 ///
 /// Each tile is coloured by what `rules` say of it, `units` being the
-/// folders they found or closed in `tree` ([`Category::of`]).
+/// folders they found or closed in `tree` ([`Category::of`]), and carries how
+/// old it is as of `now` ([`Stratum::of_node`]).
 #[must_use]
-pub fn tiles(tree: &Tree, id: NodeId, layout: Layout, rules: &RuleSet, units: &HashSet<NodeId>) -> Vec<Tile> {
+pub fn tiles(tree: &Tree, id: NodeId, layout: Layout, rules: &RuleSet, units: &HashSet<NodeId>, now: SystemTime) -> Vec<Tile> {
     weighted(
         tree,
         id,
         layout,
         |child| bytes_of(tree, child, layout.basis),
         |child| Category::of(tree, child, rules, units),
+        |child| Some(Stratum::of_node(tree.node(child), now)),
         |_| None,
     )
 }
 
 /// The rectangles for the children of `id`, each as large as `weight` says,
-/// coloured as `category` says, and each carrying what `change` says it held
-/// at two moments.
+/// coloured as `category` says, as old as `stratum` says, and each carrying
+/// what `change` says it held at two moments.
 ///
 /// [`tiles`] is this with a node's own size for the weight. A comparison
 /// draws the same picture of a different quantity — how many bytes changed
@@ -270,6 +280,7 @@ pub(crate) fn weighted(
     layout: Layout,
     weight: impl Fn(NodeId) -> u64,
     category: impl Fn(NodeId) -> Category,
+    stratum: impl Fn(NodeId) -> Option<Stratum>,
     change: impl Fn(NodeId) -> Option<Delta>,
 ) -> Vec<Tile> {
     let mut weighted: Vec<(NodeId, u64)> = tree
@@ -340,6 +351,7 @@ pub(crate) fn weighted(
                 rect,
                 is_directory: node.is_directory(),
                 category: category(child),
+                stratum: stratum(child),
                 entries: node.entries,
                 path: tree.path_of(child).to_string_lossy().into_owned(),
                 change: change(child),
@@ -364,6 +376,7 @@ pub(crate) fn weighted(
             rect,
             is_directory: false,
             category: Category::Other,
+            stratum: None,
             entries: count,
             path: String::new(),
             change,
@@ -582,7 +595,46 @@ mod tests {
     /// The picture of `id`'s children, coloured by the shipped rules.
     fn tiles(tree: &Tree, id: NodeId, layout: Layout) -> Vec<Tile> {
         let rules = RuleSet::shipped();
-        super::tiles(tree, id, layout, rules, &rules.units(tree))
+        super::tiles(tree, id, layout, rules, &rules.units(tree), SystemTime::now())
+    }
+
+    #[test]
+    fn a_tile_says_how_old_its_layer_is_and_the_gathered_one_does_not() {
+        use std::time::Duration;
+
+        use crate::layers::Stratum;
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000);
+        let year = Duration::from_secs(365 * 24 * 60 * 60);
+        let mut tree = Tree::new(PathBuf::from("C:/scan"), None);
+        let old = tree.push(
+            ROOT,
+            Node {
+                subtree_modified: Some(now - 3 * year),
+                ..node("old.bin", ROOT, Kind::File, 1000)
+            },
+        );
+        tree.push(
+            ROOT,
+            Node {
+                subtree_modified: Some(now),
+                ..node("new.bin", ROOT, Kind::File, 900)
+            },
+        );
+        tree.push(ROOT, node("speck.bin", ROOT, Kind::File, 1));
+        tree.roll_up();
+        let rules = RuleSet::shipped();
+        let layout = Layout {
+            min_area: 0.01,
+            ..Layout::default()
+        };
+        let tiles = super::tiles(&tree, ROOT, layout, rules, &rules.units(&tree), now);
+        assert_eq!(tiles[0].id, Some(old));
+        assert_eq!(tiles[0].stratum, Some(Stratum::FiveYears));
+        assert_eq!(tiles[1].stratum, Some(Stratum::Month));
+        let gathered = tiles.last().expect("the speck is gathered");
+        assert_eq!(gathered.id, None);
+        assert_eq!(gathered.stratum, None, "the rest is many ages, and claims none");
     }
 
     fn node(name: &str, parent: NodeId, kind: Kind, allocated: u64) -> Node {

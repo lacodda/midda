@@ -185,6 +185,8 @@ impl Comparison {
             |child| basis.of(self.moved(child)),
             // A comparison is coloured by which way each tile went.
             |_| treemap::Category::Other,
+            // What moved has no age: it moved.
+            |_| None,
             |child| {
                 Some(Delta {
                     before: basis.of(self.before(child)),

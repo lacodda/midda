@@ -111,10 +111,12 @@
 
 pub mod checks;
 pub mod compare;
+pub mod compress;
 pub mod consumers;
 pub mod error;
 pub mod fresh;
 pub mod growth;
+pub mod layers;
 pub mod links;
 pub mod mft;
 pub mod order;

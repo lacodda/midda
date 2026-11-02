@@ -286,13 +286,11 @@ impl Rule {
 
     /// Whether `id` is old enough: nothing in it written since `older`
     /// before `now`. Always, when the rule says no age; never, when the
-    /// volume gave no time.
+    /// volume gave no time. The age is the one the strata and the fossils are
+    /// measured by ([`crate::layers::untouched`]).
     fn old_enough(&self, tree: &Tree, id: NodeId, now: SystemTime) -> bool {
-        self.older.is_none_or(|older| {
-            tree.node(id)
-                .subtree_modified
-                .is_some_and(|written| now.duration_since(written).is_ok_and(|age| age >= older))
-        })
+        self.older
+            .is_none_or(|older| crate::layers::untouched(tree.node(id), now).is_some_and(|age| age >= older))
     }
 
     /// Whether `id` goes when the rule empties the folder it is in: not one
