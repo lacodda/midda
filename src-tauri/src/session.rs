@@ -2165,6 +2165,7 @@ fn compress_in(shared: &RwLock<State>, found: &Mutex<Option<Found>>, arena: u64,
             return Err(match why {
                 Why::Volume(why) => why,
                 Why::Windows => "Windows' own files are left as Windows keeps them".to_owned(),
+                Why::Compressed => "it is compressed already".to_owned(),
                 Why::Nothing => "nothing in it would compress".to_owned(),
             });
         }
@@ -3197,7 +3198,7 @@ mod tests {
         // in it left to compress.
         let summary = layers_of(&shared, &nothing_found(), 0, SizeBasis::Allocated, 10, SystemTime::now()).expect("the layers");
         assert_eq!(summary.fossils.len(), 1);
-        assert_eq!(summary.fossils[0].not_compressed, Some(Why::Nothing));
+        assert_eq!(summary.fossils[0].not_compressed, Some(Why::Compressed));
         // Read again whole, the folder is a new entry of the tree: the window
         // finds it again by its path, as after a cleanup.
         assert_eq!(compress_in(&shared, &found, 0, cold).expect_err("the old id"), "stale");
@@ -3205,9 +3206,6 @@ mod tests {
             let state = shared.read().expect("read");
             state.index.as_ref().expect("an index").tree().child(ROOT, "cold").expect("cold")
         };
-        assert_eq!(
-            compress_in(&shared, &found, 0, again).expect_err("nothing left"),
-            "nothing in it would compress"
-        );
+        assert_eq!(compress_in(&shared, &found, 0, again).expect_err("nothing left"), "it is compressed already");
     }
 }

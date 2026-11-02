@@ -805,7 +805,7 @@ export interface Layer {
 }
 
 /** Why an entry is not offered for compression. Mirrors `Why`. */
-export type NotCompressed = { why: 'volume'; detail: string } | { why: 'windows' } | { why: 'nothing' }
+export type NotCompressed = { why: 'volume'; detail: string } | { why: 'windows' } | { why: 'compressed' } | { why: 'nothing' }
 
 /** One fossil. Mirrors `FossilRow`. */
 export interface FossilRow {

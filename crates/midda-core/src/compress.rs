@@ -111,9 +111,10 @@ const VIRTUAL_DISKS: &[&str] = &["vhd", "vhdx", "avhd", "avhdx"];
 /// whose contents are compressed by definition are here: not PDF, not TIFF,
 /// not a raw photo, which often are not.
 const PACKED: &[&str] = &[
-    // Archives and packages.
-    "7z", "apk", "appx", "br", "bz2", "cab", "crx", "gz", "jar", "lz", "lz4", "lzma", "msix", "nupkg", "rar", "tbz2", "tgz", "txz", "whl", "xz", "zip", "zst",
-    // Office files and books, which are zip archives.
+    // Archives and packages, git's packs among them: every object in a pack
+    // is deflated.
+    "7z", "apk", "appx", "br", "bz2", "cab", "crx", "gz", "jar", "lz", "lz4", "lzma", "msix", "nupkg", "pack", "rar", "tbz2", "tgz", "txz", "whl", "xz", "zip",
+    "zst", // Office files and books, which are zip archives.
     "docx", "epub", "odp", "ods", "odt", "pptx", "xlsx", // Images.
     "avif", "gif", "heic", "heif", "jpeg", "jpg", "jxl", "png", "webp", // Audio.
     "aac", "flac", "m4a", "mp3", "ogg", "opus", "wma", // Video.
@@ -168,8 +169,12 @@ pub enum Why {
     Volume(String),
     /// Windows' own files are in it.
     Windows,
-    /// Nothing in it would compress: it is compressed already, or made of
-    /// formats that are.
+    /// It is compressed already: what in it would compress, is.
+    Compressed,
+    /// Nothing in it would compress: formats compressed by themselves, a
+    /// virtual disk, files in the cloud - and none of it compressed. Not the
+    /// same as `Compressed`, which a reader is glad to be told; this one they
+    /// would be misled by.
     Nothing,
 }
 
@@ -183,6 +188,7 @@ pub fn verdict(tree: &Tree, id: NodeId, classified: &Classified, volume: Option<
         return Verdict::Not(Why::Volume(refusal.to_owned()));
     }
     let mut reads = Size::zero();
+    let mut compressed = false;
     let mut stack = vec![id];
     while let Some(at) = stack.pop() {
         if classified.of(at) == Some(Consumer::System) {
@@ -191,14 +197,20 @@ pub fn verdict(tree: &Tree, id: NodeId, classified: &Classified, volume: Option<
         let node = tree.node(at);
         if node.is_directory() {
             stack.extend_from_slice(&node.children);
-        } else if left_as_is(&node.name, node.traits).is_none() {
-            reads.add(node.size);
+            continue;
+        }
+        match left_as_is(&node.name, node.traits) {
+            None => reads.add(node.size),
+            Some(Left::Compressed) => compressed = true,
+            Some(_) => {}
         }
     }
-    if reads.allocated == 0 {
-        Verdict::Not(Why::Nothing)
-    } else {
+    if reads.allocated > 0 {
         Verdict::Can { reads }
+    } else if compressed {
+        Verdict::Not(Why::Compressed)
+    } else {
+        Verdict::Not(Why::Nothing)
     }
 }
 
@@ -605,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_of_what_is_compressed_already_offers_nothing() {
+    fn a_folder_with_nothing_left_to_compress_says_whether_it_is_compressed_or_never_would_be() {
         let mut tree = Tree::new(PathBuf::from("C:/scan"), Some(4096));
         let photos = tree.push(ROOT, Node::new("photos".into(), ROOT, Kind::Directory));
         tree.push(
@@ -615,9 +627,37 @@ mod tests {
                 ..Node::new("IMG_1.jpg".into(), photos, Kind::File)
             },
         );
+        let vm = tree.push(ROOT, Node::new("vm".into(), ROOT, Kind::Directory));
+        tree.push(
+            vm,
+            Node {
+                size: Size::flat(9000),
+                ..Node::new("old.vhdx".into(), vm, Kind::File)
+            },
+        );
+        let done = tree.push(ROOT, Node::new("done".into(), ROOT, Kind::Directory));
+        tree.push(
+            done,
+            Node {
+                size: Size::flat(500),
+                traits: Traits::COMPRESSED,
+                ..Node::new("notes.txt".into(), done, Kind::File)
+            },
+        );
+        tree.push(
+            done,
+            Node {
+                size: Size::flat(9000),
+                ..Node::new("IMG_2.jpg".into(), done, Kind::File)
+            },
+        );
         tree.roll_up();
         let classified = classified(&tree);
         assert_eq!(verdict(&tree, photos, &classified, None), Verdict::Not(Why::Nothing));
+        // A virtual disk is not compressed, and is not to be called so: seen
+        // on screen as a "compressed" badge on a folder holding one VHDX.
+        assert_eq!(verdict(&tree, vm, &classified, None), Verdict::Not(Why::Nothing));
+        assert_eq!(verdict(&tree, done, &classified, None), Verdict::Not(Why::Compressed));
     }
 
     #[cfg(windows)]

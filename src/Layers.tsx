@@ -142,7 +142,7 @@ export function Layers({ arena, version, basis, root, compressing, onOpen }: Lay
                 value={formatBytes(old)}
                 delta={`${formatShare(old, total)} of the folder, in ${formatCount(summary.count)} ${summary.count === 1 ? 'fossil' : 'fossils'}`}
               />
-              <StatTile label="Over five years" value={formatBytes(older)} delta={`${formatShare(older, total)} of the folder`} />
+              <StatTile label="Over five years" value={formatBytes(older)} delta={older > 0 ? `${formatShare(older, total)} of the folder` : 'nothing here is that old'} />
               <StatTile
                 label="Compression works on"
                 value={formatBytes(compresses)}
@@ -277,7 +277,6 @@ function Fossil({ fossil, basis, root, accessKept, busy, onOpen, onCompress }: F
             onClick={() => onOpen(fossil.id)}
           >
             {relativeTo(root, fossil.path)}
-            {fossil.isDirectory && '/'}
           </Button>
           {/* A tool makes it again: deleting it is the better answer, and the
               page of what can go says how. Said in words, not only colour. */}
@@ -286,10 +285,10 @@ function Fossil({ fossil, basis, root, accessKept, busy, onOpen, onCompress }: F
               {fossil.finding}
             </Badge>
           )}
-          {fossil.notCompressed?.why === 'nothing' && <Badge variant="soft">compressed</Badge>}
+          {fossil.notCompressed?.why === 'compressed' && <Badge variant="soft">compressed</Badge>}
         </div>
         <p className="mt-0.5 text-xs text-dim">
-          {[written, opened, fossil.isDirectory ? `${formatCount(fossil.entries - 1)} entries` : null]
+          {[written, opened, fossil.isDirectory ? `${formatCount(fossil.entries - 1)} ${fossil.entries - 1 === 1 ? 'entry' : 'entries'}` : null]
             .filter((part) => part !== null)
             .join(' · ')}
         </p>
@@ -306,12 +305,21 @@ function Fossil({ fossil, basis, root, accessKept, busy, onOpen, onCompress }: F
         </Button>
       ) : (
         <span className="pt-1 text-right text-xs text-faint" title={why ?? undefined}>
-          {why === null ? '' : fossil.notCompressed?.why === 'windows' ? 'Windows’ own' : fossil.notCompressed?.why === 'nothing' ? '' : 'not here'}
+          {fossil.notCompressed === null ? '' : NOT_COMPRESSED_WORDS[fossil.notCompressed.why]}
         </span>
       )}
     </li>
   )
 }
+
+/** Why a fossil is not offered for compression, in a word or two where the
+ * button would be. The whole reason is the tooltip. */
+const NOT_COMPRESSED_WORDS = {
+  volume: 'not on this volume',
+  windows: 'Windows’ own',
+  compressed: '',
+  nothing: 'nothing compresses',
+} as const
 
 /** Why a fossil is not offered for compression, in a sentence. */
 function whyNot(not: NotCompressed | null): string | null {
@@ -321,8 +329,10 @@ function whyNot(not: NotCompressed | null): string | null {
       return `Not compressed: ${not.detail}.`
     case 'windows':
       return 'Windows’ own files are left as Windows keeps them: a boot driver compressed is a machine that does not start. Windows compresses itself with compact /compactos.'
+    case 'compressed':
+      return 'It is compressed already.'
     case 'nothing':
-      return 'Nothing in it would compress: it is compressed already, or made of formats that are.'
+      return 'Nothing in it would compress: photos, video and archives compress by their format, and virtual disks are left as WSL and Hyper-V need them.'
   }
 }
 
