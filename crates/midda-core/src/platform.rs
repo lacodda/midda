@@ -168,7 +168,8 @@ fn overlay_of(path: &Path, size: Size, traits: Traits) -> Traits {
 }
 
 /// Whether the Windows Overlay Filter keeps the file at `path`: `compact
-/// /exe`, CompactOS.
+/// /exe`, CompactOS. Asked by the compression, which is Windows' alone.
+#[cfg(windows)]
 pub(crate) fn overlaid(path: &Path) -> bool {
     imp::overlaid(path)
 }
