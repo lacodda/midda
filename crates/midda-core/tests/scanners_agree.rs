@@ -117,7 +117,27 @@ fn fixture(base: &Path) -> PathBuf {
         .and_then(|file| file.set_len(1 << 20))
         .expect("extend the sparse file");
 
+    // Opened long after it was written: the two times are two facts, and
+    // both scanners read the second where the volume keeps it.
+    let read_later = root.join("opened.bin");
+    write(&read_later, 3000);
+    fs::File::options()
+        .write(true)
+        .open(&read_later)
+        .and_then(|file| file.set_times(fs::FileTimes::new().set_modified(written()).set_accessed(opened())))
+        .expect("set the times");
+
     root
+}
+
+/// When the fixture's `opened.bin` was written.
+fn written() -> std::time::SystemTime {
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000)
+}
+
+/// When it was opened.
+fn opened() -> std::time::SystemTime {
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)
 }
 
 fn node<'t>(tree: &'t Tree, path: &str) -> &'t midda_core::Node {
@@ -163,6 +183,17 @@ fn the_walk_and_the_mft_read_the_same_tree() {
         overlaid.allocated > 0 && overlaid.allocated < overlaid.logical,
         "an overlaid file occupies its compressed stream: {overlaid:?}"
     );
+    assert!(
+        node(&read, "overlaid.bin").traits.has(Traits::COMPRESSED),
+        "and says why: the filter keeps it compressed"
+    );
+    assert_eq!(node(&read, "opened.bin").modified, Some(written()));
+    if read.access_kept() {
+        assert_eq!(node(&read, "opened.bin").accessed, Some(opened()), "opened, as the volume keeps it");
+        assert!(node(&read, "project").accessed.is_some(), "a folder is as recently opened as its files");
+    } else {
+        assert_eq!(node(&read, "opened.bin").accessed, None, "a volume that keeps no access time has none to say");
+    }
 
     assert_same(&walked, &read);
 }

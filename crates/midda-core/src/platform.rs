@@ -72,6 +72,10 @@ pub struct Measured {
     pub identity: Option<FileIdentity>,
     /// When the file was last written, as the file itself says.
     pub modified: Option<SystemTime>,
+    /// When the file was last opened for its contents, as the file itself
+    /// says - whether or not the volume keeps that up to date, which is the
+    /// caller's to ask ([`access_times_kept`]).
+    pub accessed: Option<SystemTime>,
 }
 
 /// What makes a file the same file, whatever it is called.
@@ -112,6 +116,7 @@ pub fn measure(path: &Path, metadata: &Metadata, cluster_bytes: u64) -> Measured
             links: None,
             identity: None,
             modified: metadata.modified().ok(),
+            accessed: metadata.accessed().ok().filter(|&time| time != unset_filetime()),
         };
     };
 
@@ -121,12 +126,13 @@ pub fn measure(path: &Path, metadata: &Metadata, cluster_bytes: u64) -> Measured
     // to date: the other names go on reporting the old length until something
     // opens them. The handle answers from the file itself.
     let logical = opened.logical.unwrap_or(logical);
+    let size = Size {
+        logical,
+        allocated: opened.allocated.unwrap_or_else(|| round_up_to_cluster(logical, cluster_bytes)),
+    };
     Measured {
-        size: Size {
-            logical,
-            allocated: opened.allocated.unwrap_or_else(|| round_up_to_cluster(logical, cluster_bytes)),
-        },
-        traits,
+        size,
+        traits: traits.with(overlay_of(path, size, traits)),
         links: opened.links,
         identity: opened.identity,
         // Like the length, the write time is the file's own rather than the
@@ -135,6 +141,94 @@ pub fn measure(path: &Path, metadata: &Metadata, cluster_bytes: u64) -> Measured
         // Measured in CI, 2026-09-23: a directory's entry two milliseconds
         // behind the directory.
         modified: opened.modified.or_else(|| metadata.modified().ok()),
+        accessed: opened.accessed,
+    }
+}
+
+/// What the Windows Overlay Filter adds to a file's traits: `COMPRESSED`
+/// when it keeps the file compressed, nothing otherwise.
+///
+/// `compact /exe` and a CompactOS system volume store a file's bytes
+/// compressed in a stream of their own, and the filter hides every bit that
+/// would say so: the file reads as plain and occupies a fraction of its
+/// size, which without a word is a number that looks wrong. The filter is
+/// asked only of a file that occupies less than it reads and that nothing
+/// else explains: asked of every file, it is a second call per file across a
+/// system volume to learn nothing - and a file the filter keeps always
+/// occupies less, since the filter refuses to compress what saves no cluster
+/// (`ERROR_COMPRESSION_NOT_BENEFICIAL`). The MFT reader says the same of the
+/// same files by the same test ([`crate::mft::Record::traits`]).
+fn overlay_of(path: &Path, size: Size, traits: Traits) -> Traits {
+    let explained = traits.has(Traits::COMPRESSED) || traits.has(Traits::SPARSE) || traits.has(Traits::PLACEHOLDER);
+    if size.allocated < size.logical && !explained && imp::overlaid(path) {
+        Traits::COMPRESSED
+    } else {
+        Traits::none()
+    }
+}
+
+/// Whether the Windows Overlay Filter keeps the file at `path`: `compact
+/// /exe`, CompactOS.
+pub(crate) fn overlaid(path: &Path) -> bool {
+    imp::overlaid(path)
+}
+
+/// A setting of Windows' filesystems, under
+/// `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`, when it is there.
+#[cfg(windows)]
+pub(crate) fn filesystem_setting(name: &str) -> Option<u32> {
+    imp::setting(name)
+}
+
+/// The time a `FILETIME` of zero reads as: 1601-01-01, which a volume
+/// reports for a time it does not keep. Never a time a file was opened.
+fn unset_filetime() -> SystemTime {
+    filetime_to_system_time(0).unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// Whether the volume `path` is on keeps the time each file was last opened
+/// up to date.
+///
+/// Windows can stop doing so, and on most machines it has: NTFS keeps the
+/// last access time only while `NtfsDisableLastAccessUpdate` says so - since
+/// Windows 10 1803 the system decides, and decides "no" for a system volume
+/// larger than 128 GB - and ReFS only while `RefsDisableLastAccessUpdate` is
+/// zero, which by default it is not. A volume that does not keep it still
+/// answers the question, with the moment the file was made or whatever an
+/// installer set, and an answer that looks like "opened in 2019" and means
+/// nothing is worse than none. So a time a file was opened is read only where
+/// this says yes; everywhere else, and wherever the setting cannot be read,
+/// there is none. FAT and exFAT keep a date at most, and are not asked.
+#[must_use]
+pub fn access_times_kept(path: &Path) -> bool {
+    imp::access_times_kept(path)
+}
+
+/// Keeps the time the file at `path` was last opened as it is now, while
+/// midda reads it.
+///
+/// midda reads a few files for what they say - a shortcut's target, an
+/// installer's product, a virtual disk's contents - and a read is an
+/// opening, which on a volume that keeps access times makes the file look
+/// opened today. Every launch would then report every shortcut and installer
+/// as just used. The guard reads the time first and puts it back when it is
+/// dropped. Where the file cannot be opened to write its times - another
+/// account's file, a read-only share - it does nothing, and the read may
+/// move the time as any other program's would.
+#[must_use]
+pub fn keeping_access_time(path: &Path) -> AccessKept {
+    AccessKept(imp::hold_access_time(path))
+}
+
+/// A file's last access time, held to be put back. See
+/// [`keeping_access_time`].
+pub struct AccessKept(Option<imp::Held>);
+
+impl Drop for AccessKept {
+    fn drop(&mut self) {
+        if let Some(held) = self.0.take() {
+            imp::restore_access_time(&held);
+        }
     }
 }
 
@@ -325,6 +419,7 @@ struct Opened {
     links: Option<u32>,
     identity: Option<FileIdentity>,
     modified: Option<SystemTime>,
+    accessed: Option<SystemTime>,
 }
 
 /// The cluster size of the volume `path` sits on, when it can be determined.
@@ -469,17 +564,20 @@ mod imp {
             )
         };
 
+        let (modified, accessed) = times(&handle);
         Some(Opened {
             logical,
             allocated,
             links,
             identity: identity(&handle),
-            modified: last_written(&handle),
+            modified,
+            accessed,
         })
     }
 
-    /// The write time `FILE_BASIC_INFO` reports through an open handle.
-    fn last_written(handle: &Handle) -> Option<std::time::SystemTime> {
+    /// What `FILE_BASIC_INFO` reports through an open handle, as raw
+    /// `FILETIME`s: `None` when the handle would not say.
+    fn basic(handle: &Handle) -> Option<FILE_BASIC_INFO> {
         let mut basic = FILE_BASIC_INFO {
             CreationTime: 0,
             LastAccessTime: 0,
@@ -489,7 +587,7 @@ mod imp {
         };
         // SAFETY: `handle` is open for the call, `basic` is a valid writable
         // `FILE_BASIC_INFO` and its own size is passed.
-        #[allow(unsafe_code, reason = "a file's own write time needs a handle query std does not expose")]
+        #[allow(unsafe_code, reason = "a file's own times need a handle query std does not expose")]
         let ok = unsafe {
             GetFileInformationByHandleEx(
                 handle.0,
@@ -498,10 +596,19 @@ mod imp {
                 u32::try_from(size_of::<FILE_BASIC_INFO>()).ok()?,
             )
         };
-        if ok == 0 {
-            return None;
-        }
-        super::filetime_to_system_time(u64::try_from(basic.LastWriteTime).ok()?)
+        (ok != 0).then_some(basic)
+    }
+
+    /// The write time and the last access time `FILE_BASIC_INFO` reports
+    /// through an open handle - one query for both. An access time of zero
+    /// is a volume that does not keep one, not a file opened in 1601.
+    fn times(handle: &Handle) -> (Option<std::time::SystemTime>, Option<std::time::SystemTime>) {
+        let Some(basic) = basic(handle) else {
+            return (None, None);
+        };
+        let time = |filetime: i64| u64::try_from(filetime).ok().and_then(super::filetime_to_system_time);
+        let accessed = if basic.LastAccessTime == 0 { None } else { time(basic.LastAccessTime) };
+        (time(basic.LastWriteTime), accessed)
     }
 
     /// The identity `FILE_ID_INFO` reports through an open handle.
@@ -555,9 +662,123 @@ mod imp {
         }
         let handle = Handle(handle);
         super::Own {
-            modified: last_written(&handle),
+            modified: times(&handle).0,
             identity: identity(&handle),
         }
+    }
+
+    pub(super) fn overlaid(path: &Path) -> bool {
+        use windows_sys::Win32::Storage::FileSystem::WofIsExternalFile;
+
+        let wide = wide(path);
+        let mut external: windows_sys::core::BOOL = 0;
+        // SAFETY: `wide` is NUL-terminated and outlives the call; `external`
+        // is a valid writable BOOL, and the three null pointers are the
+        // documented "not asked for" for the provider and its details.
+        #[allow(unsafe_code, reason = "whether the overlay filter keeps a file is not exposed by std")]
+        let result = unsafe {
+            WofIsExternalFile(
+                wide.as_ptr(),
+                &raw mut external,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        result >= 0 && external != 0
+    }
+
+    /// A file opened to put its access time back, and the time.
+    pub(super) struct Held {
+        handle: Handle,
+        accessed: i64,
+    }
+
+    pub(super) fn hold_access_time(path: &Path) -> Option<Held> {
+        use windows_sys::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES};
+
+        let wide = wide(path);
+        // SAFETY: as in `open_for_metadata`; the access asked is only the
+        // attributes, which is what reading and writing a time needs.
+        #[allow(unsafe_code, reason = "putting a time back needs a handle std will not open")]
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let handle = Handle(handle);
+        let accessed = basic(&handle)?.LastAccessTime;
+        // Zero is a volume that keeps no time: there is nothing to put back.
+        (accessed != 0).then_some(Held { handle, accessed })
+    }
+
+    pub(super) fn restore_access_time(held: &Held) {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::Storage::FileSystem::SetFileTime;
+
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "a FILETIME is the i64 split into halves")]
+        let time = FILETIME {
+            dwLowDateTime: held.accessed as u32,
+            dwHighDateTime: (held.accessed >> 32) as u32,
+        };
+        // SAFETY: the handle is open with the right to write attributes;
+        // `time` outlives the call, and the null pointers leave the other two
+        // times as they are.
+        #[allow(unsafe_code, reason = "putting a time back is not exposed by std")]
+        unsafe {
+            SetFileTime(held.handle.0, std::ptr::null(), &raw const time, std::ptr::null());
+        }
+    }
+
+    pub(super) fn access_times_kept(path: &Path) -> bool {
+        let Some((filesystem, _)) = crate::mft::volume::describe(path) else {
+            return false;
+        };
+        // Bit 0 of the NTFS value is "disabled" in all four of its forms:
+        // 0 and 1 set by hand, 0x8000_0002 and 0x8000_0003 chosen by the
+        // system. ReFS's is plainly 0 or 1. A value that is not there is the
+        // default of a Windows old enough not to write it: disabled.
+        match filesystem.as_str() {
+            "NTFS" => setting("NtfsDisableLastAccessUpdate").is_some_and(|value| value & 1 == 0),
+            "ReFS" => setting("RefsDisableLastAccessUpdate") == Some(0),
+            _ => false,
+        }
+    }
+
+    /// A DWORD under `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`, the
+    /// key every filesystem setting is under.
+    pub(super) fn setting(name: &str) -> Option<u32> {
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW};
+
+        let key: Vec<u16> = "SYSTEM\\CurrentControlSet\\Control\\FileSystem".encode_utf16().chain(Some(0)).collect();
+        let value: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        let mut data: u32 = 0;
+        let mut bytes = u32::try_from(size_of::<u32>()).ok()?;
+        // SAFETY: both names end in a zero; `data` is a writable u32 and
+        // `bytes` says how large it is.
+        #[allow(unsafe_code, reason = "a filesystem setting is in the registry, which std does not read")]
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_DWORD,
+                std::ptr::null_mut(),
+                std::ptr::from_mut(&mut data).cast(),
+                &raw mut bytes,
+            )
+        };
+        (status == ERROR_SUCCESS).then_some(data)
     }
 
     pub(super) fn long_path(path: &Path) -> Option<std::path::PathBuf> {
@@ -795,6 +1016,7 @@ mod imp {
         let metadata = std::fs::symlink_metadata(path).ok()?;
         Some(Opened {
             modified: metadata.modified().ok(),
+            accessed: metadata.accessed().ok(),
             logical: Some(metadata.len()),
             allocated: Some(metadata.blocks() * 512),
             links: u32::try_from(metadata.nlink()).ok(),
@@ -873,6 +1095,26 @@ mod imp {
     pub(super) const fn is_elevated() -> bool {
         false
     }
+
+    // The Windows Overlay Filter is Windows'.
+    pub(super) const fn overlaid(_path: &Path) -> bool {
+        false
+    }
+
+    // Whether a mount keeps access times is in its options (`noatime`,
+    // `relatime`), which std does not read; off Windows nothing is claimed.
+    pub(super) const fn access_times_kept(_path: &Path) -> bool {
+        false
+    }
+
+    /// Nothing is held where no access time is read.
+    pub(super) struct Held;
+
+    pub(super) const fn hold_access_time(_path: &Path) -> Option<Held> {
+        None
+    }
+
+    pub(super) const fn restore_access_time(_held: &Held) {}
 }
 
 #[cfg(test)]
@@ -1001,6 +1243,64 @@ mod tests {
             (512..=2_097_152).contains(&cluster),
             "a cluster size of {cluster} is outside what NTFS supports"
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_file_the_overlay_keeps_compressed_says_so_and_a_plain_one_does_not() {
+        // `compact /exe` is Windows' own compression, and the filter hides
+        // every bit that would say so: without the question, this file reads
+        // as plain and occupies a fifth of its size.
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let overlaid = dir.path().join("overlaid.bin");
+        std::fs::write(&overlaid, b"abcdefgh".repeat(100_000)).expect("write");
+        let plain = write(dir.path(), "plain.bin", 800_000);
+        let status = std::process::Command::new("compact")
+            .args(["/c", "/q", "/exe:xpress4k"])
+            .arg(&overlaid)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("compact runs");
+        assert!(status.success());
+
+        let measured = measure(&overlaid, &std::fs::metadata(&overlaid).expect("metadata"), ASSUMED_CLUSTER_BYTES);
+        assert!(measured.size.allocated < measured.size.logical, "{:?}", measured.size);
+        assert_eq!(measured.traits, Traits::COMPRESSED);
+        let measured = measure(&plain, &std::fs::metadata(&plain).expect("metadata"), ASSUMED_CLUSTER_BYTES);
+        assert_eq!(measured.traits, Traits::none());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_file_says_when_it_was_opened_and_midda_reading_it_does_not_change_that() {
+        use std::fs::FileTimes;
+        use std::io::Read as _;
+
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = write(dir.path(), "shortcut.lnk", 5000);
+        let opened = SystemTime::UNIX_EPOCH + Duration::from_secs(1_650_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_times(FileTimes::new().set_accessed(opened)))
+            .expect("set the access time");
+        let accessed = || measure(&path, &std::fs::metadata(&path).expect("metadata"), ASSUMED_CLUSTER_BYTES).accessed;
+        assert_eq!(accessed(), Some(opened), "the handle says when the file was opened");
+
+        {
+            let _kept = keeping_access_time(&path);
+            let mut bytes = Vec::new();
+            std::fs::File::open(&path).and_then(|mut file| file.read_to_end(&mut bytes)).expect("read");
+        }
+        assert_eq!(accessed(), Some(opened), "a read midda makes is not an opening");
+
+        if access_times_kept(&path) {
+            // The guard is what kept it: the same read without it moves the
+            // time, where the volume keeps one.
+            let mut bytes = Vec::new();
+            std::fs::File::open(&path).and_then(|mut file| file.read_to_end(&mut bytes)).expect("read");
+            assert_ne!(accessed(), Some(opened), "an ordinary read is an opening");
+        }
     }
 
     #[test]

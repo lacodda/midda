@@ -25,12 +25,22 @@ struct Edge<'a> {
 ///
 /// `root` is the path the reader asked for, `volume` the serial the walk's file
 /// identities carry, so that a hard link seen by both scanners has the same
-/// identity in both trees.
+/// identity in both trees. `access_kept` is whether the volume keeps the time
+/// files were last opened: where it does not, the times in the records are
+/// not taken ([`crate::platform::access_times_kept`]).
 ///
 /// # Errors
 ///
 /// When `root_record` is not a directory in use, or the scan was cancelled.
-pub fn assemble(records: &Records, root_record: u64, root: &std::path::Path, volume: u64, cluster_bytes: Option<u64>, progress: &Progress) -> Result<Tree> {
+pub fn assemble(
+    records: &Records,
+    root_record: u64,
+    root: &std::path::Path,
+    volume: u64,
+    cluster_bytes: Option<u64>,
+    access_kept: bool,
+    progress: &Progress,
+) -> Result<Tree> {
     let root_entry = records
         .get(root_record)
         .filter(|record| record.directory)
@@ -43,6 +53,7 @@ pub fn assemble(records: &Records, root_record: u64, root: &std::path::Path, vol
     edges.sort_unstable_by(|a, b| a.parent.cmp(&b.parent).then_with(|| listing_order(a.name, b.name)));
 
     let mut tree = Tree::new(root.to_path_buf(), cluster_bytes);
+    tree.record_access_kept(access_kept);
     let cluster = cluster_bytes.unwrap_or(crate::platform::ASSUMED_CLUSTER_BYTES);
     tree.stamp_root(
         root_entry.modified.and_then(filetime_to_system_time),
@@ -69,7 +80,7 @@ pub fn assemble(records: &Records, root_record: u64, root: &std::path::Path, vol
                 let Some(record) = records.get(edge.child) else {
                     continue;
                 };
-                let node = node_for(edge, record, parent_id, volume, cluster);
+                let node = node_for(edge, record, parent_id, volume, cluster, access_kept);
                 counted_bytes += node.size.allocated;
                 let is_directory = node.is_directory();
                 let id = tree.push(parent_id, node);
@@ -130,7 +141,7 @@ fn edges(records: &Records) -> Vec<Edge<'_>> {
 }
 
 /// The node the walk would have pushed for this name.
-fn node_for(edge: &Edge<'_>, record: &Record, parent: NodeId, volume: u64, cluster: u64) -> Node {
+fn node_for(edge: &Edge<'_>, record: &Record, parent: NodeId, volume: u64, cluster: u64, access_kept: bool) -> Node {
     let modified = record.modified.and_then(filetime_to_system_time);
     let base = Node {
         modified,
@@ -157,7 +168,12 @@ fn node_for(edge: &Edge<'_>, record: &Record, parent: NodeId, volume: u64, clust
 
     Node {
         size: record.occupied(cluster),
-        traits: record.traits(),
+        traits: record.traits(cluster),
+        accessed: if access_kept {
+            record.accessed.and_then(filetime_to_system_time)
+        } else {
+            None
+        },
         links: Some(u32::try_from(record.names.len()).unwrap_or(u32::MAX)),
         identity: Some(identity_of(volume, edge.child, record)),
         ..base
@@ -271,7 +287,7 @@ mod tests {
         }
 
         fn build(&self, root: u64) -> Tree {
-            assemble(&self.records, root, Path::new("C:/scan"), SERIAL, Some(4096), &Progress::new()).expect("the tree assembles")
+            assemble(&self.records, root, Path::new("C:/scan"), SERIAL, Some(4096), true, &Progress::new()).expect("the tree assembles")
         }
     }
 
@@ -476,7 +492,7 @@ mod tests {
     fn a_root_that_is_not_a_directory_is_refused() {
         let mut table = Table::new();
         table.file(130, &[(ROOT_RECORD, "file")], resident_size(1));
-        let error = assemble(&table.records, 130, Path::new("C:/file"), SERIAL, None, &Progress::new()).expect_err("a file is not a root");
+        let error = assemble(&table.records, 130, Path::new("C:/file"), SERIAL, None, true, &Progress::new()).expect_err("a file is not a root");
         assert!(matches!(error, Error::Unavailable(_)));
     }
 
@@ -485,7 +501,7 @@ mod tests {
         let table = Table::new();
         let progress = Progress::new();
         progress.cancel();
-        let error = assemble(&table.records, ROOT_RECORD, Path::new("C:/"), SERIAL, None, &progress).expect_err("cancelled");
+        let error = assemble(&table.records, ROOT_RECORD, Path::new("C:/"), SERIAL, None, true, &progress).expect_err("cancelled");
         assert!(matches!(error, Error::Cancelled));
     }
 
@@ -501,7 +517,7 @@ mod tests {
             },
         );
         let progress = Progress::new();
-        let tree = assemble(&table.records, ROOT_RECORD, Path::new("C:/"), SERIAL, None, &progress).expect("assembles");
+        let tree = assemble(&table.records, ROOT_RECORD, Path::new("C:/"), SERIAL, None, true, &progress).expect("assembles");
         assert_eq!(progress.entries(), tree.root().entries - 1);
         assert_eq!(progress.bytes(), tree.root().size.allocated);
     }

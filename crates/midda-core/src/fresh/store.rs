@@ -13,7 +13,8 @@
 //! cannot produce again. Integers are LEB128 varints, strings are a length and
 //! UTF-8. The nodes are written in the order a fresh scan would have pushed
 //! them, and only what a scan measures: a file's sizes, every entry's own
-//! times and identity. Folder totals, entry counts and subtree times are
+//! write time and identity, a file's last access time where the volume keeps
+//! one. Folder totals, entry counts and subtree times are
 //! worked out again on reading — they are arithmetic, and a file that stored
 //! them could store them wrong. A trailer repeats the node count, so a file
 //! cut short by a crash is refused rather than read as a smaller disk.
@@ -38,7 +39,9 @@ use crate::tree::{Kind, Node, NodeId, ROOT, Tree};
 
 /// The version of the format. Raised with any change to what is written;
 /// a file of another version is replaced, never migrated.
-pub const FORMAT: u32 = 1;
+///
+/// 2 (v0.14): whether the volume keeps access times, and each file's.
+pub const FORMAT: u32 = 2;
 
 const MAGIC: &[u8; 4] = b"MIDX";
 const TRAILER: &[u8; 4] = b"XDIM";
@@ -50,6 +53,8 @@ const HAS_LINKS: u8 = 1 << 2;
 const HAS_IDENTITY: u8 = 1 << 3;
 /// The identity is on a volume other than the root's — a mount point crossed.
 const OTHER_VOLUME: u8 = 1 << 4;
+/// A file's last access time follows its write time.
+const HAS_ACCESSED: u8 = 1 << 5;
 
 /// Where the index of `root` is kept, under `directory`.
 ///
@@ -282,6 +287,7 @@ fn write(out: &mut impl Write, index: &Index, saved_at: SystemTime) -> std::io::
     text(out, tree.scanned_by())?;
     optional_text(out, tree.fallback())?;
     optional(out, tree.cluster_bytes())?;
+    out.write_all(&[u8::from(tree.access_kept())])?;
     time(out, Some(index.scanned_at()))?;
     time(out, Some(saved_at))?;
     match index.journal() {
@@ -346,6 +352,11 @@ fn node_record(out: &mut impl Write, node: &Node, parent: NodeId, volume: Option
     if node.links.is_some() {
         flags |= HAS_LINKS;
     }
+    // A folder's is worked out on reading, from its files.
+    let accessed = node.accessed.filter(|_| !node.is_directory());
+    if accessed.is_some() {
+        flags |= HAS_ACCESSED;
+    }
     if let Some(identity) = node.identity {
         flags |= HAS_IDENTITY;
         if Some(identity.volume) != volume {
@@ -362,6 +373,9 @@ fn node_record(out: &mut impl Write, node: &Node, parent: NodeId, volume: Option
     }
     if let Some(modified) = node.modified {
         time(out, Some(modified))?;
+    }
+    if let Some(accessed) = accessed {
+        time(out, Some(accessed))?;
     }
     if let Some(links) = node.links {
         varint(out, u64::from(links))?;
@@ -398,6 +412,7 @@ struct Head {
     scanned_by: String,
     fallback: Option<String>,
     cluster_bytes: Option<u64>,
+    access_kept: bool,
     scanned_at: SystemTime,
     saved_at: SystemTime,
 }
@@ -419,6 +434,11 @@ fn read_head(input: &mut impl Read) -> Result<Head, Problem> {
         scanned_by: read_text(input)?,
         fallback: read_optional_text(input)?,
         cluster_bytes: read_optional(input)?,
+        access_kept: match byte(input)? {
+            0 => false,
+            1 => true,
+            _ => return Err(damaged("a volume that neither keeps access times nor does not")),
+        },
         scanned_at: read_time(input)?.ok_or_else(|| damaged("no scan time"))?,
         saved_at: read_time(input)?.ok_or_else(|| damaged("no save time"))?,
     })
@@ -430,6 +450,7 @@ fn read(input: &mut impl Read) -> Result<Saved, Problem> {
         scanned_by,
         fallback,
         cluster_bytes,
+        access_kept,
         scanned_at,
         saved_at,
     } = read_head(input)?;
@@ -451,6 +472,7 @@ fn read(input: &mut impl Read) -> Result<Saved, Problem> {
 
     let mut tree = Tree::new(root, cluster_bytes);
     tree.record_scanner(&scanned_by);
+    tree.record_access_kept(access_kept);
     if let Some(reason) = fallback {
         tree.record_fallback(reason);
     }
@@ -507,6 +529,12 @@ fn read_node(input: &mut impl Read, volume: Option<u64>) -> Result<Node, Problem
     if flags & HAS_MODIFIED != 0 {
         node.modified = read_time(input)?;
         node.subtree_modified = node.modified;
+    }
+    if flags & HAS_ACCESSED != 0 {
+        if kind == Kind::Directory {
+            return Err(damaged("a folder with an access time of its own"));
+        }
+        node.accessed = read_time(input)?;
     }
     if flags & HAS_LINKS != 0 {
         node.links = Some(u32::try_from(read_varint(input)?).map_err(|_| damaged("a link count past any file"))?);

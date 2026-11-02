@@ -169,13 +169,13 @@ impl Index {
             }
         }
 
-        let cluster = tree.cluster_bytes().unwrap_or(platform::ASSUMED_CLUSTER_BYTES);
+        let measure = walk::Measure::of(tree);
         let mut found = Vec::new();
         for (parent, name) in points {
             if seen_parents.insert(parent) {
                 parents.push(parent);
             }
-            look(tree, parent, &name, cluster, &mut found);
+            look(tree, parent, &name, measure, &mut found);
         }
         // A folder's own write time moves when an entry in it is added,
         // removed or renamed. Read after the entries, so it is no older than
@@ -254,6 +254,7 @@ impl Index {
                                 held.size = node.size;
                                 held.modified = node.modified;
                                 held.subtree_modified = node.modified;
+                                held.accessed = node.accessed;
                                 held.traits = node.traits;
                                 held.links = node.links;
                                 held.identity = node.identity;
@@ -335,6 +336,7 @@ impl Index {
 fn measured_alike(held: &Node, measured: &Node) -> bool {
     held.size == measured.size
         && held.modified == measured.modified
+        && held.accessed == measured.accessed
         && held.traits == measured.traits
         && held.links == measured.links
         && held.identity == measured.identity
@@ -453,7 +455,7 @@ fn same_component(a: Component<'_>, b: Component<'_>) -> bool {
 }
 
 /// Looks at the entry called `name` in `parent` on the volume.
-fn look(tree: &Tree, parent: NodeId, name: &str, cluster: u64, found: &mut Vec<Seen>) {
+fn look(tree: &Tree, parent: NodeId, name: &str, measure: walk::Measure, found: &mut Vec<Seen>) {
     let folder = tree.path_of(parent);
     let real = match platform::presence(&folder.join(name)) {
         Presence::Unknown => return,
@@ -480,7 +482,7 @@ fn look(tree: &Tree, parent: NodeId, name: &str, cluster: u64, found: &mut Vec<S
     };
 
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        if let Some(node) = walk::measure_entry(&path, parent, cluster) {
+        if let Some(node) = walk::measure_entry(&path, parent, measure) {
             found.push(Seen::Entry { parent, node });
         }
         return;

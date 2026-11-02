@@ -104,6 +104,23 @@ fn a_folder_read_again_that_is_gone_goes() {
 }
 
 #[test]
+fn a_file_opened_since_is_what_a_scan_finds_where_the_volume_keeps_that() {
+    // Only its access time moved: the size, the write time and the identity
+    // are as they were, and a file held to be "alike" on those alone would
+    // keep the old time for as long as the window stayed open.
+    let dir = fixture();
+    after(dir.path(), |root| {
+        let path = root.join("docs/readme.md");
+        let opened = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_750_000_000);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_times(fs::FileTimes::new().set_accessed(opened)))
+            .expect("open it, as a reader would");
+        vec![path]
+    });
+}
+#[test]
 fn a_new_file_is_listed_where_a_scan_would_list_it() {
     let dir = fixture();
     after(dir.path(), |root| {

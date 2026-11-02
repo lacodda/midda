@@ -73,6 +73,21 @@ pub struct Node {
     /// own mtime cannot answer that; this can, and it costs one `max` per node
     /// during the roll-up rather than a second pass.
     pub subtree_modified: Option<SystemTime>,
+    /// When a file was last opened: for a file, its own last access time; for
+    /// a directory, the most recent of the files beneath it.
+    ///
+    /// Only where the volume keeps access times ([`Tree::access_kept`]) - on
+    /// most it does not, and a time read there is when the file was made, not
+    /// when it was opened. A directory's own access time is never taken: it
+    /// moves whenever the directory is listed, a scan of it included, so the
+    /// most recent read of anything in it is the only one that says something.
+    /// A link is never opened through, and has none.
+    ///
+    /// Kept beside the age rather than in it: what changed and what was read
+    /// are two questions, and the age of a layer is the first (decided
+    /// 2026-09-11). A folder untouched for years and opened last week is still
+    /// old, and is still somebody's.
+    pub accessed: Option<SystemTime>,
     /// How many entries are in this subtree, this one included.
     pub entries: u64,
     /// Children, in [`listing_order`] of their names. Empty for a file.
@@ -121,6 +136,7 @@ impl Node {
             size: Size::zero(),
             modified: None,
             subtree_modified: None,
+            accessed: None,
             entries: 1,
             children: Vec::new(),
             traits: Traits::none(),
@@ -171,6 +187,19 @@ pub struct Tree {
     /// failing. A fallback that said nothing would be a slow scan with no
     /// account of itself.
     fallback: Option<String>,
+    /// Whether the volume keeps the time each file was last opened, as the
+    /// scanner found when it read this tree: what makes [`Node::accessed`] a
+    /// measurement rather than a gap. See [`crate::platform::access_times_kept`].
+    access_kept: bool,
+}
+
+/// The newer of two times, either of which may be unknown: an unknown one
+/// never hides a known one.
+fn newer(ours: Option<SystemTime>, theirs: Option<SystemTime>) -> Option<SystemTime> {
+    match (ours, theirs) {
+        (Some(ours), Some(theirs)) => Some(ours.max(theirs)),
+        (ours, theirs) => ours.or(theirs),
+    }
 }
 
 /// The order children are listed in: by name, ignoring case, then by the name
@@ -223,7 +252,20 @@ impl Tree {
             detached: 0,
             scanned_by: String::new(),
             fallback: None,
+            access_kept: false,
         }
+    }
+
+    /// Whether the volume keeps the time each file was last opened: where it
+    /// does not, no node has one.
+    #[must_use]
+    pub const fn access_kept(&self) -> bool {
+        self.access_kept
+    }
+
+    /// Records whether the volume keeps access times. Called by scanners.
+    pub const fn record_access_kept(&mut self, kept: bool) {
+        self.access_kept = kept;
     }
 
     /// Which scanner read this tree. Empty only for a tree built by hand.
@@ -542,21 +584,22 @@ impl Tree {
             let mut size = Size::zero();
             let mut entries = 1_u64;
             let mut subtree_modified = node.modified;
+            // A folder's own access time is never its own: see `Node::accessed`.
+            let mut accessed = None;
             let mut holds_shared = false;
             for &child in &node.children {
                 let child = &self.nodes[child as usize];
                 size.add(child.size);
                 entries = entries.saturating_add(child.entries);
-                subtree_modified = match (subtree_modified, child.subtree_modified) {
-                    (Some(ours), Some(theirs)) => Some(ours.max(theirs)),
-                    (ours, theirs) => ours.or(theirs),
-                };
+                subtree_modified = newer(subtree_modified, child.subtree_modified);
+                accessed = newer(accessed, child.accessed);
                 holds_shared |= child.traits.has(Traits::LINKED) || child.traits.has(Traits::HOLDS_SHARED);
             }
             let node = &mut self.nodes[id as usize];
             node.size = size;
             node.entries = entries;
             node.subtree_modified = subtree_modified;
+            node.accessed = accessed;
             node.traits = node.traits.without(Traits::HOLDS_SHARED);
             if holds_shared {
                 node.traits.insert(Traits::HOLDS_SHARED);
@@ -653,8 +696,8 @@ impl Tree {
         id
     }
 
-    /// Rolls every file's size, subtree mtime and entry count up into its
-    /// ancestors.
+    /// Rolls every file's size, subtree mtime, access time and entry count up
+    /// into its ancestors.
     ///
     /// One reverse pass: because a parent is always pushed before its children,
     /// walking backwards visits every child before its parent, so each node is
@@ -664,9 +707,9 @@ impl Tree {
             if self.nodes[index].parent == DETACHED {
                 continue;
             }
-            let (size, subtree_modified, entries, traits, parent) = {
+            let (size, subtree_modified, accessed, entries, traits, parent) = {
                 let node = &self.nodes[index];
-                (node.size, node.subtree_modified, node.entries, node.traits, node.parent as usize)
+                (node.size, node.subtree_modified, node.accessed, node.entries, node.traits, node.parent as usize)
             };
             let parent = &mut self.nodes[parent];
 
@@ -680,10 +723,10 @@ impl Tree {
             if traits.has(Traits::LINKED) || traits.has(Traits::HOLDS_SHARED) {
                 parent.traits.insert(Traits::HOLDS_SHARED);
             }
-            parent.subtree_modified = match (parent.subtree_modified, subtree_modified) {
-                (Some(ours), Some(theirs)) => Some(ours.max(theirs)),
-                (ours, theirs) => ours.or(theirs),
-            };
+            parent.subtree_modified = newer(parent.subtree_modified, subtree_modified);
+            // A folder starts with no access time of its own - scanners give
+            // it none - so this is the newest of the files beneath it.
+            parent.accessed = newer(parent.accessed, accessed);
         }
     }
 

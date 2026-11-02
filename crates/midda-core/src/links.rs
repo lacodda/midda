@@ -304,6 +304,7 @@ mod tests {
             size: Size::flat(bytes),
             modified: None,
             subtree_modified: None,
+            accessed: None,
             entries: 1,
             children: Vec::new(),
             traits: Traits::none(),

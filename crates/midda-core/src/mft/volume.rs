@@ -61,7 +61,7 @@ pub(crate) struct Located {
 pub(crate) fn locate(root: &Path) -> Option<Located> {
     let root = std::path::absolute(root).ok()?;
     let mount = volume_path_of(&root)?;
-    if filesystem_of(&mount)?.as_str() != "NTFS" {
+    if filesystem_of(&mount)?.0.as_str() != "NTFS" {
         return None;
     }
     let device = device_of(&mount)?;
@@ -228,6 +228,9 @@ fn read_attribute(attribute: &Attribute<'_>, record: &mut Record) {
         format::STANDARD_INFORMATION => {
             if let Some(standard) = attribute.standard_information() {
                 record.modified = Some(standard.modified);
+                // Zero is a volume that keeps no access time, as the walk
+                // reads it through the handle.
+                record.accessed = Some(standard.accessed).filter(|&accessed| accessed != 0);
                 record.attributes = standard.attributes;
             }
         }
@@ -303,13 +306,24 @@ fn volume_path_of(path: &Path) -> Option<PathBuf> {
     (ok != 0).then(|| PathBuf::from(from_wide(&buffer)))
 }
 
-/// The filesystem a mount point holds: `NTFS`, `ReFS`, `exFAT`, …
-fn filesystem_of(mount: &Path) -> Option<String> {
+/// The filesystem of the volume `path` is on, and its `FILE_*` flags: what it
+/// can do, compression among them.
+///
+/// Any path on the volume will do, a folder inside it as well as its root.
+pub(crate) fn describe(path: &Path) -> Option<(String, u32)> {
+    let path = std::path::absolute(path).ok()?;
+    filesystem_of(&volume_path_of(&path)?)
+}
+
+/// The filesystem a mount point holds - `NTFS`, `ReFS`, `exFAT`, … - and its
+/// flags.
+fn filesystem_of(mount: &Path) -> Option<(String, u32)> {
     let wide = wide(mount);
     let mut name = vec![0_u16; 64];
+    let mut flags: u32 = 0;
     // SAFETY: `wide` is NUL-terminated and outlives the call; the null pointers
-    // are the documented "not asked for" arguments, and `name` is writable for
-    // the length passed.
+    // are the documented "not asked for" arguments, `flags` is a writable u32
+    // and `name` is writable for the length passed.
     #[allow(unsafe_code, reason = "a volume's filesystem is not exposed by std")]
     let ok = unsafe {
         GetVolumeInformationW(
@@ -318,12 +332,12 @@ fn filesystem_of(mount: &Path) -> Option<String> {
             0,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            &raw mut flags,
             name.as_mut_ptr(),
             u32::try_from(name.len()).ok()?,
         )
     };
-    (ok != 0).then(|| from_wide(&name))
+    (ok != 0).then(|| (from_wide(&name), flags))
 }
 
 /// The device path of the volume at a mount point: `\\?\Volume{…}`.

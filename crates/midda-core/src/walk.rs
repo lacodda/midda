@@ -92,6 +92,9 @@ pub fn read(root: &Path, progress: &Progress) -> Result<Tree> {
     let cluster_bytes = platform::cluster_bytes_of(root);
     let mut tree = Tree::new(root.to_path_buf(), cluster_bytes);
     let cluster = cluster_bytes.unwrap_or(ASSUMED_CLUSTER_BYTES);
+    let access = platform::access_times_kept(root);
+    tree.record_access_kept(access);
+    let measure = Measure { cluster, access };
 
     // The root's own timestamp. A subtree mtime that ignored the root would
     // call an empty directory undated rather than as old as it is.
@@ -107,7 +110,7 @@ pub fn read(root: &Path, progress: &Progress) -> Result<Tree> {
             return Err(Error::Cancelled);
         }
 
-        let readings: Vec<Reading> = level.par_iter().map(|(id, path)| read_directory(*id, path, cluster, progress)).collect();
+        let readings: Vec<Reading> = level.par_iter().map(|(id, path)| read_directory(*id, path, measure, progress)).collect();
 
         let mut next = Vec::new();
         for reading in readings {
@@ -128,6 +131,26 @@ pub fn read(root: &Path, progress: &Progress) -> Result<Tree> {
     Ok(tree)
 }
 
+/// How the entries of one tree are measured: the cluster size their sizes are
+/// rounded to, and whether the volume keeps the time each file was opened.
+#[derive(Debug, Clone, Copy)]
+pub struct Measure {
+    pub cluster: u64,
+    pub access: bool,
+}
+
+impl Measure {
+    /// How the entries of `tree` were measured, for an entry read into it
+    /// later.
+    #[must_use]
+    pub fn of(tree: &Tree) -> Self {
+        Self {
+            cluster: tree.cluster_bytes().unwrap_or(ASSUMED_CLUSTER_BYTES),
+            access: tree.access_kept(),
+        }
+    }
+}
+
 /// Measures the one entry at `path` the way the walk measures it inside a
 /// listing: a link at what the link costs, a directory at nothing of its own,
 /// a file both ways.
@@ -135,10 +158,10 @@ pub fn read(root: &Path, progress: &Progress) -> Result<Tree> {
 /// For a tree kept up to date, which reads one entry rather than a directory.
 /// `None` when the entry cannot be looked at.
 #[must_use]
-pub fn measure_entry(path: &Path, parent: NodeId, cluster: u64) -> Option<Node> {
+pub fn measure_entry(path: &Path, parent: NodeId, measure: Measure) -> Option<Node> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     let name = path.file_name()?.to_string_lossy().into_owned();
-    Some(entry(name, path.to_path_buf(), &metadata, cluster).into_node(parent))
+    Some(entry(name, path.to_path_buf(), &metadata, measure).into_node(parent))
 }
 
 /// What one directory turned out to hold.
@@ -154,6 +177,8 @@ struct Entry {
     kind: Kind,
     size: Size,
     modified: Option<SystemTime>,
+    /// When the file was last opened, where the volume keeps that.
+    accessed: Option<SystemTime>,
     /// Why the two sizes differ, when they do.
     traits: Traits,
     /// How many names these bytes have, when the platform said.
@@ -169,6 +194,7 @@ impl Entry {
             size: self.size,
             modified: self.modified,
             subtree_modified: self.modified,
+            accessed: self.accessed,
             traits: self.traits,
             links: self.links,
             identity: self.identity,
@@ -183,19 +209,21 @@ struct Failure {
 }
 
 /// Measures one listed entry, given what its listing already said.
-fn entry(name: String, path: PathBuf, metadata: &std::fs::Metadata, cluster: u64) -> Entry {
+fn entry(name: String, path: PathBuf, metadata: &std::fs::Metadata, measure: Measure) -> Entry {
     let file_type = metadata.file_type();
     // On Windows this is true of every name-surrogate reparse point —
     // symbolic links and junctions alike — and the MFT reader draws the same
     // line by the same bit, so the two scanners stop at the same entries.
     if file_type.is_symlink() {
         // A link is an entry on the volume but its target's bytes are not
-        // its own. Counted as an entry costing what the link itself costs.
+        // its own. Counted as an entry costing what the link itself costs,
+        // and never opened through - so it has no time it was opened.
         return Entry {
             name,
             kind: Kind::File,
             size: Size::zero(),
             modified: platform::modified_of(&path).or_else(|| metadata.modified().ok()),
+            accessed: None,
             path,
             traits: Traits::none(),
             // A link occupies its own few bytes and shares none: it is not a
@@ -219,6 +247,9 @@ fn entry(name: String, path: PathBuf, metadata: &std::fs::Metadata, cluster: u64
             kind: Kind::Directory,
             size: Size::zero(),
             modified: own.modified.or_else(|| metadata.modified().ok()),
+            // Its own moves whenever it is listed; the roll-up gives it the
+            // newest of its files' (`Node::accessed`).
+            accessed: None,
             path,
             traits: Traits::none(),
             links: None,
@@ -226,13 +257,14 @@ fn entry(name: String, path: PathBuf, metadata: &std::fs::Metadata, cluster: u64
         };
     }
 
-    let measured = platform::measure(&path, metadata, cluster);
+    let measured = platform::measure(&path, metadata, measure.cluster);
     Entry {
         name,
         path,
         kind: Kind::File,
         size: measured.size,
         modified: measured.modified,
+        accessed: measured.accessed.filter(|_| measure.access),
         traits: measured.traits,
         links: measured.links,
         identity: measured.identity,
@@ -242,7 +274,7 @@ fn entry(name: String, path: PathBuf, metadata: &std::fs::Metadata, cluster: u64
 /// Reads one directory. Never fails: what cannot be read is reported as a
 /// skipped entry, because a system volume always refuses something and a scan
 /// that stopped at the first refusal would never reach the end.
-fn read_directory(parent: NodeId, path: &Path, cluster: u64, progress: &Progress) -> Reading {
+fn read_directory(parent: NodeId, path: &Path, measure: Measure, progress: &Progress) -> Reading {
     let mut entries = Vec::new();
     let mut failures = Vec::new();
 
@@ -288,7 +320,7 @@ fn read_directory(parent: NodeId, path: &Path, cluster: u64, progress: &Progress
             }
         };
 
-        let measured = self::entry(entry.file_name().to_string_lossy().into_owned(), child, &metadata, cluster);
+        let measured = self::entry(entry.file_name().to_string_lossy().into_owned(), child, &metadata, measure);
         counted_entries += 1;
         // The running counter is what the window shows, and it is deliberately
         // the pre-deduplication number: the pass that removes double-counted
@@ -467,6 +499,34 @@ mod tests {
         let tree = WalkScanner::new().scan(dir.path(), &progress).expect("the scan succeeds");
         let names: Vec<&str> = tree.root().children.iter().map(|&id| tree.node(id).name.as_str()).collect();
         assert_eq!(names, ["alpha", "Bravo", "Charlie", "delta"]);
+    }
+
+    #[test]
+    fn a_file_is_said_to_be_opened_only_where_the_volume_keeps_that() {
+        let dir = fixture();
+        let opened = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_650_000_000);
+        fs::File::options()
+            .write(true)
+            .open(dir.path().join("project/main.rs"))
+            .and_then(|file| file.set_times(fs::FileTimes::new().set_accessed(opened)))
+            .expect("set the access time");
+
+        let tree = WalkScanner::new().scan(dir.path(), &Progress::new()).expect("the scan succeeds");
+        let kept = platform::access_times_kept(dir.path());
+        assert_eq!(tree.access_kept(), kept);
+        let project = tree.child(ROOT, "project").expect("project");
+        let main = tree.child(project, "main.rs").expect("main.rs");
+        if kept {
+            assert_eq!(tree.node(main).accessed, Some(opened));
+            let target = tree.child(project, "target").expect("target");
+            let newest = tree.node(main).accessed.max(tree.node(target).accessed);
+            assert_eq!(tree.node(project).accessed, newest, "a folder is as recently opened as its newest file");
+        } else {
+            assert!(
+                tree.nodes().all(|(_, node)| node.accessed.is_none()),
+                "a time the volume does not keep is not read"
+            );
+        }
     }
 
     #[test]

@@ -343,7 +343,8 @@ impl<'a> Attribute<'a> {
         Some(crate::size::Size { logical, allocated })
     }
 
-    /// `$STANDARD_INFORMATION`: the write time and the attribute bits.
+    /// `$STANDARD_INFORMATION`: the write time, the last access time and the
+    /// attribute bits.
     #[must_use]
     pub fn standard_information(&self) -> Option<StandardInformation> {
         if self.kind() != STANDARD_INFORMATION {
@@ -352,6 +353,7 @@ impl<'a> Attribute<'a> {
         let value = self.value()?;
         Some(StandardInformation {
             modified: u64_at(value, 0x08)?,
+            accessed: u64_at(value, 0x18)?,
             attributes: u32_at(value, 0x20)?,
         })
     }
@@ -469,6 +471,9 @@ pub enum Run {
 pub struct StandardInformation {
     /// When the file was last written, as a `FILETIME`.
     pub modified: u64,
+    /// When the file was last opened, as a `FILETIME`: zero where the volume
+    /// keeps none.
+    pub accessed: u64,
     /// The `FILE_ATTRIBUTE_*` bits.
     pub attributes: u32,
 }
@@ -647,6 +652,8 @@ pub(crate) mod tests {
         pub(crate) fn standard_information(&mut self, modified: u64, attributes: u32) -> &mut Self {
             let mut value = vec![0_u8; 0x48];
             value[0x08..0x10].copy_from_slice(&modified.to_le_bytes());
+            // Opened when it was written, as a file nobody has read since is.
+            value[0x18..0x20].copy_from_slice(&modified.to_le_bytes());
             value[0x20..0x24].copy_from_slice(&attributes.to_le_bytes());
             self.attribute(STANDARD_INFORMATION, true, "", 0, &value)
         }
@@ -718,6 +725,7 @@ pub(crate) mod tests {
             .and_then(|attribute| attribute.standard_information())
             .expect("standard information");
         assert_eq!(standard.modified, 132_000_000_000_000_000);
+        assert_eq!(standard.accessed, 132_000_000_000_000_000, "the last access time, at its own offset");
         assert_eq!(standard.attributes, 0x20);
 
         let short = attributes.next().and_then(|attribute| attribute.file_name()).expect("the short name");

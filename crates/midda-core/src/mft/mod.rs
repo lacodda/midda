@@ -124,6 +124,9 @@ pub struct Record {
     /// When the file was last written, as a Windows `FILETIME`: hundreds of
     /// nanoseconds since 1601.
     pub modified: Option<u64>,
+    /// When the file was last opened, as a `FILETIME`, when the record has a
+    /// time there at all.
+    pub accessed: Option<u64>,
     /// The reparse tag, when the file is a reparse point.
     pub reparse_tag: Option<u32>,
     /// The size of the `WofCompressedData` stream, when the file has one.
@@ -194,12 +197,22 @@ impl Record {
     /// just as the cloud filter does for a placeholder, so the walk never sees
     /// them. Sparseness is the filter's mechanism, not a fact about the file,
     /// and reporting it here would be one scanner explaining what the other
-    /// cannot see.
+    /// cannot see. What the file is, is compressed: said when it occupies
+    /// less than it reads, which is the test the walk asks the filter by
+    /// (`platform::measure`) - one rule, so both scanners name the same files.
     #[must_use]
-    pub fn traits(&self) -> crate::traits::Traits {
+    pub fn traits(&self, cluster_bytes: u64) -> crate::traits::Traits {
+        use crate::traits::Traits;
+
         let traits = crate::platform::traits_from_attributes(self.attributes);
-        if self.is_overlaid() {
-            traits.without(crate::traits::Traits::SPARSE)
+        if !self.is_overlaid() {
+            return traits;
+        }
+        let traits = traits.without(Traits::SPARSE);
+        let occupied = self.occupied(cluster_bytes);
+        let explained = traits.has(Traits::COMPRESSED) || traits.has(Traits::PLACEHOLDER);
+        if occupied.allocated < occupied.logical && !explained {
+            traits.with(Traits::COMPRESSED)
         } else {
             traits
         }
@@ -325,6 +338,7 @@ impl Scanner for MftScanner {
                 root,
                 located.serial,
                 crate::platform::cluster_bytes_of(root),
+                crate::platform::access_times_kept(root),
                 progress,
             )?;
             tree.record_scanner(self.name());
@@ -403,9 +417,9 @@ mod tests {
             "a compressed stream inside the record still reads as a cluster"
         );
         assert_eq!(
-            overlaid.traits(),
-            crate::traits::Traits::none(),
-            "the filter hides the sparse bit from the walk"
+            overlaid.traits(4096),
+            crate::traits::Traits::COMPRESSED,
+            "the filter hides the sparse bit from the walk, and the file is what it is: compressed"
         );
 
         // The same stream on a file the filter does not keep changes nothing.
@@ -420,7 +434,38 @@ mod tests {
                 allocated: 0
             }
         );
-        assert!(plain.traits().has(crate::traits::Traits::SPARSE));
+        assert!(plain.traits(4096).has(crate::traits::Traits::SPARSE));
+        assert!(!plain.traits(4096).has(crate::traits::Traits::COMPRESSED));
+    }
+
+    #[test]
+    fn an_overlaid_file_is_compressed_only_where_it_occupies_less_than_it_reads() {
+        // The walk asks the filter only of a file that occupies less than it
+        // reads; a file kept by the filter that does not - which the filter
+        // never makes - must not be named here alone, or the two scanners
+        // would disagree about it.
+        let whole = Record {
+            reparse_tag: Some(WOF),
+            attributes: 0x0000_0620,
+            size: Size { logical: 4096, allocated: 0 },
+            backing: Some(Size {
+                logical: 4096,
+                allocated: 4096,
+            }),
+            ..Record::default()
+        };
+        assert_eq!(whole.traits(4096), crate::traits::Traits::none());
+        // A placeholder the filter also keeps is explained as a placeholder.
+        let placeholder = Record {
+            attributes: 0x0040_0620,
+            size: Size {
+                logical: 800_000,
+                allocated: 0,
+            },
+            backing: Some(Size { logical: 1, allocated: 8 }),
+            ..whole
+        };
+        assert_eq!(placeholder.traits(4096), crate::traits::Traits::PLACEHOLDER);
     }
 
     #[test]

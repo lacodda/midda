@@ -143,9 +143,11 @@ impl Machine {
 }
 
 /// Asks the file at `path` what `check` needs to know. Reads it, and for an
-/// installer asks Windows Installer; changes nothing.
+/// installer asks Windows Installer; changes nothing - the time it was last
+/// opened included, which the read would otherwise make today.
 #[must_use]
 pub fn look(path: &Path, check: Check, machine: &Machine) -> Seen {
+    let _kept = crate::platform::keeping_access_time(path);
     match check {
         Check::Shortcut => shortcut::look(path),
         Check::Installer => Seen::Installer(installer::look(path, &machine.programs)),

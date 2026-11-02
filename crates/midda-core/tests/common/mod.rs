@@ -12,6 +12,7 @@ use midda_core::Tree;
 pub fn assert_same(expected: &Tree, actual: &Tree) {
     assert_eq!(expected.root_path(), actual.root_path());
     assert_eq!(expected.cluster_bytes(), actual.cluster_bytes(), "cluster size");
+    assert_eq!(expected.access_kept(), actual.access_kept(), "whether the volume keeps access times");
     assert!(expected.skipped().is_empty(), "the first tree skipped {:?}", expected.skipped());
     assert!(actual.skipped().is_empty(), "the second tree skipped {:?}", actual.skipped());
 
@@ -35,6 +36,7 @@ pub fn assert_same(expected: &Tree, actual: &Tree) {
         assert_eq!(a.entries, b.entries, "entries under {at}");
         assert_eq!(a.modified, b.modified, "modified time of {at}");
         assert_eq!(a.subtree_modified, b.subtree_modified, "subtree modified time of {at}");
+        assert_eq!(a.accessed, b.accessed, "access time of {at}");
     }
     assert_eq!(expected.shared(), actual.shared(), "shared bytes");
 }

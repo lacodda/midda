@@ -212,6 +212,9 @@ pub fn look(path: &Path, distributions: &[wsl::Distribution]) -> Look {
 }
 
 fn read_inside(path: &Path) -> Result<(Option<Format>, Inside), String> {
+    // Reading the disk is not using it: when it was last opened stays as the
+    // machine that uses it left it.
+    let _kept = crate::platform::keeping_access_time(path);
     // Opened to read and shared every way: a running machine has its disk
     // open, and is not to be kept from it.
     let mut file = File::open(path).map_err(|error| format!("the file could not be opened: {error}"))?;
