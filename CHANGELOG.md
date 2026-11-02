@@ -8,6 +8,23 @@ last release, which follow [Conventional Commits](https://www.conventionalcommit
 $ git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md
 ```
 
+## [0.14.0] - 2026-11-02
+
+### Bug Fixes
+- Tell a fossil compressed already from one nothing in it compresses
+- Keep the treemap inside its frame and its labels readable on every stratum
+
+### Documentation
+- Record the age of the layers in ADR 0017
+
+### Features
+- Read when each file was last opened, and name what the overlay compresses
+- Measure the age of the layers and compress a fossil in place
+- Show what is untouched for a year and compress a fossil
+
+### Performance
+- Order fossils by size and id, by scan order only where shown
+
 ## [0.13.0] - 2026-10-28
 
 ### Documentation
