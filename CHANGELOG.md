@@ -14,6 +14,7 @@ $ git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md
 - Tell a fossil compressed already from one nothing in it compresses
 - Keep the treemap inside its frame and its labels readable on every stratum
 - Take minimatch 11.0.4, past GHSA-g3hv-75wg-m249
+- Build the overlay question for Windows only
 
 ### Documentation
 - Record the age of the layers in ADR 0017
