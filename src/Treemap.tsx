@@ -2,8 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { isStale, treemap, type Category, type Row, type SizeBasis, type Tile, type View } from '@/core'
-import { formatBytes, formatCount, formatSigned, wayOf, type Way } from '@/format'
-import { boxOf, CATEGORY_LABELS, minAreaFor, neighbourOf, paletteOf, tileAt, tokenReader, WAY_LABELS, wayPaletteOf, type Box } from '@/treemap-layout'
+import { describeStratum, formatBytes, formatCount, formatSigned, wayOf, type Way } from '@/format'
+import {
+  boxOf,
+  CATEGORY_LABELS,
+  minAreaFor,
+  neighbourOf,
+  paletteOf,
+  STRATA,
+  stratumPaletteOf,
+  tileAt,
+  tokenReader,
+  WAY_LABELS,
+  wayPaletteOf,
+  type Box,
+} from '@/treemap-layout'
 
 /** How much of the box a tile needs before a label fits on it. */
 const LABEL_MIN_WIDTH = 56
@@ -50,6 +63,10 @@ interface TreemapProps {
  * A comparison is the same picture of another quantity: each tile is as large
  * as what moved under it, and coloured by which way it went on balance. The
  * labels and the tooltip then say the change, and what it was and is.
+ *
+ * The view of what is untouched is the folder by its old bytes, each tile
+ * coloured by how old its layer is: the fossils in the ground's ochre, a
+ * folder still alive around its old parts in the violet of what is fresh.
  */
 export function Treemap({ view, arena, version, parentId, parentName, basis, selected, onDescend, onSelect }: TreemapProps) {
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -151,6 +168,7 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
     const line = read('--text')
     const byCategory = Object.fromEntries(CATEGORIES.map((category) => [category, paletteOf(read, category)]))
     const byWay = Object.fromEntries(WAYS.map((way) => [way, wayPaletteOf(read, way)]))
+    const byStratum = Object.fromEntries(STRATA.map((stratum) => [stratum, stratumPaletteOf(read, stratum)]))
     release()
 
     // The stylesheet has not arrived. Painting with invented colours would put
@@ -164,7 +182,12 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
       const box = boxes[index]
       if (!box || box.width <= 0 || box.height <= 0) return
 
-      const palette = tile.change === null ? byCategory[tile.category] : byWay[wayOf(tile.change.before, tile.change.now)]
+      const palette =
+        tile.change !== null
+          ? byWay[wayOf(tile.change.before, tile.change.now)]
+          : view === 'old'
+            ? byStratum[tile.stratum ?? 'undated']
+            : byCategory[tile.category]
       if (!palette?.fill) return
       const lit = index === hovered || index === focused || index === selectedIndex
 
@@ -206,7 +229,7 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
       }
       context.restore()
     })
-  }, [tiles, boxes, size, hovered, focused, selectedIndex])
+  }, [tiles, boxes, size, hovered, focused, selectedIndex, view])
 
   const pointAt = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
     const element = event.currentTarget
@@ -347,7 +370,14 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
           picture they would cover a tile — and the tile they cover is the
           largest one, because that is where the corner is. */}
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-4 py-1.5 text-xs text-dim">
-        {view === 'compare'
+        {view === 'old'
+          ? STRATA.filter((stratum) => tiles.some((tile) => tile.stratum === stratum)).map((stratum) => (
+              <span key={stratum} className="flex items-center gap-1.5">
+                <span aria-hidden className={`size-2.5 rounded-xs border border-line ${STRATUM_SWATCH[stratum]}`} />
+                {describeStratum(stratum)}
+              </span>
+            ))
+          : view === 'compare'
           ? WAYS.map((way) => (
               <span key={way} className="flex items-center gap-1.5">
                 <span aria-hidden className={`size-2.5 rounded-xs ${WAY_SWATCH[way]}`} />
@@ -381,7 +411,9 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
           aria-label={
             view === 'compare'
               ? `What changed in ${parentName}: ${formatCount(tiles.length)} areas, ${formatBytes(total)} moved`
-              : `Treemap of ${parentName}: ${formatCount(tiles.length)} areas, ${formatBytes(total)}`
+              : view === 'old'
+                ? `What has not been written for a year in ${parentName}: ${formatCount(tiles.length)} areas, ${formatBytes(total)}`
+                : `Treemap of ${parentName}: ${formatCount(tiles.length)} areas, ${formatBytes(total)}`
           }
           onMouseMove={move}
           onMouseLeave={() => setHovered(null)}
@@ -410,6 +442,7 @@ export function Treemap({ view, arena, version, parentId, parentName, basis, sel
             {tip.change === null ? (
               <p className="tabular">
                 <span className="font-medium">{formatBytes(tip.bytes)}</span>
+                {view === 'old' && <span className="text-dim"> untouched for a year</span>}
                 <span className="text-dim">
                   {' · '}
                   {formatCount(tip.entries)} {tip.entries === 1 ? 'entry' : 'entries'}
@@ -452,6 +485,18 @@ const LEGEND_SWATCH = {
   source: 'bg-info',
   media: 'bg-good',
   other: 'bg-raise border border-line',
+} as const
+
+/** The legend swatches of the picture of what is untouched, in the tokens
+ * the canvas paints. */
+const STRATUM_SWATCH = {
+  month: 'bg-[var(--stratum-month)]',
+  'half-year': 'bg-[var(--stratum-half-year)]',
+  year: 'bg-[var(--stratum-year)]',
+  'two-years': 'bg-[var(--stratum-two-years)]',
+  'five-years': 'bg-[var(--stratum-five-years)]',
+  older: 'bg-[var(--stratum-older)]',
+  undated: 'bg-[var(--stratum-undated)]',
 } as const
 
 /** The categories of a picture of one moment, in the order the legend names them. */

@@ -8,7 +8,7 @@
 
 import { documentLocale } from 'dowel-ui'
 
-import type { Group } from '@/core'
+import type { Group, Left, Stratum } from '@/core'
 
 /**
  * Bytes as a person reads them: `1.2 GB`.
@@ -677,4 +677,88 @@ export function describeFillLine(line: FillLineFacts, root: string): { title: st
   if (line.name !== null) return { title: line.name.charAt(0).toUpperCase() + line.name.slice(1), path: line.loose ? `in ${path}` : path }
   if (line.loose) return { title: `Files directly in ${path}`, path: null }
   return { title: path, path: null }
+}
+
+/** What each band of the strata is called: how long nothing in it has been
+ * written. */
+export const STRATUM_WORDS: Record<Stratum, string> = {
+  month: 'under a month',
+  'half-year': '1-6 months',
+  year: '6-12 months',
+  'two-years': '1-2 years',
+  'five-years': '2-5 years',
+  older: 'over 5 years',
+  undated: 'no date',
+}
+
+/**
+ * A band as a legend says it: a fossil is untouched for so long; a younger
+ * layer was written so long ago - in the view of what is untouched, that is a
+ * folder still in use around its old parts.
+ */
+export function describeStratum(stratum: Stratum): string {
+  if (stratum === 'undated') return 'no date'
+  const fossil = stratum === 'two-years' || stratum === 'five-years' || stratum === 'older'
+  return fossil ? `untouched ${STRATUM_WORDS[stratum]}` : `written ${STRATUM_WORDS[stratum]} ago`
+}
+
+/**
+ * When something was last opened, said beside when it was written: the two
+ * are different facts, and a folder untouched for years that somebody opened
+ * last week is still somebody's. `null` where the volume keeps no such time.
+ */
+export function describeLastOpened(millis: number | null, now: number = Date.now()): string | null {
+  const age = formatAge(millis, now)
+  if (age === '—' || age === 'ahead') return null
+  return age === 'today' || age === 'yesterday' ? `opened ${age}` : `last opened ${age} ago`
+}
+
+/** What each reason a file was left uncompressed says. Mirrors `Left::says`. */
+export const LEFT_WORDS: Record<Left, string> = {
+  compressed: 'compressed already',
+  placeholder: 'in the cloud, not on this disk',
+  elsewhere: 'kept by Windows in a way of its own',
+  sparse: 'sparse, as a database or a disk keeps its files',
+  'virtual-disk': 'virtual disks, which WSL and Hyper-V refuse compressed',
+  packed: 'compressed by their format already',
+  encrypted: 'encrypted, which NTFS does not compress',
+  'in-use': 'held open by another program',
+  denied: 'not this account\'s to change',
+  failed: 'refused by the volume',
+}
+
+/** What compressing did, as `describeCompressed` reads it. Mirrors
+ * `CompressedRow` without importing the bridge. */
+export interface CompressedFacts {
+  done: { files: number; folders: number; left: { why: Left; files: number; first: string | null }[]; stopped: boolean }
+  before: { logical: number; allocated: number }
+  after: { logical: number; allocated: number }
+}
+
+/**
+ * What a compression gave back, said once it has run: measured from the
+ * entry read again, with what was left as it was and why - the most first -
+ * and that it was stopped, when it was.
+ */
+export function describeCompressed(compressed: CompressedFacts): string {
+  const { done } = compressed
+  const before = compressed.before.allocated
+  const after = compressed.after.allocated
+  const files = `${formatCount(done.files)} ${done.files === 1 ? 'file' : 'files'}`
+  const gave =
+    done.files === 0
+      ? 'Nothing was compressed'
+      : after < before
+        ? `Compressed ${files}: ${formatBytes(before)} → ${formatBytes(after)} on disk, ${formatBytes(before - after)} back`
+        : `Compressed ${files}, and nothing came back: what is in them does not compress`
+  const left = done.left
+    .map((kept) => {
+      const said = `${formatCount(kept.files)} ${LEFT_WORDS[kept.why]}`
+      return kept.why === 'failed' && kept.first !== null ? `${said} (${kept.first})` : said
+    })
+    .join(', ')
+  const parts = [gave]
+  if (left !== '') parts.push(`left as they were: ${left}`)
+  const told = `${parts.join('; ')}.`
+  return done.stopped ? `Stopped before the end. ${told}` : told
 }

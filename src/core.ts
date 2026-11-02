@@ -71,10 +71,11 @@ export type Change = 'created' | 'written'
 
 /**
  * Which tree a question is about: the folder as it is, what was written in
- * it lately, or two pictures of it compared. Mirrors `View` in
- * src-tauri/src/session.rs.
+ * it lately, two pictures of it compared, or the folder as it is by what of
+ * it nothing has written to for a year (the same ids as `index`). Mirrors
+ * `View` in src-tauri/src/session.rs.
  */
-export type View = 'index' | 'changes' | 'compare'
+export type View = 'index' | 'changes' | 'compare' | 'old'
 
 /** Both sizes of something. Mirrors `Size` in midda-core. */
 export interface Size {
@@ -115,6 +116,10 @@ export interface Row {
   change: Change | null
   /** In a comparison, what it held then and how much moved under it. */
   compared: ComparedRow | null
+  /** In the view of what is untouched, what of it nothing has written to for a year. */
+  untouched: Size | null
+  /** When a file beneath this was last opened, where the volume keeps that. */
+  accessed: number | null
 }
 
 /** One page of an ordered list. Mirrors `Page`. */
@@ -149,6 +154,8 @@ export interface ScanResult {
   elapsedMs: number
   /** When the folder was last read in full, as milliseconds since the epoch. */
   readAt: number | null
+  /** Whether the volume keeps the time files were last opened. */
+  accessKept: boolean
 }
 
 /** How the picture on screen is kept current. Mirrors `Mode`. */
@@ -182,6 +189,18 @@ export interface SessionState {
   version: number
   /** Moves when the tree was read anew and every id held before means something else. */
   arena: number
+  /** A compression running now, and how far it is. */
+  compressing: CompressingRow | null
+}
+
+/** How far a compression is. Mirrors `CompressingRow`. */
+export interface CompressingRow {
+  path: string
+  /** Files gone through so far, and what they read as. */
+  files: number
+  bytes: number
+  /** What the whole reads as. */
+  of: number
 }
 
 /** What was written lately. Mirrors `ChangesSummary`. */
@@ -340,6 +359,16 @@ export interface Rect {
   height: number
 }
 
+/** How long nothing in a layer has been written, as a band. Mirrors `Stratum`
+ * in midda-core, in the order `Stratum::ALL` lists them: the youngest first. */
+export type Stratum = 'month' | 'half-year' | 'year' | 'two-years' | 'five-years' | 'older' | 'undated'
+
+/** Whether a layer of this band is a fossil: untouched for a year or more.
+ * Mirrors `Stratum::is_fossil`. */
+export function isFossil(stratum: Stratum): boolean {
+  return stratum === 'two-years' || stratum === 'five-years' || stratum === 'older'
+}
+
 /** What a tile is made of, as far as the colour is concerned. Mirrors `Category`. */
 export type Category = 'build' | 'source' | 'media' | 'other'
 
@@ -366,6 +395,9 @@ export interface Tile {
   /** In a comparison, what it held then and holds now; there the area is
    * how much moved, and this says which way. */
   change: Delta | null
+  /** How long nothing in it has been written, as a band; `null` for the
+   * gathered remainder and in a comparison. */
+  stratum: Stratum | null
 }
 
 /** What the window asks the core to lay out. Mirrors `Layout`. */
@@ -763,6 +795,103 @@ export interface DockerRow {
 /** What Docker keeps and what of it nothing uses, asked of its engine. */
 export function dockerUsage(): Promise<DockerRow> {
   return invoke<DockerRow>('docker_usage')
+}
+
+/** One band of the strata. Mirrors `Layer`. */
+export interface Layer {
+  stratum: Stratum
+  size: Size
+  files: number
+}
+
+/** Why an entry is not offered for compression. Mirrors `Why`. */
+export type NotCompressed = { why: 'volume'; detail: string } | { why: 'windows' } | { why: 'nothing' }
+
+/** One fossil. Mirrors `FossilRow`. */
+export interface FossilRow {
+  id: number
+  path: string
+  isDirectory: boolean
+  size: Size
+  entries: number
+  /** When anything in it was last written, and when a file in it was opened. */
+  written: number | null
+  opened: number | null
+  /** What compressing it would read, when it can be compressed. */
+  compresses: Size | null
+  notCompressed: NotCompressed | null
+  /** What a rule calls it, when a rule finds it whole. */
+  finding: string | null
+}
+
+/** How old the layers of the folder are. Mirrors `LayersSummary`. */
+export interface LayersSummary {
+  arena: number
+  version: number
+  /** The bytes by how long ago each file was written, the youngest first. */
+  strata: Layer[]
+  fossils: FossilRow[]
+  count: number
+  size: Size
+  more: number
+  moreSize: Size
+  accessKept: boolean
+  /** Why nothing on this volume can be compressed, when nothing can. */
+  compressRefused: string | null
+}
+
+/** Why a file was left as it was. Mirrors `Left`. */
+export type Left =
+  | 'compressed'
+  | 'placeholder'
+  | 'elsewhere'
+  | 'sparse'
+  | 'virtual-disk'
+  | 'packed'
+  | 'encrypted'
+  | 'in-use'
+  | 'denied'
+  | 'failed'
+
+/** The files left as they were for one reason. Mirrors `Kept`. */
+export interface KeptRow {
+  why: Left
+  files: number
+  bytes: number
+  /** The first refusal the volume gave, when it gave one. */
+  first: string | null
+}
+
+/** What compressing did. Mirrors `Compressed`. */
+export interface Compressed {
+  files: number
+  bytes: number
+  folders: number
+  left: KeptRow[]
+  stopped: boolean
+}
+
+/** What compressing did, and how much came back. Mirrors `CompressedRow`. */
+export interface CompressedRow {
+  done: Compressed
+  before: Size
+  after: Size
+}
+
+/** How old the layers of the folder as it is in `arena` are: the strata and
+ * the `limit` largest fossils. */
+export function layers(arena: number, basis: SizeBasis, limit: number): Promise<LayersSummary> {
+  return invoke<LayersSummary>('layers', { arena, basis, limit })
+}
+
+/** Compresses entry `id` with NTFS compression and reads it again. */
+export function compressEntry(arena: number, id: number): Promise<CompressedRow> {
+  return invoke<CompressedRow>('compress_entry', { arena, id })
+}
+
+/** Asks the compression running to stop after the file it is on. */
+export function cancelCompress(): Promise<void> {
+  return invoke<void>('cancel_compress')
 }
 
 /** Picks the size a basis names out of a row. */

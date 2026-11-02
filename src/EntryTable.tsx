@@ -257,7 +257,9 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
         className="min-h-0 flex-1 overflow-y-auto"
       >
         {count === 0 ? (
-          <p className="px-3 py-6 text-sm text-dim">{compared ? 'Nothing in this folder changed size.' : 'This folder is empty.'}</p>
+          <p className="px-3 py-6 text-sm text-dim">
+            {compared ? 'Nothing in this folder changed size.' : view === 'old' ? 'Nothing in this folder has gone a year untouched.' : 'This folder is empty.'}
+          </p>
         ) : (
           <div style={{ height: totalHeight }} className="relative">
             <div style={{ transform: `translateY(${offsetTop}px)` }}>
@@ -271,8 +273,12 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
                 }
 
                 // In a comparison the bar is the row's share of what moved in
-                // the folder, as its tile in the picture is.
-                const size = row.compared === null ? sizeOf(row, basis) : pick(row.compared.moved, basis)
+                // the folder, as its tile in the picture is; in the view of
+                // what is untouched, of what of the folder is.
+                const size = row.compared !== null ? pick(row.compared.moved, basis) : row.untouched !== null ? pick(row.untouched, basis) : sizeOf(row, basis)
+                // The two size columns of the view of what is untouched are
+                // what of the row is: the folder by its old bytes alone.
+                const shown = row.untouched ?? { allocated: row.allocated, logical: row.logical }
                 const chosen = row.id === selectedId
                 // Why this row's two numbers differ, when they do. A second
                 // name for shared bytes is the one worth marking in the list
@@ -361,10 +367,10 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
                           {formatShare(size, total)}
                         </span>
                         <span role="gridcell" className="tabular truncate px-3 text-right">
-                          {formatBytes(row.allocated)}
+                          {formatBytes(shown.allocated)}
                         </span>
                         <span role="gridcell" className="tabular truncate px-3 text-right text-dim">
-                          {formatBytes(row.logical)}
+                          {formatBytes(shown.logical)}
                         </span>
                         <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
                           {formatAge(row.subtreeModified)}

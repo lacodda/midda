@@ -13,7 +13,7 @@
  * over numbers — which is what they are.
  */
 
-import type { Category, Rect } from '@/core'
+import type { Category, Rect, Stratum } from '@/core'
 import type { Way } from '@/format'
 
 /** A rectangle in pixels, as the canvas wants it. */
@@ -251,4 +251,19 @@ export const WAY_LABELS: Record<Way, string> = {
   grew: 'grew',
   freed: 'freed',
   even: 'as much came as went',
+}
+
+/** The bands of the strata, the youngest first, as the legend names them.
+ * Mirrors `Stratum::ALL`. */
+export const STRATA: readonly Stratum[] = ['month', 'half-year', 'year', 'two-years', 'five-years', 'older', 'undated']
+
+/**
+ * The fills of the picture of what is untouched, by how old each tile's
+ * layer is: the `--stratum-*` tokens of styles.css, each a mix of dowel's
+ * own with the ground, read like every other fill. The label is `--text` on
+ * every band - each is mixed with the ground far enough for that to read in
+ * both themes.
+ */
+export function stratumPaletteOf(read: TokenReader, stratum: Stratum): Palette {
+  return { fill: read(`--stratum-${stratum}`), label: read('--text') }
 }

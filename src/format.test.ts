@@ -3,7 +3,10 @@ import {
   CHANGE_SPANS,
   describeChanges,
   describeCleaned,
+  describeCompressed,
   describeDiskFile,
+  describeLastOpened,
+  describeStratum,
   describeFillLine,
   describeComparison,
   describeKept,
@@ -600,5 +603,61 @@ describe('describeFillLine', () => {
       title: 'app\\target',
       path: null,
     })
+  })
+})
+
+describe('describeStratum', () => {
+  it('says a fossil is untouched and a younger layer when it was written', () => {
+    expect(describeStratum('two-years')).toBe('untouched 1-2 years')
+    expect(describeStratum('older')).toBe('untouched over 5 years')
+    expect(describeStratum('month')).toBe('written under a month ago')
+    expect(describeStratum('year')).toBe('written 6-12 months ago')
+    expect(describeStratum('undated')).toBe('no date')
+  })
+})
+
+describe('describeLastOpened', () => {
+  const now = Date.UTC(2026, 10, 2)
+  it('says when a file was opened, beside when it was written', () => {
+    expect(describeLastOpened(now - 3 * 30 * 86_400_000, now)).toBe('last opened 3 months ago')
+    expect(describeLastOpened(now - 1000, now)).toBe('opened today')
+  })
+  it('says nothing where the volume keeps no such time, or the clock is wrong', () => {
+    expect(describeLastOpened(null, now)).toBeNull()
+    expect(describeLastOpened(now + 86_400_000 * 2, now)).toBeNull()
+  })
+})
+
+describe('describeCompressed', () => {
+  const size = (allocated: number) => ({ logical: 10_485_760, allocated })
+  it('says what came back, measured, and what was left and why, the most first', () => {
+    const said = describeCompressed({
+      done: {
+        files: 1204,
+        folders: 30,
+        left: [
+          { why: 'packed', files: 300, first: null },
+          { why: 'in-use', files: 2, first: null },
+        ],
+        stopped: false,
+      },
+      before: size(10_485_760),
+      after: size(4_194_304),
+    })
+    expect(said).toBe(
+      'Compressed 1,204 files: 10 MB → 4.0 MB on disk, 6.0 MB back; left as they were: 300 compressed by their format already, 2 held open by another program.',
+    )
+  })
+  it('quotes the volume when it refused for a reason of its own, and says it was stopped', () => {
+    const said = describeCompressed({
+      done: { files: 0, folders: 1, left: [{ why: 'failed', files: 1, first: 'The disk is full.' }], stopped: true },
+      before: size(8192),
+      after: size(8192),
+    })
+    expect(said).toBe('Stopped before the end. Nothing was compressed; left as they were: 1 refused by the volume (The disk is full.).')
+  })
+  it('does not call compressed files a gain when nothing came back', () => {
+    const said = describeCompressed({ done: { files: 3, folders: 0, left: [], stopped: false }, before: size(8192), after: size(8192) })
+    expect(said).toBe('Compressed 3 files, and nothing came back: what is in them does not compress.')
   })
 })

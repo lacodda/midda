@@ -53,11 +53,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use midda_core::checks::{self, Check, Kept, Machine, Seen};
 use midda_core::compare::{Comparison, Mark, PlaceKind};
+use midda_core::compress::{self, Compressed, Verdict, Why};
 use midda_core::consumers::story::{self, Story};
 use midda_core::consumers::{self, Classified, Consumer, Summary};
 use midda_core::fresh::since::{Change, Changes};
 use midda_core::fresh::store::{self, Unusable};
 use midda_core::growth::{self, Growers};
+use midda_core::layers::{self, Layer, Untouched};
 use midda_core::order::{self, Sort, Span};
 use midda_core::platform::Space;
 use midda_core::rules::cleanup::{Ran, Reach};
@@ -109,6 +111,8 @@ struct Found {
     disks: Option<Arc<Vec<Looked>>>,
     /// Every finding, the ones a check waited on settled, once asked.
     settled: Option<Arc<Vec<Settled>>>,
+    /// What of each entry has been untouched for a year, once asked.
+    untouched: Option<Arc<Untouched>>,
 }
 
 impl Session {
@@ -188,6 +192,16 @@ struct State {
     /// Why the picture of last time was not kept when the folder was opened,
     /// when it was not.
     last_note: Option<String>,
+    /// A compression running now.
+    compressing: Option<Compressing>,
+}
+
+/// A compression running: what, how far, and out of how much.
+struct Compressing {
+    path: PathBuf,
+    progress: Arc<Progress>,
+    /// What the tree said the entry reads as when it started.
+    of: u64,
 }
 
 /// A comparison, and the two moments it is between.
@@ -280,6 +294,12 @@ pub struct Row {
     /// In a comparison: what this held then and how much moved under it.
     /// `null` everywhere else.
     pub compared: Option<ComparedRow>,
+    /// In the view of what is untouched: what of it nothing has written to
+    /// for a year. `null` everywhere else.
+    pub untouched: Option<Size>,
+    /// When a file beneath this was last opened, as milliseconds since the
+    /// epoch - only where the volume keeps that; `null` everywhere else.
+    pub accessed: Option<i64>,
 }
 
 /// What a row of a comparison carries beyond a row: the other moment.
@@ -327,6 +347,9 @@ pub enum View {
     Changes,
     /// Two pictures of the folder compared.
     Compare,
+    /// The folder as it is, by what of it nothing has written to for a year:
+    /// the same tree and ids as `Index`, its sizes the old bytes only.
+    Old,
 }
 
 /// What the window draws: how the read is going, the result, and how
@@ -352,6 +375,20 @@ pub struct SessionState {
     pub applied_at: Option<i64>,
     pub version: u64,
     pub arena: u64,
+    /// A compression running now, and how far it is.
+    pub compressing: Option<CompressingRow>,
+}
+
+/// How far a compression is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressingRow {
+    pub path: String,
+    /// Files gone through so far, and what they read as.
+    pub files: u64,
+    pub bytes: u64,
+    /// What the whole reads as.
+    pub of: u64,
 }
 
 /// A picture on screen.
@@ -378,6 +415,9 @@ pub struct ScanResult {
     pub elapsed_ms: u64,
     /// When the folder was last read in full.
     pub read_at: Option<i64>,
+    /// Whether the volume keeps the time files were last opened: where it
+    /// does not, no row says when anything was.
+    pub access_kept: bool,
 }
 
 /// What was written since a moment, as the window shows it.
@@ -672,6 +712,7 @@ pub fn scan_progress(session: tauri::State<'_, Session>) -> Result<SessionState,
                 fallback: tree.fallback().map(str::to_owned),
                 elapsed_ms: state.took.map_or(0, |took| u64::try_from(took.as_millis()).unwrap_or(u64::MAX)),
                 read_at: millis(index.scanned_at()),
+                access_kept: tree.access_kept(),
             }
         }),
         error: state.failure.clone(),
@@ -679,6 +720,12 @@ pub fn scan_progress(session: tauri::State<'_, Session>) -> Result<SessionState,
         applied_at: state.applied_at.and_then(millis),
         version: state.version,
         arena: state.arena,
+        compressing: state.compressing.as_ref().map(|compressing| CompressingRow {
+            path: compressing.path.to_string_lossy().into_owned(),
+            files: compressing.progress.entries(),
+            bytes: compressing.progress.bytes(),
+            of: compressing.of,
+        }),
     })
 }
 
@@ -703,7 +750,7 @@ impl<'a> Shown<'a> {
 /// The arena the ids of a view are in now.
 const fn arena_of(state: &State, view: View) -> u64 {
     match view {
-        View::Index => state.arena,
+        View::Index | View::Old => state.arena,
         View::Changes => state.changes_arena,
         View::Compare => state.comparison_arena,
     }
@@ -713,7 +760,7 @@ const fn arena_of(state: &State, view: View) -> u64 {
 /// from.
 fn tree_of(state: &State, view: View, arena: Option<u64>) -> Result<Shown<'_>, String> {
     let shown = match view {
-        View::Index => state.index.as_ref().map(|index| Shown::Index(index.tree())),
+        View::Index | View::Old => state.index.as_ref().map(|index| Shown::Index(index.tree())),
         View::Changes => state.changes.as_ref().map(Shown::Changes),
         View::Compare => state.comparison.as_ref().map(|compared| Shown::Compare(&compared.comparison)),
     };
@@ -752,15 +799,41 @@ pub fn list_children(view: View, arena: u64, id: u32, sort: Sort, basis: SizeBas
     let shown = tree_of(&state, view, Some(arena))?;
     let tree = shown.tree();
     let id = checked(tree, id)?;
-    let (ids, total) = match shown {
-        Shown::Compare(comparison) => comparison.children_page(id, sort, basis, span),
-        Shown::Index(_) | Shown::Changes(_) => order::children_page(tree, id, sort, span),
+    let untouched = untouched_for(&state, &session.found, view, tree)?;
+    let (ids, total) = match (shown, &untouched) {
+        (Shown::Compare(comparison), _) => comparison.children_page(id, sort, basis, span),
+        (_, Some(untouched)) => untouched.children_page(tree, id, sort, basis, span),
+        (Shown::Index(_) | Shown::Changes(_), None) => order::children_page(tree, id, sort, span),
     };
+    let mut rows: Vec<Row> = ids.into_iter().map(|child| row(shown, child)).collect();
+    untouched_rows(&mut rows, untouched.as_deref());
     Ok(Page {
-        rows: ids.into_iter().map(|child| row(shown, child)).collect(),
+        rows,
         offset: span.offset,
         total: u32::try_from(total).unwrap_or(u32::MAX),
     })
+}
+
+/// What of each entry is untouched, when `view` is the view of it: worked
+/// out once per version of the tree on screen.
+fn untouched_for(state: &State, found: &Mutex<Option<Found>>, view: View, tree: &Tree) -> Result<Option<Arc<Untouched>>, String> {
+    if view != View::Old {
+        return Ok(None);
+    }
+    with_found(state, found, tree, |found| {
+        Some(Arc::clone(
+            found.untouched.get_or_insert_with(|| Arc::new(Untouched::of(tree, SystemTime::now()))),
+        ))
+    })
+}
+
+/// Rows of the view of what is untouched carry what of each is.
+fn untouched_rows(rows: &mut [Row], untouched: Option<&Untouched>) {
+    if let Some(untouched) = untouched {
+        for row in rows {
+            row.untouched = Some(untouched.size(row.id));
+        }
+    }
 }
 
 /// The trail from the root down to `id`, root first.
@@ -773,7 +846,9 @@ pub fn trail_to(view: View, arena: u64, id: u32, session: tauri::State<'_, Sessi
     let state = session.shared.read().map_err(poisoned)?;
     let shown = tree_of(&state, view, Some(arena))?;
     let id = checked(shown.tree(), id)?;
-    Ok(trail(shown, id))
+    let mut rows = trail(shown, id);
+    untouched_rows(&mut rows, untouched_for(&state, &session.found, view, shown.tree())?.as_deref());
+    Ok(rows)
 }
 
 /// The trail down to the entry at `path`, or to the deepest folder above it
@@ -801,7 +876,9 @@ pub fn trail_to_path(view: View, path: String, session: tauri::State<'_, Session
             }
         }
     }
-    Ok(Trail { arena, rows: trail(shown, at) })
+    let mut rows = trail(shown, at);
+    untouched_rows(&mut rows, untouched_for(&state, &session.found, view, tree)?.as_deref());
+    Ok(Trail { arena, rows })
 }
 
 /// The rectangles that draw the children of `id`.
@@ -827,14 +904,19 @@ fn tiles_of(shared: &RwLock<State>, found: &Mutex<Option<Found>>, view: View, ar
     let shown = tree_of(&state, view, Some(arena))?;
     let id = checked(shown.tree(), id)?;
     let rules = RuleSet::shipped();
+    let now = SystemTime::now();
     Ok(match shown {
         // Drawn by what moved, not by what is there.
         Shown::Compare(comparison) => comparison.tiles(id, layout),
+        // Drawn by what of it is old, coloured by how old.
+        Shown::Index(tree) if view == View::Old => untouched_for(&state, found, view, tree)?
+            .map(|untouched| untouched.tiles(tree, id, layout))
+            .unwrap_or_default(),
         Shown::Index(tree) => {
             let units = with_found(&state, found, tree, |found| found.units.clone())?;
-            treemap::tiles(tree, id, layout, rules, &units)
+            treemap::tiles(tree, id, layout, rules, &units, now)
         }
-        Shown::Changes(changes) => treemap::tiles(&changes.tree, id, layout, rules, &state.changes_units),
+        Shown::Changes(changes) => treemap::tiles(&changes.tree, id, layout, rules, &state.changes_units, now),
     })
 }
 
@@ -1343,6 +1425,7 @@ fn with_found<T>(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, read:
             story: None,
             disks: None,
             settled: None,
+            untouched: None,
         });
     }
     Ok(read(found.as_mut().expect("worked out above")))
@@ -1911,6 +1994,212 @@ fn size_at(shared: &RwLock<State>, path: &Path) -> Result<Size, String> {
     Ok(tree.node(at).size)
 }
 
+/// How old the layers of the folder are, as the window shows them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayersSummary {
+    pub arena: u64,
+    /// The version of the tree these are of.
+    pub version: u64,
+    /// Its bytes by how long ago each file was written, the youngest first.
+    pub strata: Vec<Layer>,
+    /// The largest fossils, each inside no larger one.
+    pub fossils: Vec<FossilRow>,
+    /// How many fossils there are, listed or not, and what they take.
+    pub count: u64,
+    pub size: Size,
+    pub more: u64,
+    pub more_size: Size,
+    /// Whether the volume keeps the time files were last opened.
+    pub access_kept: bool,
+    /// Why nothing on this volume can be compressed, when nothing can.
+    pub compress_refused: Option<String>,
+}
+
+/// One fossil, as the window lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FossilRow {
+    pub id: u32,
+    pub path: String,
+    pub is_directory: bool,
+    pub size: Size,
+    pub entries: u64,
+    /// When anything in it was last written, and when a file in it was last
+    /// opened, as milliseconds since the epoch.
+    pub written: Option<i64>,
+    pub opened: Option<i64>,
+    /// What compressing it would read, when it can be compressed.
+    pub compresses: Option<Size>,
+    /// Why it cannot be, when it cannot.
+    pub not_compressed: Option<Why>,
+    /// What a rule calls it, when a rule finds it whole: an old folder a tool
+    /// makes again is better deleted than compressed.
+    pub finding: Option<String>,
+}
+
+/// What compressing an entry did, and how much came back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressedRow {
+    pub done: Compressed,
+    /// What it held before, and holds now, read again whole.
+    pub before: Size,
+    pub after: Size,
+}
+
+/// How old the layers of the folder as it is are: the strata, and the
+/// `limit` largest fossils on `basis`, each with whether it can be
+/// compressed.
+///
+/// # Errors
+///
+/// `stale` when `arena` is not the tree on screen; otherwise when nothing
+/// has been read.
+#[tauri::command]
+pub async fn layers(arena: u64, basis: SizeBasis, limit: u32, session: tauri::State<'_, Session>) -> Result<LayersSummary, String> {
+    let shared = Arc::clone(&session.shared);
+    let found = Arc::clone(&session.found);
+    tauri::async_runtime::spawn_blocking(move || layers_of(&shared, &found, arena, basis, limit as usize, SystemTime::now()))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn layers_of(
+    shared: &RwLock<State>,
+    found: &Mutex<Option<Found>>,
+    arena: u64,
+    basis: SizeBasis,
+    limit: usize,
+    now: SystemTime,
+) -> Result<LayersSummary, String> {
+    let state = shared.read().map_err(poisoned)?;
+    let tree = tree_of(&state, View::Index, Some(arena))?.tree();
+    let fossils = layers::fossils(tree, ROOT, now, basis, limit);
+    let refused = compress::refused_on(tree.root_path());
+    let (classified, findings) = with_found(&state, found, tree, |found| (classified_in(found, tree), found.survey.findings.clone()))?;
+    let rules = RuleSet::shipped();
+    let rows = fossils
+        .listed
+        .iter()
+        .map(|fossil| {
+            let (compresses, not_compressed) = match compress::verdict(tree, fossil.id, &classified, refused.as_deref()) {
+                Verdict::Can { reads } => (Some(reads), None),
+                Verdict::Not(why) => (None, Some(why)),
+            };
+            FossilRow {
+                id: fossil.id,
+                path: tree.path_of(fossil.id).to_string_lossy().into_owned(),
+                is_directory: tree.node(fossil.id).is_directory(),
+                size: fossil.size,
+                entries: fossil.entries,
+                written: fossil.written.and_then(millis),
+                opened: fossil.opened.and_then(millis),
+                compresses,
+                not_compressed,
+                finding: findings
+                    .iter()
+                    .find(|finding| finding.id == fossil.id)
+                    .map(|finding| rules.rule_of(finding).name.clone()),
+            }
+        })
+        .collect();
+    Ok(LayersSummary {
+        arena,
+        version: state.version,
+        strata: layers::strata(tree, ROOT, now),
+        fossils: rows,
+        count: fossils.count,
+        size: fossils.size,
+        more: fossils.more,
+        more_size: fossils.more_size,
+        access_kept: tree.access_kept(),
+        compress_refused: refused,
+    })
+}
+
+/// Compresses the entry `id` of the folder as it is with NTFS compression,
+/// and reads it again whole, so what came back is measured rather than
+/// assumed. One at a time; the window follows it in `scan_progress`.
+///
+/// # Errors
+///
+/// `stale` when `arena` is not the tree on screen or the entry is gone;
+/// when a compression is running already, the entry is not one that can be
+/// compressed, or the volume cannot compress.
+#[tauri::command]
+pub async fn compress_entry(arena: u64, id: u32, session: tauri::State<'_, Session>) -> Result<CompressedRow, String> {
+    let shared = Arc::clone(&session.shared);
+    let found = Arc::clone(&session.found);
+    tauri::async_runtime::spawn_blocking(move || compress_in(&shared, &found, arena, id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Asks the compression running to stop after the file it is on.
+///
+/// # Errors
+///
+/// When the session lock is poisoned.
+#[tauri::command]
+pub fn cancel_compress(session: tauri::State<'_, Session>) -> Result<(), String> {
+    let state = session.shared.read().map_err(poisoned)?;
+    if let Some(compressing) = &state.compressing {
+        compressing.progress.cancel();
+    }
+    Ok(())
+}
+
+fn compress_in(shared: &RwLock<State>, found: &Mutex<Option<Found>>, arena: u64, id: u32) -> Result<CompressedRow, String> {
+    let progress = Progress::new();
+    let (path, before) = {
+        let mut state = shared.write().map_err(poisoned)?;
+        if state.compressing.is_some() {
+            return Err("a compression is running already".to_owned());
+        }
+        let tree = tree_of(&state, View::Index, Some(arena))?.tree();
+        let id = checked(tree, id)?;
+        let classified = with_found(&state, found, tree, |found| classified_in(found, tree))?;
+        let refused = compress::refused_on(tree.root_path());
+        if let Verdict::Not(why) = compress::verdict(tree, id, &classified, refused.as_deref()) {
+            return Err(match why {
+                Why::Volume(why) => why,
+                Why::Windows => "Windows' own files are left as Windows keeps them".to_owned(),
+                Why::Nothing => "nothing in it would compress".to_owned(),
+            });
+        }
+        let path = tree.path_of(id);
+        let before = tree.node(id).size;
+        state.compressing = Some(Compressing {
+            path: path.clone(),
+            progress: Arc::clone(&progress),
+            of: before.logical,
+        });
+        (path, before)
+    };
+    let done = compress::compress(&path, &progress);
+    // Read again whole, as a cleanup is: the reader is waiting to see what
+    // came back, and the journal would say it file by file, later.
+    let observed = {
+        let state = shared.read().map_err(poisoned)?;
+        state.index.as_ref().map(|index| index.read_again(&path))
+    };
+    {
+        let mut state = shared.write().map_err(poisoned)?;
+        state.compressing = None;
+        if let Some(observed) = observed
+            && let Some(index) = state.index.as_mut()
+        {
+            index.apply(observed);
+            state.version += 1;
+            state.applied_at = Some(SystemTime::now());
+        }
+    }
+    let done = done?;
+    let after = size_at(shared, &path)?;
+    Ok(CompressedRow { done, before, after })
+}
+
 /// Whether a folder is one of `units`: none are, when there are none.
 fn among(units: Option<&HashSet<NodeId>>) -> impl Fn(NodeId) -> bool + '_ {
     move |id| units.is_some_and(|units| units.contains(&id))
@@ -1947,6 +2236,8 @@ fn row(shown: Shown<'_>, id: NodeId) -> Row {
         path: tree.path_of(id).to_string_lossy().into_owned(),
         traits: node.traits.bits(),
         links: node.links,
+        untouched: None,
+        accessed: node.accessed.and_then(millis),
         change: match shown {
             Shown::Changes(changes) => changes.mark(id),
             Shown::Index(_) | Shown::Compare(_) => None,
@@ -2789,5 +3080,134 @@ mod tests {
         assert!(!summary.to_now);
         assert_eq!(summary.totals.new, 1, "b.bin came between the two");
         assert_eq!(summary.totals.gone, 0);
+    }
+
+    /// Writes `bytes` of text at `path`, last written `days` ago.
+    fn written_ago(path: &Path, bytes: usize, days: u64) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create the parent");
+        }
+        std::fs::write(path, "an old line of text, said again. ".repeat(bytes / 33 + 1)).expect("write");
+        let then = SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(then)))
+            .expect("date the file");
+    }
+
+    /// Dates the folder at `path` as last written `days` ago: a folder is
+    /// written whenever an entry in it is added, so it is dated after them.
+    fn folder_ago(path: &Path, days: u64) {
+        let then = SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
+        let mut options = std::fs::File::options();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            // FILE_WRITE_ATTRIBUTES, and FILE_FLAG_BACKUP_SEMANTICS, without
+            // which Windows opens no folder.
+            options.access_mode(0x100).custom_flags(0x0200_0000);
+        }
+        #[cfg(not(windows))]
+        options.read(true);
+        options
+            .open(path)
+            .and_then(|folder| folder.set_times(std::fs::FileTimes::new().set_modified(then)))
+            .expect("date the folder");
+    }
+
+    #[test]
+    fn the_layers_of_a_folder_are_its_strata_and_its_fossils_and_the_old_view_counts_the_same() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path();
+        written_ago(&root.join("old-project/src/main.rs"), 40_000, 900);
+        written_ago(&root.join("old-project/notes.txt"), 10_000, 1000);
+        written_ago(&root.join("live/today.txt"), 5_000, 0);
+        written_ago(&root.join("live/archive/2020.txt"), 20_000, 2000);
+        folder_ago(&root.join("old-project/src"), 900);
+        folder_ago(&root.join("old-project"), 900);
+        folder_ago(&root.join("live/archive"), 2000);
+        let shared = opened(index_of(root));
+        let found = nothing_found();
+
+        let summary = layers_of(&shared, &found, 0, SizeBasis::Logical, 10, SystemTime::now()).expect("the layers");
+        let paths: Vec<String> = summary
+            .fossils
+            .iter()
+            .map(|fossil| fossil.path.replace('\\', "/").rsplit('/').next().unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(paths, ["old-project", "archive"], "the old project whole; of the live folder, its archive");
+        let old: u64 = summary
+            .strata
+            .iter()
+            .filter(|layer| layer.stratum.is_fossil())
+            .map(|layer| layer.size.logical)
+            .sum();
+        assert_eq!(old, summary.size.logical, "the old strata and the fossils are one count");
+
+        // The view of what is untouched: the same tree, by its old bytes.
+        let state = shared.read().expect("read");
+        let tree = state.index.as_ref().expect("an index").tree();
+        let untouched = untouched_for(&state, &found, View::Old, tree).expect("worked out").expect("the old view");
+        assert_eq!(untouched.size(ROOT).logical, summary.size.logical);
+        let sort = Sort {
+            key: midda_core::SortKey::Logical,
+            direction: midda_core::Direction::Descending,
+        };
+        let live = tree.child(ROOT, "live").expect("live");
+        let (page, total) = untouched.children_page(tree, live, sort, SizeBasis::Logical, Span::default());
+        assert_eq!((total, tree.node(page[0]).name.as_str()), (1, "archive"), "today's file is not in the old view");
+        assert!(untouched_for(&state, &found, View::Index, tree).expect("asked").is_none());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_fossil_compressed_is_read_again_and_says_what_came_back() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path();
+        if compress::refused_on(root).is_some() {
+            return;
+        }
+        written_ago(&root.join("cold/a.txt"), 300_000, 800);
+        written_ago(&root.join("cold/b.txt"), 200_000, 900);
+        folder_ago(&root.join("cold"), 800);
+        let shared = opened(index_of(root));
+        let found = nothing_found();
+        let cold = {
+            let state = shared.read().expect("read");
+            state.index.as_ref().expect("an index").tree().child(ROOT, "cold").expect("cold")
+        };
+        let version = shared.read().expect("read").version;
+
+        let compressed = compress_in(&shared, &found, 0, cold).expect("compressed");
+        assert_eq!(compressed.done.files, 2);
+        assert!(
+            compressed.after.allocated < compressed.before.allocated / 2,
+            "text compresses: {:?} -> {:?}",
+            compressed.before,
+            compressed.after
+        );
+        assert_eq!(compressed.after.logical, compressed.before.logical, "nothing was deleted");
+        let state = shared.read().expect("read");
+        assert!(state.version > version, "the window is told the tree changed");
+        assert!(state.compressing.is_none());
+        drop(state);
+
+        // Still a fossil - its age did not move - and now there is nothing
+        // in it left to compress.
+        let summary = layers_of(&shared, &nothing_found(), 0, SizeBasis::Allocated, 10, SystemTime::now()).expect("the layers");
+        assert_eq!(summary.fossils.len(), 1);
+        assert_eq!(summary.fossils[0].not_compressed, Some(Why::Nothing));
+        // Read again whole, the folder is a new entry of the tree: the window
+        // finds it again by its path, as after a cleanup.
+        assert_eq!(compress_in(&shared, &found, 0, cold).expect_err("the old id"), "stale");
+        let again = {
+            let state = shared.read().expect("read");
+            state.index.as_ref().expect("an index").tree().child(ROOT, "cold").expect("cold")
+        };
+        assert_eq!(
+            compress_in(&shared, &found, 0, again).expect_err("nothing left"),
+            "nothing in it would compress"
+        );
     }
 }

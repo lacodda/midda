@@ -3,11 +3,12 @@ import { useEffect, useState } from 'react'
 import { Segment, SegmentedControl } from '@/components/ui/segmented-control'
 import { ComparisonReport } from '@/ComparisonReport'
 import { EntryTable } from '@/EntryTable'
+import { Layers } from '@/Layers'
 import { SafeToDelete } from '@/SafeToDelete'
 import { TopGrowth } from '@/TopGrowth'
 import { Treemap } from '@/Treemap'
 import { WhatFills } from '@/WhatFills'
-import type { ChangesSummary, ComparisonSummary, Row, ScanResult, Size, SizeBasis, Sort, SortKey, View } from '@/core'
+import type { ChangesSummary, ComparisonSummary, CompressingRow, Row, ScanResult, Size, SizeBasis, Sort, SortKey, View } from '@/core'
 import { findings, growthOf, pick, sizeOf } from '@/core'
 import { describeChanges, describeComparison, describeOverhead, describeScan, explainSize, formatBytes, formatCount, formatSigned } from '@/format'
 
@@ -15,7 +16,7 @@ import { describeChanges, describeComparison, describeOverhead, describeScan, ex
  * How a view is shown: the folder's tree, with the picture; who is eating
  * the disk, as a list, and - a comparison only - the page of what came back
  * and from where; or - the folder as it is only - what fills it, and what
- * can go.
+ * can go. In the view of what is untouched, `top` is its fossils.
  */
 export type Shape = 'top' | 'tree' | 'report' | 'fills' | 'safe'
 
@@ -33,6 +34,8 @@ interface RowsProps {
   hours: number
   /** Two pictures compared, when that is the view. */
   comparison: ComparisonSummary | null
+  /** A compression running now, as the session says. */
+  compressing: CompressingRow | null
   /** How the view of growth on screen is shown. */
   shape: Shape
   onShape: (shape: Shape) => void
@@ -71,6 +74,7 @@ export function Rows({
   changes,
   hours,
   comparison,
+  compressing,
   shape,
   onShape,
   onOpenPlace,
@@ -124,8 +128,10 @@ export function Rows({
     </SegmentedControl>
   )
   // In a comparison the bars are shares of what moved in the folder, as the
-  // tiles are; anywhere else, of what it holds.
-  const total = compared === null ? sizeOf(showing, basis) : pick(compared.moved, basis)
+  // tiles are; in the view of what is untouched, of what of it is; anywhere
+  // else, of what it holds.
+  const untouched = view === 'old' ? showing.untouched : null
+  const total = compared !== null ? pick(compared.moved, basis) : untouched !== null ? pick(untouched, basis) : sizeOf(showing, basis)
   const overhead = compared === null ? describeOverhead(showing.logical, showing.allocated) : null
   // Why this entry in particular is unusual, when it is one — a folder carries
   // no traits, so in practice this speaks for a file the reader has descended
@@ -136,7 +142,8 @@ export function Rows({
   // read as a claim about that folder, which nothing here knows.
   const atRoot = trail.length === 1
   const lately = view === 'changes' && changes !== null
-  const elsewhere = lately || compared !== null
+  const old = view === 'old'
+  const elsewhere = lately || compared !== null || old
   const showsSkipped = !elsewhere && atRoot && result.skipped > 0
   const showsShared = !elsewhere && atRoot && result.sharedNames > 0
   // The scan-level sentence counts the names and the bytes; the entry-level one
@@ -227,6 +234,31 @@ export function Rows({
         </div>
       )}
 
+      {/* What is untouched says what its numbers are, and offers its fossils
+          beside its tree. */}
+      {old && (
+        <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
+          {shape === 'tree' ? (
+            <span className="tabular text-sm">
+              <span className="font-medium text-text">{formatBytes(total)}</span> untouched for a year · {formatBytes(sizeOf(showing, basis))} in all
+            </span>
+          ) : (
+            <span className="text-sm text-text">What nothing has written to in a year, and how old the rest is</span>
+          )}
+          <SegmentedControl
+            aria-label="How to show what is untouched"
+            className="ml-auto"
+            value={shape === 'tree' ? 'tree' : 'top'}
+            onValueChange={(next) => {
+              if (next === 'top' || next === 'tree') onShape(next)
+            }}
+          >
+            <Segment value="top">Fossils</Segment>
+            <Segment value="tree">Tree</Segment>
+          </SegmentedControl>
+        </div>
+      )}
+
       {view === 'index' && (shape === 'safe' || shape === 'fills') && (
         <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
           <span className="text-sm text-text">{shape === 'safe' ? 'What can go, and how each comes back' : 'Who the space is for, and why it is full'}</span>
@@ -234,7 +266,9 @@ export function Rows({
         </div>
       )}
 
-      {view === 'index' && shape === 'safe' ? (
+      {old && shape !== 'tree' ? (
+        <Layers arena={arena} version={version} basis={basis} root={trail[0]?.path ?? showing.path} compressing={compressing} onOpen={onOpenPlace} />
+      ) : view === 'index' && shape === 'safe' ? (
         <SafeToDelete arena={arena} version={version} basis={basis} root={trail[0]?.path ?? showing.path} onOpen={onOpenPlace} />
       ) : view === 'index' && shape === 'fills' ? (
         <WhatFills
@@ -276,7 +310,7 @@ export function Rows({
             with the total, and the notes under it - until the trail moved up
             into the title bar, and a strip holding only a total is a strip of
             screen spent on one number. */}
-        {compared === null && !lately && (
+        {compared === null && !lately && !old && (
           <div className="flex shrink-0 flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs text-dim">
             <span className="tabular text-sm">
               <span className="font-medium text-text">{formatBytes(total)}</span> · {formatCount(showing.entries)} entries

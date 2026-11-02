@@ -78,16 +78,17 @@ function Brand() {
 /** Where the user is: choosing, opening a folder, or looking at one. */
 type Stage = { at: 'choosing' } | { at: 'opening'; target: string } | { at: 'open'; target: string } | { at: 'failed'; target: string; message: string }
 
-/** What the span control says: everything, what grew since an earlier
- * picture, or what was written lately. */
-type Span = 'all' | 'grown' | 'day' | 'week'
+/** What the span control says: everything, what nothing has written to for a
+ * year, what grew since an earlier picture, or what was written lately. */
+type Span = 'all' | 'old' | 'grown' | 'day' | 'week'
 
 /** The order each view opens in. A comparison's is its own question. */
-const SORTS: Record<View, Sort> = { index: DEFAULT_SORT, changes: DEFAULT_SORT, compare: GROWTH_SORT }
+const SORTS: Record<View, Sort> = { index: DEFAULT_SORT, changes: DEFAULT_SORT, compare: GROWTH_SORT, old: DEFAULT_SORT }
 
-/** How each view opens: the folder as its tree, and each view of growth as
- * the list of who is eating the disk, which is the question both are asked. */
-const SHAPES: Record<View, Shape> = { index: 'tree', changes: 'top', compare: 'top' }
+/** How each view opens: the folder as its tree, each view of growth as the
+ * list of who is eating the disk, which is the question both are asked, and
+ * what is untouched as its fossils. */
+const SHAPES: Record<View, Shape> = { index: 'tree', changes: 'top', compare: 'top', old: 'top' }
 
 /** One trail and the ids it is in, per view. */
 interface Place {
@@ -122,7 +123,7 @@ export default function App() {
    * tree for the other is a reader comparing two answers. */
   const [shapes, setShapes] = useState(SHAPES)
   /** Where the reader is in each view. */
-  const [places, setPlaces] = useState<Record<View, Place>>({ index: NOWHERE, changes: NOWHERE, compare: NOWHERE })
+  const [places, setPlaces] = useState<Record<View, Place>>({ index: NOWHERE, changes: NOWHERE, compare: NOWHERE, old: NOWHERE })
   /** The version of the folder's tree the screen was last drawn from. */
   const [version, setVersion] = useState(0)
   /** The one entry both the table and the picture are pointing at. */
@@ -178,6 +179,13 @@ export default function App() {
     try {
       const found = await trailToPath('index', here)
       setPlaces((places) => ({ ...places, index: { trail: found.rows, arena: found.arena } }))
+      // The view of what is untouched is the same tree: its place moves with
+      // it, and its trail carries what of each step is untouched now.
+      const old = placesRef.current.old.trail.at(-1)?.path
+      if (old !== undefined) {
+        const again = await trailToPath('old', old)
+        setPlaces((places) => ({ ...places, old: { trail: again.rows, arena: again.arena } }))
+      }
       const chosen = selectedRef.current
       if (chosen !== null && viewRef.current === 'index') {
         const again = await trailToPath('index', chosen.path)
@@ -201,7 +209,7 @@ export default function App() {
       setChanges(null)
       setComparison(null)
       setShapes(SHAPES)
-      setPlaces({ index: NOWHERE, changes: NOWHERE, compare: NOWHERE })
+      setPlaces({ index: NOWHERE, changes: NOWHERE, compare: NOWHERE, old: NOWHERE })
       setSelected(null)
 
       try {
@@ -230,7 +238,7 @@ export default function App() {
                 await refind(state)
               }
             }
-            const busy = state.reading || state.freshness.catchingUp
+            const busy = state.reading || state.freshness.catchingUp || state.compressing !== null
             polling.current = window.setTimeout(poll, busy ? POLL_READING_MS : POLL_IDLE_MS)
           })
           .catch(() => {
@@ -298,7 +306,7 @@ export default function App() {
   const changeBasis = useCallback((next: SizeBasis) => {
     setBasis(next)
     const moved = (sort: Sort): Sort => (sort.key === 'allocated' || sort.key === 'logical' ? { key: next, direction: sort.direction } : sort)
-    setSorts((sorts) => ({ index: moved(sorts.index), changes: moved(sorts.changes), compare: moved(sorts.compare) }))
+    setSorts((sorts) => ({ index: moved(sorts.index), changes: moved(sorts.changes), compare: moved(sorts.compare), old: moved(sorts.old) }))
   }, [])
 
   /** Puts a comparison on screen, at its root, as the list of who is
@@ -363,6 +371,21 @@ export default function App() {
     setSelected(null)
     if (next === 'all') {
       setView('index')
+      return
+    }
+    if (next === 'old') {
+      // The same tree as the folder's, by its old bytes: the root's trail is
+      // asked of the core, which says what of it is untouched.
+      const root = placesRef.current.index.trail[0]?.path
+      if (root === undefined) return
+      try {
+        const found = await trailToPath('old', root)
+        setPlaces((places) => ({ ...places, old: { trail: found.rows.slice(0, 1), arena: found.arena } }))
+        setShapes((shapes) => ({ ...shapes, old: SHAPES.old }))
+        setView('old')
+      } catch (cause) {
+        if (!isStale(cause)) setNotice(`What is untouched could not be read: ${String(cause)}`)
+      }
       return
     }
     if (next === 'grown') {
@@ -465,7 +488,7 @@ export default function App() {
   // The picture on screen is last time's, not yet brought up to date:
   // comparing it with last time would find nothing, and say so wrongly.
   const settling = session !== null && (session.freshness.savedAt !== null || session.freshness.catchingUp)
-  const span: Span = view === 'index' ? 'all' : view === 'compare' ? 'grown' : hours === CHANGE_SPANS.day ? 'day' : 'week'
+  const span: Span = view === 'index' ? 'all' : view === 'old' ? 'old' : view === 'compare' ? 'grown' : hours === CHANGE_SPANS.day ? 'day' : 'week'
   const counted = { entries: session?.entries ?? 0, bytes: session?.bytes ?? 0, records: session?.records ?? 0 }
 
   return (
@@ -523,10 +546,13 @@ export default function App() {
                     aria-label="What to show"
                     value={span}
                     onValueChange={(next) => {
-                      if (next === 'all' || next === 'grown' || next === 'day' || next === 'week') void changeSpan(next)
+                      if (next === 'all' || next === 'old' || next === 'grown' || next === 'day' || next === 'week') void changeSpan(next)
                     }}
                   >
                     <Segment value="all">All</Segment>
+                    <span className="inline-flex" title="What nothing has written to in a year: the fossils, how old the rest is, and what compresses in place.">
+                      <Segment value="old">Untouched</Segment>
+                    </span>
                     <span
                       className="inline-flex"
                       title={
@@ -661,11 +687,12 @@ export default function App() {
             <Rows
               view={view}
               arena={place.arena}
-              version={view === 'index' ? version : 0}
+              version={view === 'index' || view === 'old' ? version : 0}
               result={result}
               changes={changes}
               hours={hours}
               comparison={comparison}
+              compressing={session?.compressing ?? null}
               shape={shapes[view]}
               onShape={(shape) => setShapes((shapes) => ({ ...shapes, [view]: shape }))}
               onOpenPlace={openPlace}
