@@ -244,7 +244,15 @@ pub fn fossils(tree: &Tree, under: NodeId, now: SystemTime, basis: SizeBasis, li
             stack.extend_from_slice(&node.children);
         }
     }
-    found.sort_by(|a, b| basis.of(b.size).cmp(&basis.of(a.size)).then_with(|| tree.scan_order(a.id, b.id)));
+    // Largest first, ties by id: a fresh order every time the same tree is
+    // asked. The order a scan would list them in - what every other list
+    // breaks ties by - walks both paths per comparison, and on a volume of
+    // a million entries with thousands of fossils of one cluster each that
+    // was most of the time (measured: 266 ms of fossils on 1.26 million
+    // entries); it is kept for the rows shown.
+    found.sort_unstable_by(|a, b| basis.of(b.size).cmp(&basis.of(a.size)).then(a.id.cmp(&b.id)));
+    let shown = limit.min(found.len());
+    found[..shown].sort_by(|a, b| basis.of(b.size).cmp(&basis.of(a.size)).then_with(|| tree.scan_order(a.id, b.id)));
 
     let mut fossils = Fossils {
         listed: Vec::new(),
@@ -562,6 +570,36 @@ mod tests {
         assert_eq!(tiles[0].stratum, Some(Stratum::FiveYears));
         assert_eq!(tiles[1].bytes, 500, "live-app, by its build folder");
         assert_eq!(tiles[1].stratum, Some(Stratum::Month), "a living folder is coloured as alive");
+    }
+
+    /// How long the layers of a real folder take to work out, for a live
+    /// check before a release:
+    /// `MIDDA_LAYERS_ON=C:\some\folder cargo test --release -p midda-core layers_of_a_real_folder -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "reads a real folder named by MIDDA_LAYERS_ON"]
+    fn layers_of_a_real_folder() {
+        let Ok(root) = std::env::var("MIDDA_LAYERS_ON") else {
+            return;
+        };
+        let tree = crate::scan(std::path::Path::new(&root), &crate::Progress::new()).expect("the scan succeeds");
+        let now = SystemTime::now();
+        let started = std::time::Instant::now();
+        let strata = strata(&tree, ROOT, now);
+        let took_strata = started.elapsed();
+        let started = std::time::Instant::now();
+        let fossils = fossils(&tree, ROOT, now, SizeBasis::Allocated, 30);
+        let took_fossils = started.elapsed();
+        let started = std::time::Instant::now();
+        let untouched = Untouched::of(&tree, now);
+        let took_untouched = started.elapsed();
+        assert_eq!(untouched.size(ROOT), fossils.size);
+        eprintln!(
+            "{} entries; strata {took_strata:?}, fossils {took_fossils:?} ({} of them, {} B), untouched {took_untouched:?}; {:?}",
+            tree.root().entries,
+            fossils.count,
+            fossils.size.allocated,
+            strata.iter().map(|layer| (layer.stratum, layer.size.allocated)).collect::<Vec<_>>()
+        );
     }
 
     #[test]
