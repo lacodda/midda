@@ -602,8 +602,11 @@ impl RuleSet {
         let walk = Walk::of(self, tree);
         let mut survey = Survey::default();
         let mut scratch = String::new();
-        let outside = if walk.places { self.above_root(&walk.outer) } else { Above::default() };
-        let root_above = self.above(tree, ROOT, &walk, outside, &mut scratch);
+        let root_above = if walk.places {
+            self.at_root(tree, &walk.outer, &mut scratch).1
+        } else {
+            Above::default()
+        };
         let mut stack: Vec<(NodeId, Above)> = Vec::new();
         let mut among = Vec::new();
         self.look_in(tree, ROOT, &walk, Here { now, above: root_above }, &mut survey, &mut stack, &mut among);
@@ -641,6 +644,18 @@ impl RuleSet {
         survey
     }
 
+    /// Whose the root of a scan is: the place that names the root itself,
+    /// when one does, and what a walk carries into it — that place's word, or
+    /// else what the folders above the root say ([`RuleSet::above_root`]).
+    /// One answer for the rules' walk and for what fills the disk
+    /// ([`crate::consumers::classify`]): a scan of a folder inside `AppData`
+    /// is a program's to both.
+    pub(crate) fn at_root(&self, tree: &Tree, outer: &Outer, scratch: &mut String) -> (Option<usize>, Above) {
+        let place = self.place_of(tree, ROOT, outer, scratch);
+        let above = place.map_or_else(|| self.above_root(outer), |place| Above::of(&self.places[place]));
+        (place, above)
+    }
+
     /// What the folders above the root of a scan say of it: a scan of a
     /// folder in `AppData` is a program's, though `AppData` is not in the
     /// tree. From the top of the volume down, the deepest place wins.
@@ -648,16 +663,6 @@ impl RuleSet {
         (1..=outer.above_root()).rev().fold(Above::default(), |above, up| {
             self.places.iter().find(|place| place.names_above(outer, up)).map_or(above, Above::of)
         })
-    }
-
-    /// What a walk carries into `id` from `above`: the place that names it,
-    /// when the set needs to know.
-    fn above(&self, tree: &Tree, id: NodeId, walk: &Walk<'_>, above: Above, scratch: &mut String) -> Above {
-        if !walk.places {
-            return above;
-        }
-        self.place_of(tree, id, &walk.outer, scratch)
-            .map_or(above, |place| Above::of(&self.places[place]))
     }
 
     /// The files directly in `id` a rule names, as findings; its folders onto

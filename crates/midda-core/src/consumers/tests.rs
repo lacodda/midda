@@ -225,6 +225,27 @@ fn a_scan_of_a_place_is_that_place_throughout() {
 }
 
 #[test]
+fn a_scan_inside_a_place_is_that_place_though_the_place_is_above_the_root() {
+    // Seen in the window: a scan of a program's folder in AppData said
+    // "unrecognised", while the rules' walk already knew whose it was.
+    let tree = tree_of(
+        &format!("{VOLUME}Users/me/AppData/Local/Foo"),
+        &[("cache/", 0), ("cache/blob.bin", 100), ("settings", 10)],
+    );
+    let classified = classified(&tree);
+    assert_eq!(classified.of(at(&tree, "cache/blob.bin")), Some(Consumer::Programs));
+    assert_eq!(classified.of(at(&tree, "settings")), Some(Consumer::Programs));
+    // The deepest place above wins: the temporary folder inside AppData is
+    // Windows'.
+    let temp = tree_of(&format!("{VOLUME}Users/me/AppData/Local/Temp/setup"), &[("x.tmp", 100)]);
+    assert_eq!(classified_of(&temp, "x.tmp"), Some(Consumer::System));
+}
+
+fn classified_of(tree: &Tree, path: &str) -> Option<Consumer> {
+    classified(tree).of(at(tree, path))
+}
+
+#[test]
 fn the_lines_of_a_consumer_are_the_places_that_hold_it() {
     let tree = volume();
     let classified = classified(&tree);

@@ -232,12 +232,14 @@ pub fn classify(rules: &RuleSet, tree: &Tree, survey: &Survey) -> Classified {
     let mut scratch = String::new();
 
     // The root is what was opened; a place may still name it - a scan of
-    // `C:\Windows` is Windows throughout.
-    let root_place = rules.place_of(tree, ROOT, &outer, &mut scratch);
+    // `C:\Windows` is Windows throughout - and when none does, the folders
+    // above it say whose it is: a scan of a folder inside `AppData` is a
+    // program's, as the rules' walk takes it.
+    let (root_place, root_above) = rules.at_root(tree, &outer, &mut scratch);
     if let Some(place) = root_place {
         classified.named.insert(ROOT, (place, rules.places()[place].consumer));
     }
-    let mut stack = vec![(ROOT, root_place.map(|place| Above::of(&rules.places()[place])).unwrap_or_default())];
+    let mut stack = vec![(ROOT, root_above)];
     while let Some((id, above)) = stack.pop() {
         for &child in &tree.node(id).children {
             let node = tree.node(child);
