@@ -40,6 +40,13 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
 ] }
+# The Recycle Bin is the shell's, and the shell is COM: IFileOperation, with a
+# progress sink of midda's own that says no when the shell would delete for
+# good what the bin will not take (delete::recycle). `windows-sys` has no COM
+# objects to implement; `windows` and `windows-core` are in the lock already,
+# through tauri's webview2-com, so this is features, not new crates.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows-core = "0.62"
 
 [dev-dependencies]
 tempfile = "3"

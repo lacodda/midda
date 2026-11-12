@@ -87,6 +87,13 @@
 //! reads, away from the tree. See
 //! `docs/adr/0016-what-windows-and-downloads-leave-behind.md`.
 //!
+//! What the reader picks of it, [`delete`] deletes: what comes back as it
+//! was for good, since the Recycle Bin would only move it, and what may not
+//! into the bin - never deleted instead when the bin will not take it. Every
+//! deletion is written down in a [`deletions`] log with how it comes back:
+//! the command, and the folder to run it in. See
+//! `docs/adr/0018-deleting-what-the-rules-found.md`.
+//!
 //! # The age of the layers
 //!
 //! A disk lies in layers. [`layers`] says how old they are - a folder's bytes
@@ -125,6 +132,8 @@ pub mod checks;
 pub mod compare;
 pub mod compress;
 pub mod consumers;
+pub mod delete;
+pub mod deletions;
 pub mod error;
 pub mod fresh;
 pub mod growth;
