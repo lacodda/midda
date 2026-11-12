@@ -43,7 +43,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.15.0: a volume read, kept current and explained - what fills it, what grew, how old it is, what can go - and what can go deleted, with a log of how each comes back. The formats of the index and the rules may change before 1.0; see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.15.0: a volume read, kept current and explained - what fills it, what grew, how old it is, what can go - and what can go deleted, with a log of how each comes back. Rules of your own are tried before midda's, and what you keep is never listed. The formats of the index and the rules may change before 1.0; see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
