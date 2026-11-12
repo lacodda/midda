@@ -8,6 +8,19 @@ last release, which follow [Conventional Commits](https://www.conventionalcommit
 $ git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md
 ```
 
+## [0.16.0] - 2026-11-12
+
+### CI
+- Build the window from each tag and put it on the release page
+
+### Documentation
+- Record rules of one's own in ADR 0019, and write the format down
+- Say in the README's status what v0.16 brings
+
+### Features
+- Read a reader's own rules first, keep what they keep, and follow folders the shell moves
+- Keep a finding once, and add, save and remove rules files of your own
+
 ## [0.15.0] - 2026-11-12
 
 ### Bug Fixes
