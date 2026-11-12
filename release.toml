@@ -27,5 +27,12 @@ workflow = "ci.yml"
 # The tag's release page: the changelog's section and the Checked live list.
 publish = "release.yml"
 
-# No [page] and no [post.install] yet: the page carries the notes and no
-# files. The installer of v0.23 brings both.
+# The file the tag's release page has to carry, built by release.yml: the
+# window, unpacked and run as it is. Checked after the publish.
+[page]
+assets = [
+    "midda-{tag}-x86_64-pc-windows-msvc.zip",
+]
+
+# No [post.install] yet: the installer script of v0.23 brings it, with the
+# proof that what it installed is this archive's own build.

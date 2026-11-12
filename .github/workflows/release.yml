@@ -1,17 +1,35 @@
 name: Release
 
-# The release page of a tag: the changelog's section for it, then
-# .github/release-notes.md - the checklist ticked once the release has been
-# through it. Nothing is attached yet: the installer of v0.23 brings the files.
+# The release page of a tag and the files it carries. A pushed tag drafts the
+# page - the changelog's section for it, then .github/release-notes.md, the
+# checklist ticked once the release has been through it - builds the window
+# from the tag, puts the archive on the page and only then publishes it, so
+# nobody sees a page without its files. `release.toml` names the archive
+# (`[page] assets`) and furca's engine checks it is there before the record.
+#
+# Started by hand with a tag, it builds that tag's window and puts the archive
+# on its page, which is already out: the way a release that went out without
+# its files gets them, without moving the tag or rewriting its notes.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag whose release page gets the window, spelt as the tag is (vX.Y.Z)
+        required: true
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
-  release:
+  page:
+    name: page
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -29,7 +47,72 @@ jobs:
         run: |
           printf '%s\n\n' "$CHANGES" > release-notes.md
           cat .github/release-notes.md >> release-notes.md
-      - name: Create GitHub Release
+      - name: Draft the release page
         uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
+          draft: true
+
+  # The window as one archive: the program, which carries its frontend inside,
+  # with the README and the licence, in one folder named like the archive.
+  # Windows 10 and 11 ship the WebView2 runtime it draws with. An installer and
+  # updates come with signing; this is what a person unpacks and runs.
+  window:
+    name: window (x86_64-pc-windows-msvc)
+    needs: page
+    # A started-by-hand run has no page job, and still builds.
+    if: ${{ !cancelled() && needs.page.result != 'failure' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      # What only a tag can check: that the version it names is the one the
+      # manifests carry, so the archive's name and the program inside agree.
+      - name: Verify the tag matches the manifest
+        shell: bash
+        run: |
+          manifest=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "midda-desktop") | .version')
+          if [ "${TAG#v}" != "$manifest" ]; then
+            echo "tag $TAG does not match the workspace version $manifest" >&2
+            exit 1
+          fi
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          check-latest: true
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      # The Tauri CLI builds the frontend first and compiles it into the
+      # program; a bare `cargo build` would leave a window that asks the dev
+      # server for its pages.
+      - name: Build the window
+        run: pnpm tauri build --no-bundle
+      - name: Package
+        shell: bash
+        run: |
+          name="midda-${TAG}-x86_64-pc-windows-msvc"
+          mkdir "$name"
+          cp target/release/midda-desktop.exe README.md LICENSE "$name/"
+          7z a "$name.zip" "$name"
+          echo "ASSET=$name.zip" >> "$GITHUB_ENV"
+      - name: Put the archive on the release page
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ASSET" --clobber
+
+  publish:
+    name: publish
+    needs: [page, window]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release page
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

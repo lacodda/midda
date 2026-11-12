@@ -29,6 +29,10 @@ The name comes from *midden* — the archaeological refuse layer. A disk is stra
 
 **Deleting, written down.** Pick what can go - an entry, or a whole group - and confirm one list that names both ways: what comes back as it was is deleted for good, since the Recycle Bin would only move it; what may not goes to the bin, and is never deleted instead when the bin will not take it. Deleting a careful one for good is asked about twice. Every deletion is measured and logged with how it comes back: `pnpm install`, and the folder to run it in.
 
+## Install
+
+Windows 10 or 11, x64: download the `x86_64-pc-windows-msvc` archive from the [latest release](https://github.com/lacodda/midda/releases/latest), unpack it anywhere and run `midda-desktop.exe`. Nothing is installed: the folder is the program, and what it keeps between runs lives in `%LOCALAPPDATA%\com.lacodda.midda`.
+
 ## Privileges
 
 Reading the MFT means opening the volume as a device, bypassing the filesystem. Windows grants that to administrators only — otherwise any program could sidestep file permissions.
