@@ -3650,7 +3650,13 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn a_fossil_compressed_is_read_again_and_says_what_came_back() {
-        let dir = tempfile::tempdir().expect("a folder");
+        // Not in the system's temporary folder: a scan inside it is Windows'
+        // by the places above it, as on a scan of the volume, and Windows'
+        // files are not offered for compression. The build's own folder is
+        // nobody's.
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target");
+        std::fs::create_dir_all(&target).expect("the build's folder");
+        let dir = tempfile::tempdir_in(&target).expect("a folder");
         let root = dir.path();
         if compress::refused_on(root).is_some() {
             return;
