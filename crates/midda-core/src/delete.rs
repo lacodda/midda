@@ -810,7 +810,8 @@ mod tests {
                     .map(|&pair| u16::from_le_bytes(pair))
                     .take_while(|&unit| unit != 0)
                     .collect();
-                if PathBuf::from(String::from_utf16_lossy(&units)) == original {
+                // Case is Windows' to ignore, and the shell's to write.
+                if String::from_utf16_lossy(&units).eq_ignore_ascii_case(&original.to_string_lossy()) {
                     return Some((record.path(), account.path().join(format!("$R{rest}"))));
                 }
             }
@@ -822,7 +823,12 @@ mod tests {
     #[cfg(windows)]
     fn what_goes_to_the_bin_is_in_the_bin_or_where_it_was_and_never_gone() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let folder = std::path::absolute(dir.path().join("old-download")).expect("absolute");
+        // The long form of the path, as the bin records it: a runner's
+        // temporary folder is often given in its short 8.3 form
+        // (`C:\Users\RUNNER~1\...`), and the record names the long one.
+        let long = std::fs::canonicalize(dir.path()).expect("canonical");
+        let long = PathBuf::from(long.to_string_lossy().trim_start_matches(r"\\?\"));
+        let folder = long.join("old-download");
         write(&folder.join("setup.exe"), 5000);
         if let Some(why) = bin_refused(&folder) {
             eprintln!("skipped: {why}");
