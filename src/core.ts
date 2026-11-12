@@ -191,6 +191,22 @@ export interface SessionState {
   arena: number
   /** A compression running now, and how far it is. */
   compressing: CompressingRow | null
+  /** A deletion running now, and how far it is. */
+  deleting: DeletingRow | null
+}
+
+/** How far a deletion is. Mirrors `DeletingRow`. */
+export interface DeletingRow {
+  /** The entry in hand. */
+  path: string
+  /** Entries picked, and done. */
+  items: number
+  done: number
+  /** Files gone through so far, and what they read as - and what the whole
+   * reads as. */
+  files: number
+  bytes: number
+  of: number
 }
 
 /** How far a compression is. Mirrors `CompressingRow`. */
@@ -580,6 +596,11 @@ export interface FindingRow {
    * epoch. */
   subtreeModified: number | null
   cleanup: CleanupRow | null
+  /** How it goes unless the reader says otherwise: for good when it comes
+   * back as it was, into the Recycle Bin when it may not. */
+  way: Way
+  /** Why it cannot go to the Recycle Bin, when it cannot. */
+  binRefused: string | null
 }
 
 /** One group of findings. Mirrors `GroupRow`. */
@@ -634,6 +655,108 @@ export interface Cleaned {
   /** What the folder held before, and holds now, read again whole. */
   before: Size
   after: Size
+}
+
+/** How an entry goes. Mirrors `Way`: deleted for good - the space comes back
+ * now - or moved to the Recycle Bin, where it can be restored and the space
+ * comes back when the bin is emptied. */
+export type Way = 'for-good' | 'recycle-bin'
+
+/** Why something stayed where it was. Mirrors `delete::Left`. */
+export type Stayed = 'in-use' | 'denied' | 'not-recycled' | 'failed'
+
+/** What stayed for one reason. Mirrors `delete::Kept`. */
+export interface StayedRow {
+  why: Stayed
+  entries: number
+  bytes: number
+  /** The first of them, and what the volume said. */
+  first: string | null
+}
+
+/** What deleting one entry did. Mirrors `Removed`. */
+export interface Removed {
+  files: number
+  bytes: number
+  folders: number
+  links: number
+  /** Entries moved to the Recycle Bin whole. */
+  recycled: number
+  left: StayedRow[]
+  stopped: boolean
+}
+
+/** What deleting one finding did, measured. Mirrors `DeletedItem`. */
+export interface DeletedItem {
+  path: string
+  name: string
+  way: Way
+  removed: Removed
+  before: Size
+  after: Size
+}
+
+/** What deleting the findings picked did. Mirrors `DeletedRow`. */
+export interface DeletedRow {
+  items: DeletedItem[]
+  stopped: boolean
+  /** What went for good, and what was moved to the bin: before less after. */
+  freed: Size
+  binned: Size
+  /** Why the log of deletions could not be written, when it could not. */
+  unlogged: string | null
+}
+
+/** One finding picked, and how it goes. Mirrors `Pick`. */
+export interface Pick {
+  id: number
+  way: Way
+}
+
+/** One entry midda deleted, as the log keeps it. Mirrors `Deletion`. */
+export interface Deletion {
+  /** When, as milliseconds since the epoch. */
+  at: number
+  path: string
+  name: string
+  rule: string
+  risk: Risk
+  way: Way
+  goes: Goes
+  /** What it took on disk before, and what of that went. */
+  held: number
+  gone: number
+  /** How many entries stayed. */
+  left: number
+  /** How it comes back: what to run, and where. */
+  command: string | null
+  runIn: string | null
+  explain: string
+}
+
+/** The log of deletions. Mirrors `DeletionLog`. */
+export interface DeletionLog {
+  /** The latest first, up to the limit asked. */
+  rows: Deletion[]
+  count: number
+  /** What the deletions for good gave back, in all. */
+  freed: number
+  file: string
+}
+
+/** Deletes the findings picked, each its way, and reads each again. */
+export function deleteFindings(arena: number, picks: Pick[]): Promise<DeletedRow> {
+  return invoke<DeletedRow>('delete_findings', { arena, picks })
+}
+
+/** Asks the deletion running to stop after the file it is on. */
+export function cancelDelete(): Promise<void> {
+  return invoke<void>('cancel_delete')
+}
+
+/** What midda has deleted, the latest first, `limit` of it. */
+export function deletionLog(limit: number): Promise<DeletionLog> {
+  return invoke<DeletionLog>('deletion_log', { limit })
 }
 
 /** What the rules find in the folder as it is in `arena`: `limit` findings

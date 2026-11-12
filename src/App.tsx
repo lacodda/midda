@@ -238,7 +238,7 @@ export default function App() {
                 await refind(state)
               }
             }
-            const busy = state.reading || state.freshness.catchingUp || state.compressing !== null
+            const busy = state.reading || state.freshness.catchingUp || state.compressing !== null || state.deleting !== null
             polling.current = window.setTimeout(poll, busy ? POLL_READING_MS : POLL_IDLE_MS)
           })
           .catch(() => {
@@ -693,6 +693,7 @@ export default function App() {
               hours={hours}
               comparison={comparison}
               compressing={session?.compressing ?? null}
+              deleting={session?.deleting ?? null}
               shape={shapes[view]}
               onShape={(shape) => setShapes((shapes) => ({ ...shapes, [view]: shape }))}
               onOpenPlace={openPlace}

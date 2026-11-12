@@ -4,6 +4,7 @@ import {
   describeChanges,
   describeCleaned,
   describeCompressed,
+  describeDeleted,
   describeDiskFile,
   describeLastOpened,
   describeStratum,
@@ -659,5 +660,62 @@ describe('describeCompressed', () => {
   it('does not call compressed files a gain when nothing came back', () => {
     const said = describeCompressed({ done: { files: 3, folders: 0, left: [], stopped: false }, before: size(8192), after: size(8192) })
     expect(said).toBe('Compressed 3 files, and nothing came back: what is in them does not compress.')
+  })
+})
+
+describe('describeDeleted', () => {
+  const gb = 1024 ** 3
+  const gone = { files: 10, folders: 2, links: 0, recycled: 0, left: [] }
+  const zero = { logical: 0, allocated: 0 }
+
+  it('says what went for good and what went to the bin apart, measured', () => {
+    const deleted = {
+      items: [
+        { way: 'for-good' as const, removed: gone },
+        { way: 'for-good' as const, removed: gone },
+        { way: 'recycle-bin' as const, removed: { ...gone, files: 0, folders: 0, recycled: 1 } },
+      ],
+      stopped: false,
+      freed: { logical: 3 * gb, allocated: 4 * gb },
+      binned: { logical: gb, allocated: gb },
+      unlogged: null,
+    }
+    expect(describeDeleted(deleted, 'allocated')).toBe(
+      '2 deleted for good, 4.0 GB back on disk; 1 moved to the Recycle Bin, 1.0 GB - back on disk once the bin is emptied.',
+    )
+    expect(describeDeleted(deleted, 'logical')).toContain('3.0 GB back on disk')
+  })
+
+  it('says what stayed and why, and that it was stopped', () => {
+    const deleted = {
+      items: [
+        {
+          way: 'for-good' as const,
+          removed: { ...gone, left: [{ why: 'in-use' as const, entries: 2, first: 'C:\\b\\x.log: in use' }] },
+        },
+        {
+          way: 'recycle-bin' as const,
+          removed: { files: 0, folders: 0, links: 0, recycled: 0, left: [{ why: 'not-recycled' as const, entries: 1, first: null }] },
+        },
+      ],
+      stopped: true,
+      freed: { logical: gb, allocated: gb },
+      binned: zero,
+      unlogged: 'access denied',
+    }
+    expect(describeDeleted(deleted, 'allocated')).toBe(
+      'Stopped before the end. 1 deleted for good, 1.0 GB back on disk. Stayed: 2 entries held open by another program (C:\\b\\x.log: in use); 1 entry not taken by the Recycle Bin, and so not deleted. The log of deletions could not be written: access denied.',
+    )
+  })
+
+  it('never calls a refused move a deletion', () => {
+    const deleted = {
+      items: [{ way: 'recycle-bin' as const, removed: { files: 0, folders: 0, links: 0, recycled: 0, left: [{ why: 'not-recycled' as const, entries: 1, first: null }] } }],
+      stopped: false,
+      freed: zero,
+      binned: zero,
+      unlogged: null,
+    }
+    expect(describeDeleted(deleted, 'allocated')).toBe('Nothing was deleted. Stayed: 1 entry not taken by the Recycle Bin, and so not deleted.')
   })
 })

@@ -56,6 +56,8 @@ use midda_core::compare::{Comparison, Mark, PlaceKind};
 use midda_core::compress::{self, Compressed, Verdict, Why};
 use midda_core::consumers::story::{self, Story};
 use midda_core::consumers::{self, Classified, Consumer, Summary};
+use midda_core::delete::{self, Removed, Way};
+use midda_core::deletions::{Deletion, Log};
 use midda_core::fresh::since::{Change, Changes};
 use midda_core::fresh::store::{self, Unusable};
 use midda_core::growth::{self, Growers};
@@ -91,6 +93,8 @@ pub struct Session {
     /// What the checks saw of files, by path: kept between versions of the
     /// tree, since most versions change none of them.
     seen: Arc<Mutex<Kept>>,
+    /// What was deleted, and how each comes back.
+    deletions: Arc<Log>,
 }
 
 /// What the rules say of one version of the open folder's tree: worked out
@@ -127,6 +131,7 @@ impl Session {
             snapshots: data.join("snapshots"),
             found: Arc::new(Mutex::new(None)),
             seen: Arc::new(Mutex::new(Kept::default())),
+            deletions: Arc::new(Log::at(data.join("deletions.jsonl"))),
         }
     }
 
@@ -194,6 +199,8 @@ struct State {
     last_note: Option<String>,
     /// A compression running now.
     compressing: Option<Compressing>,
+    /// A deletion running now.
+    deleting: Option<Deleting>,
 }
 
 /// A compression running: what, how far, and out of how much.
@@ -202,6 +209,17 @@ struct Compressing {
     progress: Arc<Progress>,
     /// What the tree said the entry reads as when it started.
     of: u64,
+}
+
+/// A deletion running: how far, out of how much, and the entry in hand.
+struct Deleting {
+    progress: Arc<Progress>,
+    /// What the entries picked read as, in all.
+    of: u64,
+    /// How many were picked, and how many are done.
+    items: u64,
+    done: u64,
+    path: PathBuf,
 }
 
 /// A comparison, and the two moments it is between.
@@ -377,6 +395,8 @@ pub struct SessionState {
     pub arena: u64,
     /// A compression running now, and how far it is.
     pub compressing: Option<CompressingRow>,
+    /// A deletion running now, and how far it is.
+    pub deleting: Option<DeletingRow>,
 }
 
 /// How far a compression is.
@@ -388,6 +408,22 @@ pub struct CompressingRow {
     pub files: u64,
     pub bytes: u64,
     /// What the whole reads as.
+    pub of: u64,
+}
+
+/// How far a deletion is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletingRow {
+    /// The entry in hand.
+    pub path: String,
+    /// Entries picked, and done.
+    pub items: u64,
+    pub done: u64,
+    /// Files gone through so far, and what they read as - and what the
+    /// whole reads as.
+    pub files: u64,
+    pub bytes: u64,
     pub of: u64,
 }
 
@@ -725,6 +761,14 @@ pub fn scan_progress(session: tauri::State<'_, Session>) -> Result<SessionState,
             files: compressing.progress.entries(),
             bytes: compressing.progress.bytes(),
             of: compressing.of,
+        }),
+        deleting: state.deleting.as_ref().map(|deleting| DeletingRow {
+            path: deleting.path.to_string_lossy().into_owned(),
+            items: deleting.items,
+            done: deleting.done,
+            files: deleting.progress.entries(),
+            bytes: deleting.progress.bytes(),
+            of: deleting.of,
         }),
     })
 }
@@ -1287,6 +1331,12 @@ pub struct FindingRow {
     pub subtree_modified: Option<i64>,
     /// The cache's own cleanup, when it has one.
     pub cleanup: Option<CleanupRow>,
+    /// How it goes unless the reader says otherwise: for good when it comes
+    /// back as it was, into the Recycle Bin when it may not.
+    pub way: Way,
+    /// Why it cannot go to the Recycle Bin, when it cannot: it is in the bin
+    /// already, or its volume has none.
+    pub bin_refused: Option<String>,
 }
 
 /// A cache's own cleanup, as the window offers it before asking the tool.
@@ -1877,9 +1927,13 @@ pub async fn docker_usage() -> Result<DockerRow, String> {
 fn finding_row(tree: &Tree, rules: &RuleSet, finding: &Finding, seen: Option<&Seen>) -> FindingRow {
     let rule = rules.rule_of(finding);
     let restore = rules.restore_of(finding);
+    let path = tree.path_of(finding.id);
+    let bin_refused = delete::bin_refused(&path);
     FindingRow {
         id: finding.id,
-        path: tree.path_of(finding.id).to_string_lossy().into_owned(),
+        way: Way::of_entry(restore.risk, bin_refused.is_none()),
+        bin_refused,
+        path: path.to_string_lossy().into_owned(),
         rule: rule.id.clone(),
         name: rule.name.clone(),
         risk: restore.risk,
@@ -2199,6 +2253,315 @@ fn compress_in(shared: &RwLock<State>, found: &Mutex<Option<Found>>, arena: u64,
     let done = done?;
     let after = size_at(shared, &path)?;
     Ok(CompressedRow { done, before, after })
+}
+
+/// One finding the reader picked, and how it goes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pick {
+    pub id: u32,
+    pub way: Way,
+}
+
+/// What deleting one finding did, measured.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedItem {
+    pub path: String,
+    /// What the rule calls it.
+    pub name: String,
+    pub way: Way,
+    pub removed: Removed,
+    /// What it held before, and holds now, read again.
+    pub before: Size,
+    pub after: Size,
+}
+
+/// What deleting the findings picked did.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedRow {
+    /// The most first, in the order they went.
+    pub items: Vec<DeletedItem>,
+    /// The reader stopped it before the end.
+    pub stopped: bool,
+    /// What went for good, and what was moved to the Recycle Bin - measured,
+    /// before less after.
+    pub freed: Size,
+    pub binned: Size,
+    /// Why the log of deletions could not be written, when it could not:
+    /// what was deleted is gone all the same, and the reader is told.
+    pub unlogged: Option<String>,
+}
+
+/// One finding picked, worked out before anything goes.
+struct Going {
+    finding: Finding,
+    path: PathBuf,
+    way: Way,
+    /// What goes, and what each reads as.
+    entries: Vec<(PathBuf, u64)>,
+    name: String,
+    rule: String,
+    risk: Risk,
+    command: Option<String>,
+    explain: String,
+}
+
+/// Deletes the findings picked, each its way, the most freed first: what is
+/// picked for good, for good ([`delete::remove`]); what is picked for the
+/// Recycle Bin, into it, and never for good instead ([`delete::recycle`]).
+/// Each is read again as soon as it has gone, so the window and the log say
+/// what went as measured, and each is written to the log of deletions with
+/// how it comes back before the next goes. One deletion at a time, and none
+/// while a compression runs; the window follows it in `scan_progress`.
+///
+/// # Errors
+///
+/// `stale` when `arena` is not the tree on screen, the findings were worked
+/// out for another version of it, or an entry is gone; when nothing is
+/// picked, a pick is no finding now, a pick for the bin cannot go there, or
+/// something else is running.
+#[tauri::command]
+pub async fn delete_findings(arena: u64, picks: Vec<Pick>, session: tauri::State<'_, Session>) -> Result<DeletedRow, String> {
+    let shared = Arc::clone(&session.shared);
+    let found = Arc::clone(&session.found);
+    let seen = Arc::clone(&session.seen);
+    let log = Arc::clone(&session.deletions);
+    tauri::async_runtime::spawn_blocking(move || delete_in(&shared, &found, &seen, &log, arena, &picks, SystemTime::now()))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Asks the deletion running to stop after the file it is on.
+///
+/// # Errors
+///
+/// When the session lock is poisoned.
+#[tauri::command]
+pub fn cancel_delete(session: tauri::State<'_, Session>) -> Result<(), String> {
+    let state = session.shared.read().map_err(poisoned)?;
+    if let Some(deleting) = &state.deleting {
+        deleting.progress.cancel();
+    }
+    Ok(())
+}
+
+fn delete_in(
+    shared: &RwLock<State>,
+    found: &Mutex<Option<Found>>,
+    seen: &Mutex<Kept>,
+    log: &Log,
+    arena: u64,
+    picks: &[Pick],
+    now: SystemTime,
+) -> Result<DeletedRow, String> {
+    if picks.is_empty() {
+        return Err("nothing is picked".to_owned());
+    }
+    let settled = current_settled(shared, found, seen, arena)?;
+    let progress = Progress::new();
+    let plan = {
+        let mut state = shared.write().map_err(poisoned)?;
+        if state.deleting.is_some() {
+            return Err("a deletion is running already".to_owned());
+        }
+        if state.compressing.is_some() {
+            return Err("a compression is running; delete once it is done".to_owned());
+        }
+        let tree = tree_of(&state, View::Index, Some(arena))?.tree();
+        // The findings the window picked from are those of the tree as it is
+        // now, or the ids mean other entries.
+        let current = found.lock().map_err(poisoned)?.as_ref().is_some_and(|held| {
+            held.arena == state.arena && held.version == state.version && held.settled.as_ref().is_some_and(|held| Arc::ptr_eq(held, &settled))
+        });
+        if !current {
+            return Err("stale".to_owned());
+        }
+        let plan = plan_of(tree, &settled, picks, now)?;
+        state.deleting = Some(Deleting {
+            progress: Arc::clone(&progress),
+            of: plan.iter().map(|going| going.finding.holds.logical).sum(),
+            items: plan.len() as u64,
+            done: 0,
+            path: plan.first().map(|going| going.path.clone()).unwrap_or_default(),
+        });
+        plan
+    };
+    let outcome = take_all(shared, log, &plan, &progress, now);
+    if let Ok(mut state) = shared.write() {
+        state.deleting = None;
+    }
+    outcome
+}
+
+/// What each pick takes, worked out from `tree` before anything goes: the
+/// picks in the order of what they free, the most first, each once.
+fn plan_of(tree: &Tree, settled: &[Settled], picks: &[Pick], now: SystemTime) -> Result<Vec<Going>, String> {
+    let rules = RuleSet::shipped();
+    let mut plan: Vec<Going> = Vec::new();
+    for pick in picks {
+        let id = checked(tree, pick.id)?;
+        if plan.iter().any(|going| going.finding.id == id) {
+            continue;
+        }
+        let path = tree.path_of(id);
+        let (finding, _) = settled
+            .iter()
+            .find(|(finding, _)| finding.id == id)
+            .ok_or_else(|| format!("no rule names {} now", path.display()))?;
+        if pick.way == Way::RecycleBin
+            && let Some(why) = delete::bin_refused(&path)
+        {
+            return Err(format!("{} cannot go to the Recycle Bin: {why}", path.display()));
+        }
+        let rule = rules.rule_of(finding);
+        let restore = rules.restore_of(finding);
+        plan.push(Going {
+            finding: *finding,
+            entries: rules
+                .going(tree, finding, now)
+                .into_iter()
+                .map(|entry| (tree.path_of(entry), tree.node(entry).size.logical))
+                .collect(),
+            path,
+            way: pick.way,
+            name: rule.name.clone(),
+            rule: rule.id.clone(),
+            risk: restore.risk,
+            command: restore.command.clone(),
+            explain: restore.explain.clone(),
+        });
+    }
+    plan.sort_by_key(|going| std::cmp::Reverse(going.finding.frees.allocated));
+    Ok(plan)
+}
+
+/// Takes each of `plan` its way, reads it again, and writes it to `log`.
+fn take_all(shared: &RwLock<State>, log: &Log, plan: &[Going], progress: &Progress, now: SystemTime) -> Result<DeletedRow, String> {
+    let mut row = DeletedRow {
+        items: Vec::new(),
+        stopped: false,
+        freed: Size::zero(),
+        binned: Size::zero(),
+        unlogged: None,
+    };
+    for going in plan {
+        if progress.cancelled() {
+            row.stopped = true;
+            break;
+        }
+        if let Some(deleting) = shared.write().map_err(poisoned)?.deleting.as_mut() {
+            deleting.path.clone_from(&going.path);
+        }
+        let before = size_at(shared, &going.path)?;
+        let removed = delete::take(&going.entries, going.way, progress);
+        // Read again at once, as a cleanup is: the reader is waiting to see
+        // what went, and the log says what went as measured. An entry that
+        // went whole is gone from the tree; a folder emptied is read anew.
+        let observed = {
+            let state = shared.read().map_err(poisoned)?;
+            state.index.as_ref().map(|index| index.read_again(&going.path))
+        };
+        {
+            let mut state = shared.write().map_err(poisoned)?;
+            if let Some(observed) = observed
+                && let Some(index) = state.index.as_mut()
+            {
+                index.apply(observed);
+                state.version += 1;
+                state.applied_at = Some(SystemTime::now());
+            }
+            if let Some(deleting) = state.deleting.as_mut() {
+                deleting.done += 1;
+            }
+        }
+        let after = size_at(shared, &going.path)?;
+        let gone = Size {
+            logical: before.logical.saturating_sub(after.logical),
+            allocated: before.allocated.saturating_sub(after.allocated),
+        };
+        match going.way {
+            Way::ForGood => row.freed.add(gone),
+            Way::RecycleBin => row.binned.add(gone),
+        }
+        if removed.any() {
+            let written = log.write(&Deletion {
+                at: millis(now).unwrap_or_default(),
+                path: going.path.to_string_lossy().into_owned(),
+                name: going.name.clone(),
+                rule: going.rule.clone(),
+                risk: going.risk,
+                way: going.way,
+                goes: going.finding.goes,
+                held: before.allocated,
+                gone: gone.allocated,
+                left: removed.left.iter().map(|kept| kept.entries).sum(),
+                command: going.command.clone(),
+                // The command runs beside what it makes again.
+                run_in: going
+                    .command
+                    .as_ref()
+                    .and_then(|_| going.path.parent())
+                    .map(|folder| folder.to_string_lossy().into_owned()),
+                explain: going.explain.clone(),
+            });
+            if let Err(error) = written
+                && row.unlogged.is_none()
+            {
+                row.unlogged = Some(error.to_string());
+            }
+        }
+        let stopped = removed.stopped;
+        row.items.push(DeletedItem {
+            path: going.path.to_string_lossy().into_owned(),
+            name: going.name.clone(),
+            way: going.way,
+            removed,
+            before,
+            after,
+        });
+        if stopped {
+            row.stopped = true;
+            break;
+        }
+    }
+    Ok(row)
+}
+
+/// The log of deletions, the latest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletionLog {
+    /// Up to the limit asked.
+    pub rows: Vec<Deletion>,
+    /// How many are written down in all, and what they gave back for good.
+    pub count: u64,
+    pub freed: u64,
+    /// Where the log is, for a reader who wants the file.
+    pub file: String,
+}
+
+/// What midda has deleted, the latest first, `limit` of it, each with how it
+/// comes back.
+///
+/// # Errors
+///
+/// When the log is there and cannot be read.
+#[tauri::command]
+pub async fn deletion_log(limit: u32, session: tauri::State<'_, Session>) -> Result<DeletionLog, String> {
+    let log = Arc::clone(&session.deletions);
+    tauri::async_runtime::spawn_blocking(move || {
+        let all = log.read().map_err(|error| format!("the log of deletions could not be read: {error}"))?;
+        Ok(DeletionLog {
+            count: all.len() as u64,
+            freed: all.iter().filter(|deletion| deletion.way == Way::ForGood).map(|deletion| deletion.gone).sum(),
+            rows: all.into_iter().take(limit as usize).collect(),
+            file: log.path().to_string_lossy().into_owned(),
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Whether a folder is one of `units`: none are, when there are none.
@@ -2805,6 +3168,128 @@ mod tests {
             findings_of(&shared, &found, &nothing_seen(), 99, SizeBasis::Logical, 2, None).expect_err("stale"),
             "stale"
         );
+    }
+
+    #[test]
+    fn picked_findings_go_their_way_are_measured_and_written_down() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path();
+        write(&root.join("app/package.json"), 10);
+        write(&root.join("app/pnpm-lock.yaml"), 10);
+        write(&root.join("app/node_modules/a/index.js"), 30_000);
+        write(&root.join("one/Cargo.toml"), 10);
+        write(&root.join("one/target/debug/app.exe"), 50_000);
+        write(&root.join("two/Cargo.toml"), 10);
+        write(&root.join("two/target/debug/app.exe"), 40_000);
+        let shared = opened(index_of(root));
+        let found = nothing_found();
+        let seen = nothing_seen();
+        let log = Log::at(root.join("data").join("deletions.jsonl"));
+        let id = |path: &str| {
+            let state = shared.read().expect("read");
+            let tree = state.index.as_ref().expect("an index").tree();
+            path.split('/').fold(ROOT, |at, name| tree.child(at, name).expect("in the tree"))
+        };
+
+        let summary = findings_of(&shared, &found, &seen, 0, SizeBasis::Logical, 10, None).expect("findings");
+        let modules = &summary.groups[0].rows[0];
+        assert_eq!(modules.way, Way::ForGood, "what comes back as it was goes for good unless said otherwise");
+
+        let (app, one) = (id("app/node_modules"), id("one/target"));
+        let package = id("app/package.json");
+        let version = shared.read().expect("read").version;
+        let now = SystemTime::now();
+        assert_eq!(delete_in(&shared, &found, &seen, &log, 0, &[], now).expect_err("nothing"), "nothing is picked");
+        assert_eq!(
+            delete_in(&shared, &found, &seen, &log, 99, &[Pick { id: app, way: Way::ForGood }], now).expect_err("another arena"),
+            "stale"
+        );
+        assert!(
+            delete_in(
+                &shared,
+                &found,
+                &seen,
+                &log,
+                0,
+                &[Pick {
+                    id: package,
+                    way: Way::ForGood
+                }],
+                now
+            )
+            .expect_err("no finding")
+            .starts_with("no rule names"),
+            "only what a rule names can go from here"
+        );
+        assert!(root.join("app/package.json").exists());
+
+        let picks = [
+            Pick { id: one, way: Way::ForGood },
+            Pick { id: app, way: Way::ForGood },
+            Pick { id: app, way: Way::ForGood },
+        ];
+        let deleted = delete_in(&shared, &found, &seen, &log, 0, &picks, now).expect("deleted");
+        assert_eq!(deleted.items.len(), 2, "a pick given twice goes once");
+        assert_eq!(deleted.items[0].name, "Cargo build output", "the most freed first");
+        assert_eq!(deleted.freed.logical, 80_000, "measured, before less after");
+        assert_eq!(deleted.binned, Size::zero());
+        assert!(deleted.items.iter().all(|item| item.removed.whole() && item.after == Size::zero()));
+        assert!(!root.join("app/node_modules").exists() && !root.join("one/target").exists());
+        assert!(root.join("two/target/debug/app.exe").exists(), "what was not picked stays");
+        assert!(root.join("app/pnpm-lock.yaml").exists(), "and what it comes back from");
+
+        let state = shared.read().expect("read");
+        assert!(state.version > version, "the window is told the tree changed");
+        assert!(state.deleting.is_none());
+        assert_eq!(state.index.as_ref().expect("an index").tree().root().size.logical, 40_000 + 40);
+        drop(state);
+
+        // Written down, the latest first, each with how it comes back and
+        // where to run it.
+        let written = log.read().expect("the log");
+        assert_eq!(written.len(), 2);
+        let modules = written.iter().find(|deletion| deletion.name == "node_modules").expect("the modules");
+        assert_eq!(modules.command.as_deref(), Some("pnpm install"));
+        assert_eq!(modules.run_in.as_deref(), Some(root.join("app").to_string_lossy().as_ref()));
+        assert_eq!((modules.way, modules.risk, modules.left), (Way::ForGood, Risk::Safe, 0));
+        assert!(modules.gone > 0 && modules.gone == modules.held);
+
+        // The ids of a tree that changed are not taken for its entries now.
+        assert_eq!(
+            delete_in(&shared, &found, &seen, &log, 0, &[Pick { id: app, way: Way::ForGood }], now).expect_err("gone"),
+            "stale"
+        );
+    }
+
+    #[test]
+    fn what_is_in_the_bin_is_not_picked_for_the_bin() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path();
+        write(&root.join("$Recycle.Bin/one/Cargo.toml"), 10);
+        write(&root.join("$Recycle.Bin/one/target/app.exe"), 1_000);
+        let shared = opened(index_of(root));
+        let found = nothing_found();
+        let seen = nothing_seen();
+        let summary = findings_of(&shared, &found, &seen, 0, SizeBasis::Logical, 10, None).expect("findings");
+        let target = &summary.groups[0].rows[0];
+        assert!(target.bin_refused.is_some(), "the window is told it cannot go there");
+        let log = Log::at(root.join("deletions.jsonl"));
+        let refused = delete_in(
+            &shared,
+            &found,
+            &seen,
+            &log,
+            0,
+            &[Pick {
+                id: target.id,
+                way: Way::RecycleBin,
+            }],
+            SystemTime::now(),
+        )
+        .expect_err("refused");
+        assert!(refused.contains("cannot go to the Recycle Bin"), "{refused}");
+        assert!(root.join("$Recycle.Bin/one/target/app.exe").exists());
+        assert!(shared.read().expect("read").deleting.is_none());
     }
 
     #[test]

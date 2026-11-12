@@ -8,7 +8,7 @@
 
 import { documentLocale } from 'dowel-ui'
 
-import type { Group, Left, Stratum } from '@/core'
+import type { Group, Left, Stayed, Stratum, Way as DeleteWay } from '@/core'
 
 /**
  * Bytes as a person reads them: `1.2 GB`.
@@ -761,4 +761,67 @@ export function describeCompressed(compressed: CompressedFacts): string {
   if (left !== '') parts.push(`left as they were: ${left}`)
   const told = `${parts.join('; ')}.`
   return done.stopped ? `Stopped before the end. ${told}` : told
+}
+
+/** What each reason something stayed where it was says. Mirrors
+ * `delete::Left::says`. */
+export const STAYED_WORDS: Record<Stayed, string> = {
+  'in-use': 'held open by another program',
+  denied: 'not this account’s to delete',
+  'not-recycled': 'not taken by the Recycle Bin, and so not deleted',
+  failed: 'refused by the volume',
+}
+
+/** What deleting picked findings did, as `describeDeleted` reads it. Mirrors
+ * `DeletedRow` without importing the bridge. */
+export interface DeletedFacts {
+  items: {
+    way: DeleteWay
+    removed: { files: number; folders: number; links: number; recycled: number; left: { why: Stayed; entries: number; first: string | null }[] }
+  }[]
+  stopped: boolean
+  freed: { logical: number; allocated: number }
+  binned: { logical: number; allocated: number }
+  unlogged: string | null
+}
+
+/**
+ * What a deletion did, said once it has run: what went for good and what it
+ * gave back, what was moved to the Recycle Bin - whose space comes back only
+ * when the bin is emptied - and what stayed, and why. Every figure is
+ * measured: the entries were read again afterwards.
+ */
+export function describeDeleted(deleted: DeletedFacts, basis: 'allocated' | 'logical'): string {
+  const went = (item: DeletedFacts['items'][number]) => item.removed.files + item.removed.folders + item.removed.links > 0
+  const forGood = deleted.items.filter((item) => item.way === 'for-good' && went(item)).length
+  const binned = deleted.items.filter((item) => item.way === 'recycle-bin' && item.removed.recycled > 0).length
+  const freed = basis === 'allocated' ? deleted.freed.allocated : deleted.freed.logical
+  const moved = basis === 'allocated' ? deleted.binned.allocated : deleted.binned.logical
+  const parts: string[] = []
+  if (forGood > 0) parts.push(`${formatCount(forGood)} deleted for good, ${formatBytes(freed)} back on disk`)
+  if (binned > 0) parts.push(`${formatCount(binned)} moved to the Recycle Bin, ${formatBytes(moved)} - back on disk once the bin is emptied`)
+  if (parts.length === 0) parts.push('Nothing was deleted')
+  const stayed = new Map<Stayed, { entries: number; first: string | null }>()
+  for (const item of deleted.items) {
+    for (const kept of item.removed.left) {
+      const held = stayed.get(kept.why)
+      if (held === undefined) stayed.set(kept.why, { entries: kept.entries, first: kept.first })
+      else held.entries += kept.entries
+    }
+  }
+  const left = [...stayed.entries()]
+    .map(([why, held]) => {
+      const said = `${formatCount(held.entries)} ${held.entries === 1 ? 'entry' : 'entries'} ${STAYED_WORDS[why]}`
+      return held.first === null ? said : `${said} (${held.first})`
+    })
+    .join('; ')
+  let told = `${upperFirst(parts.join('; '))}.`
+  if (left !== '') told += ` Stayed: ${left}.`
+  if (deleted.stopped) told = `Stopped before the end. ${told}`
+  if (deleted.unlogged !== null) told += ` The log of deletions could not be written: ${deleted.unlogged}.`
+  return told
+}
+
+function upperFirst(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
 }

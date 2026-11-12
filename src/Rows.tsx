@@ -8,7 +8,7 @@ import { SafeToDelete } from '@/SafeToDelete'
 import { TopGrowth } from '@/TopGrowth'
 import { Treemap } from '@/Treemap'
 import { WhatFills } from '@/WhatFills'
-import type { ChangesSummary, ComparisonSummary, CompressingRow, Row, ScanResult, Size, SizeBasis, Sort, SortKey, View } from '@/core'
+import type { ChangesSummary, ComparisonSummary, CompressingRow, DeletingRow, Row, ScanResult, Size, SizeBasis, Sort, SortKey, View } from '@/core'
 import { findings, growthOf, pick, sizeOf } from '@/core'
 import { describeChanges, describeComparison, describeOverhead, describeScan, explainSize, formatBytes, formatCount, formatSigned } from '@/format'
 
@@ -36,6 +36,8 @@ interface RowsProps {
   comparison: ComparisonSummary | null
   /** A compression running now, as the session says. */
   compressing: CompressingRow | null
+  /** A deletion running now, as the session says - followed on the page of what can go. */
+  deleting: DeletingRow | null
   /** How the view of growth on screen is shown. */
   shape: Shape
   onShape: (shape: Shape) => void
@@ -75,6 +77,7 @@ export function Rows({
   hours,
   comparison,
   compressing,
+  deleting,
   shape,
   onShape,
   onOpenPlace,
@@ -269,7 +272,7 @@ export function Rows({
       {old && shape !== 'tree' ? (
         <Layers arena={arena} version={version} basis={basis} root={trail[0]?.path ?? showing.path} compressing={compressing} onOpen={onOpenPlace} />
       ) : view === 'index' && shape === 'safe' ? (
-        <SafeToDelete arena={arena} version={version} basis={basis} root={trail[0]?.path ?? showing.path} onOpen={onOpenPlace} />
+        <SafeToDelete arena={arena} version={version} basis={basis} root={trail[0]?.path ?? showing.path} deleting={deleting} onOpen={onOpenPlace} />
       ) : view === 'index' && shape === 'fills' ? (
         <WhatFills
           arena={arena}
