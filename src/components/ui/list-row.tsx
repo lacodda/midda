@@ -113,6 +113,8 @@ export interface RowButtonProps extends RowSlots, Omit<HTMLAttributes<HTMLElemen
   /** The element to draw the row as - a router's link, most often:
    * `render={<NavLink to={…} />}`. Without it the row is a `<button>`. */
   render?: useRender.RenderProp
+  /** Disables the row. Applied only when the row is the default `<button>`:
+   * a rendered element such as a link has no `disabled` of its own. */
   disabled?: boolean
 }
 

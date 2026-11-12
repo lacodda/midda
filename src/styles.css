@@ -47,45 +47,6 @@ body {
   }
 }
 
-/* Scrollbars.
- *
- * WebView2 draws the full-width Windows scrollbar by default. These are the
- * app's own: thin, in the palette, drawn over the content rather than beside
- * it, and only where something scrolls. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--line-2) transparent;
-}
-
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-*::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-*::-webkit-scrollbar-thumb {
-  border: 3px solid transparent;
-  border-radius: 999px;
-  background: var(--line-2);
-  background-clip: content-box;
-}
-
-*::-webkit-scrollbar-thumb:hover {
-  background: var(--dim);
-  background-clip: content-box;
-}
-
-*::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-*::-webkit-scrollbar-button {
-  display: none;
-}
-
 /* A number read against another number belongs in a column, and a proportional
  * font puts its digits at different widths. */
 .tabular {

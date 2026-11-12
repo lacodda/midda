@@ -33,10 +33,13 @@ export interface BreadcrumbsProps extends Omit<HTMLAttributes<HTMLElement>, 'chi
   /** What the trail is called for a reader - "Breadcrumb" by convention, but
    * a product with two of them on one screen should say which. */
   label: string
+  /** The trail, root first. The last item is where the reader stands. */
   items: readonly Crumb[]
   /** The element a crumb before the last is drawn as. Without it a crumb is a
    * button and `onSelect` says which was pressed. */
   render?: (item: Crumb) => useRender.RenderProp
+  /** Called with the id of a crumb before the last when it is pressed,
+   * whatever element it is drawn as. */
   onSelect?: (id: string) => void
   /**
    * How many crumbs are drawn before the middle is folded away. The first and

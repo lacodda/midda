@@ -103,6 +103,7 @@ export function windowFor({
 }
 
 export interface VirtualListProps<Row> {
+  /** Every row there is, in order. Only the ones in view are drawn. */
   rows: readonly Row[]
   /** How tall one row is. Fixed, and the component enforces it - a row that
    * grows past this height overlaps its neighbour, which is why the value is
@@ -113,6 +114,8 @@ export interface VirtualListProps<Row> {
    * that is sorted or filtered reuses the wrong DOM node - the row moves but
    * its input keeps the text that was typed into a different row. */
   rowKey: (row: Row, index: number) => string | number
+  /** How many extra rows to draw beyond each edge, so a fast scroll does not
+   * paint blank. */
   overscan?: number
   /** What a screen reader calls the list. Required: a scrolling box of rows
    * with no name is announced as "list" and nothing else, and the word is the

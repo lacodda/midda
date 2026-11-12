@@ -37,10 +37,15 @@ export interface SegmentedControlProps {
    * no name for the question is a riddle to anyone who cannot see the
    * heading above it. */
   'aria-label'?: string
+  /** The id of the element that names the question, when a visible heading already does. Use it instead of `aria-label`. */
   'aria-labelledby'?: string
+  /** The chosen segment's `value`, for a controlled control. Pair it with `onValueChange`. */
   value?: string
+  /** The segment chosen first, for an uncontrolled control. */
   defaultValue?: string
+  /** Called with the new segment's `value` each time the choice changes. */
   onValueChange?: (value: string) => void
+  /** Disables every segment at once. */
   disabled?: boolean
   /** The field name, for a form that posts it. */
   name?: string
@@ -63,10 +68,13 @@ export function SegmentedControl({ onValueChange, className, children, ...props 
 }
 
 export interface SegmentProps {
+  /** What the control's `value` becomes when this segment is chosen. */
   value: string
   /** The option's words. An icon alone needs `aria-label` beside it. */
   children: ReactNode
+  /** The segment's name for a screen reader. Needed when the content is an icon alone. */
   'aria-label'?: string
+  /** Disables this segment only. */
   disabled?: boolean
   className?: string
 }

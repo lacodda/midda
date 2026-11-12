@@ -22,7 +22,8 @@
         "decorations": false,
         "shadow": true,
         "visible": false,
-        "backgroundColor": "#1a1820"
+        "backgroundColor": "#1a1820",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-features=OverlayScrollbar"
       }
     ],
     "security": {

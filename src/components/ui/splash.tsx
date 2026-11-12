@@ -18,11 +18,11 @@ import { cn } from 'dowel-ui'
  * language, and one thing worth knowing. The static half is in the docs.
  *
  * It is a status region, not a dialog: the reader is told what is happening
- * and cannot act on it. The sweep is a `<style>` of its own rather than a
- * theme keyframe, because a product installs the theme on its first day and
- * this once; and under reduced motion the theme stops every animation dead,
- * which would leave the sweep parked off the end of its track - so the bar
- * is drawn full and still instead.
+ * and cannot act on it. The sweep's keyframes are the theme's: a `<style>`
+ * rendered here is refused under a desktop window's Content-Security-Policy,
+ * and the bar would sit off the end of its track. Under reduced motion the
+ * theme stops every animation dead, which would leave it parked there too - so
+ * the bar is drawn full and still instead.
  */
 
 export interface SplashProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
@@ -43,16 +43,10 @@ export interface SplashProps extends Omit<HTMLAttributes<HTMLDivElement>, 'child
   busy?: boolean
 }
 
-/** The sweep, named with a prefix so a product's own `sweep` cannot collide
- * with it in the one document both end up in.
- *
- * The class below writes the name out rather than interpolating this
- * constant, and that is not carelessness: Tailwind finds its classes by
- * scanning the source text, and a class assembled from a template is one it
- * never sees - the bar rendered with the right class name and no CSS behind
- * it, and the stand showed an empty track. The test compiles the class to
- * make sure the two spellings agree. */
-const SWEEP = 'dowel-splash-sweep'
+/** The sweep. The class names the theme's keyframes in full: Tailwind finds its
+ * classes by scanning the source text, and a class assembled from a template is
+ * one it never sees - the bar rendered with the right class name and no CSS
+ * behind it, and the stand showed an empty track. */
 const SWEEPING = 'animate-[dowel-splash-sweep_1.1s_ease-in-out_infinite]'
 
 export function Splash({
@@ -76,7 +70,6 @@ export function Splash({
       )}
       {...props}
     >
-      <style>{`@keyframes ${SWEEP} { to { left: 100%; } }`}</style>
       {mark ? <div className="mb-1.5 size-14 [&>svg:not([class*=size-])]:size-full">{mark}</div> : null}
       <div className="text-[26px] leading-none font-semibold tracking-[0.02em]">{name}</div>
       {tagline ? <div className="text-sm text-dim">{tagline}</div> : null}

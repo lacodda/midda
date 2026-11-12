@@ -195,7 +195,11 @@ export function SelectItem({
   className,
   children,
   ...props
-}: Base.Item.Props & { indicator?: boolean }) {
+}: Base.Item.Props & {
+  /** Draw the tick on the chosen item. Pass `false` for a list where the choice
+   * is obvious some other way. */
+  indicator?: boolean
+}) {
   return (
     <Base.Item className={cn(selectItemVariants(), className)} {...props}>
       {children}

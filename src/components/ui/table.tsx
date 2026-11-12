@@ -133,6 +133,7 @@ export function TableCell({ numeric = false, className, ...props }: TableCellPro
 }
 
 export interface TableHeaderProps extends ThHTMLAttributes<HTMLTableCellElement> {
+  /** Right-align the heading, to sit over a `numeric` column of cells. */
   numeric?: boolean
 }
 
@@ -156,6 +157,8 @@ export interface TableSortHeaderProps extends Omit<TableHeaderProps, 'onClick'> 
   column: string
   /** What is sorted now, across the whole table. */
   sort: Sort | undefined
+  /** Called with this column's id when the heading is clicked. The product
+   * decides what comes next - the table does not sort or flip the direction. */
   onSortChange: (column: string) => void
 }
 
@@ -227,6 +230,7 @@ export function TableSortHeader({
  * rows and not. `colSpan` is required: without it the message sits under the
  * first column and the rest of the header hangs over nothing. */
 export interface TableEmptyProps extends TdHTMLAttributes<HTMLTableCellElement> {
+  /** How many columns the message spans: the table's column count. */
   colSpan: number
 }
 

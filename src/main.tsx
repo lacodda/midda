@@ -1,8 +1,16 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { overlayScrollbars } from 'dowel-ui'
 import App from '@/App'
 import '@/styles.css'
+
+// The line's scrollbar: nothing at rest, a thin line while scrolling, a wider
+// thumb under the pointer, and no width taken from the content. The engine
+// draws it once `OverlayScrollbar` is on its command line (tauri.conf.json,
+// `additionalBrowserArgs`); this wakes the thumb when the pointer comes near.
+// https://lacodda.github.io/dowel/concepts/scrollbars/
+overlayScrollbars()
 
 // The window is created hidden (tauri.conf.json) and shown from here, once the
 // document has painted its splash in the right colours. Shown before that, the
