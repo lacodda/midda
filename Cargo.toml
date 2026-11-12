@@ -13,9 +13,11 @@ repository = "https://github.com/lacodda/midda"
 # this number and builds on it, so it cannot silently rot.
 rust-version = "1.90"
 
+# historical versions
 # Declared once. A path dependency still needs a version for publishing, and a
 # version written in each member is one that goes stale at the next release —
 # it did, at v0.2.0. Here it sits beside the number it has to match.
+# /historical versions
 [workspace.dependencies]
 midda-core = { path = "crates/midda-core", version = "0.14.0" }
 

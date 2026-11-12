@@ -1,11 +1,13 @@
 // Holds every registry copy in `src/components/ui/` to the registry it came from.
 //
+// historical versions
 // Everything in that directory is a copy of a dowel component and is never
 // edited here. Until v0.6.0 that was only a convention, and five of the nine
 // copies had quietly stayed at the dowel they were first taken from while the
 // package moved on - `dowel diff` said so to anyone who ran it, which nobody
 // did. A copy that differs is either a fix dowel should have, or a copy of an
 // older dowel than the one installed; neither should be found by accident.
+// /historical versions
 //
 // The registry is read from the installed package, so upgrading dowel-ui and
 // not re-copying fails here. `pnpm exec dowel diff <name>` shows the lines.
