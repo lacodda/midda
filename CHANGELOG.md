@@ -8,6 +8,29 @@ last release, which follow [Conventional Commits](https://www.conventionalcommit
 $ git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md
 ```
 
+## [0.15.0] - 2026-11-12
+
+### Bug Fixes
+- Say whose a scan is by the places above its root
+- Stamp each deletion when it goes, and ask about a careful one plainly
+
+### Build
+- Release midda through furca's engine
+
+### CI
+- Give each tag a release page with its notes
+
+### Documentation
+- Record how midda deletes in ADR 0018, and say it in the README
+
+### Features
+- Delete what the rules found, for good or into the Recycle Bin
+- Pick what can go and delete it, with a log of how it comes back
+
+### Testing
+- Find what was recycled by the long path the bin records
+- Compress a fossil in the build's folder, which is nobody's
+
 ## [0.14.0] - 2026-11-02
 
 ### Bug Fixes
