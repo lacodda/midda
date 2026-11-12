@@ -308,7 +308,7 @@ fn a_shortcut_and_an_installer_wait_for_their_check() {
     let mut waiting: Vec<(String, Check)> = survey
         .waiting
         .iter()
-        .map(|waiting| (tree.node(waiting.finding.id).name.clone(), waiting.check))
+        .map(|waiting| (tree.node(waiting.finding.id).name.clone(), waiting.check.clone()))
         .collect();
     waiting.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(

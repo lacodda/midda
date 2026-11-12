@@ -22,9 +22,17 @@
 #   if       on a way back, what the check says for it to be taken:
 #            `installed` (this version or a newer one is) or
 #            `older-installed`
+#   about    what more is read of a finding once it is one, without a word
+#            on whether it is: `recycle-bin` (what the bin's records say -
+#            how many things, deleted when, by whom)
 #
-# Nothing here is deleted by midda yet: a finding says what it is, what is
-# lost and how careful to be.
+# A path can start where the shell keeps one of the reader's folders -
+# `{downloads}`, `{desktop}`, `{documents}`, `{pictures}`, `{music}`,
+# `{videos}` - which is every profile's own folder and wherever this
+# account's shell moved it: Downloads on D:, the Desktop in OneDrive.
+#
+# A finding says what it is, what is lost and how careful to be; midda
+# deletes only what the reader picks, and asks first.
 
 # ------------------------------------------------------------------ recycle bin
 
@@ -35,6 +43,7 @@ group = "recycle-bin"
 # One folder per account on every volume, named by the account's SID.
 paths = ["/$Recycle.Bin/S-*"]
 goes = "contents"
+about = "recycle-bin"
 # How the shell shows the bin; emptying it keeps that.
 except = ["desktop.ini"]
 
@@ -58,6 +67,51 @@ older = "7 days"
 [[rule.restore]]
 risk = "safe"
 explain = "What programs left in the temporary folder and nothing has written to for over a week. Programs make what they need there again."
+
+# ----------------------------------------------------------------------- windows
+
+[[rule]]
+id = "windows-old"
+name = "Previous Windows"
+group = "windows"
+paths = ["/Windows.old"]
+
+[[rule.restore]]
+risk = "caution"
+explain = "The Windows this computer had before its last upgrade, kept so it can go back to it; Windows deletes it by itself after ten days. Deleting it gives up going back and needs administrator rights - Settings, System, Storage, Temporary files removes it whole."
+
+[[rule]]
+id = "windows-update-downloads"
+name = "Windows Update downloads"
+group = "windows"
+paths = ["/Windows/SoftwareDistribution/Download"]
+goes = "contents"
+
+[[rule.restore]]
+risk = "safe"
+explain = "Updates Windows downloaded to install. It downloads again what it still needs; what an update in progress has open stays, and deleting the rest needs administrator rights."
+
+[[rule]]
+id = "delivery-optimization"
+name = "Delivery Optimization cache"
+group = "windows"
+paths = ["/Windows/ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization/Cache"]
+goes = "contents"
+
+[[rule.restore]]
+risk = "safe"
+explain = "Pieces of updates and Store apps Windows keeps to share with other computers. It downloads again what it needs; only an administrator can delete them."
+
+[[rule]]
+id = "thumbnail-cache"
+name = "Thumbnail cache"
+group = "windows"
+entries = "files"
+paths = ["/Users/*/AppData/Local/Microsoft/Windows/Explorer/thumbcache_*.db"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "The thumbnails Explorer drew of pictures and videos. It draws them again as folders are opened; the ones it has open while it runs stay."
 
 # ----------------------------------------------------------------- crash reports
 
@@ -107,11 +161,11 @@ name = "Unfinished download"
 group = "downloads"
 entries = "files"
 paths = [
-  "/Users/*/Downloads/*.crdownload",
-  "/Users/*/Downloads/*.part",
-  "/Users/*/Downloads/*.partial",
-  "/Users/*/Downloads/*.download",
-  "/Users/*/Downloads/*.opdownload",
+  "{downloads}/*.crdownload",
+  "{downloads}/*.part",
+  "{downloads}/*.partial",
+  "{downloads}/*.download",
+  "{downloads}/*.opdownload",
 ]
 # A download still going is written every second.
 older = "1 day"
@@ -125,7 +179,8 @@ id = "downloaded-installer"
 name = "Installer"
 group = "downloads"
 entries = "files"
-paths = ["/Users/*/Downloads/*.msi", "/Users/*/Downloads/*.exe"]
+# Downloaded, and saved to the Desktop to run once.
+paths = ["{downloads}/*.msi", "{downloads}/*.exe", "{desktop}/*.msi", "{desktop}/*.exe"]
 check = "installer"
 
 [[rule.restore]]
@@ -140,14 +195,14 @@ explain = "An installer of a newer version than the one installed here: perhaps 
 
 [[rule.restore]]
 risk = "caution"
-explain = "An installer of nothing midda finds installed here - or a program run from Downloads rather than installed. Look before deleting it."
+explain = "An installer of nothing midda finds installed here - or a program run from where it is rather than installed. Look before deleting it."
 
 [[rule]]
 id = "disc-image"
 name = "Disc image"
 group = "downloads"
 entries = "files"
-paths = ["/Users/*/Downloads/*.iso", "/Users/*/Downloads/*.img"]
+paths = ["{downloads}/*.iso", "{downloads}/*.img"]
 
 [[rule.restore]]
 risk = "caution"
@@ -158,7 +213,7 @@ id = "old-download"
 name = "Old download"
 group = "downloads"
 entries = "all"
-paths = ["/Users/*/Downloads/*"]
+paths = ["{downloads}/*"]
 older = "3 months"
 # What the shell keeps there to show the folder by its name and icon.
 except = ["desktop.ini"]
@@ -166,6 +221,33 @@ except = ["desktop.ini"]
 [[rule.restore]]
 risk = "caution"
 explain = "Downloaded, and nothing in it written for over three months. Most downloads can be downloaded again; only you know whether this one is still needed."
+
+# ---------------------------------------------------------------- browser caches
+
+# Chromium's browsers keep a cache per profile, and a profile is a folder of
+# `User Data` under whatever name - Default, Profile 1. The folder stays: a
+# browser that is running keeps it open.
+[[rule]]
+id = "browser-cache"
+name = "Browser cache"
+group = "browser-caches"
+paths = [
+  "/Users/*/AppData/Local/Google/Chrome/User Data/*/Cache",
+  "/Users/*/AppData/Local/Google/Chrome/User Data/*/Code Cache",
+  "/Users/*/AppData/Local/Microsoft/Edge/User Data/*/Cache",
+  "/Users/*/AppData/Local/Microsoft/Edge/User Data/*/Code Cache",
+  "/Users/*/AppData/Local/BraveSoftware/Brave-Browser/User Data/*/Cache",
+  "/Users/*/AppData/Local/BraveSoftware/Brave-Browser/User Data/*/Code Cache",
+  "/Users/*/AppData/Local/Vivaldi/User Data/*/Cache",
+  "/Users/*/AppData/Local/Vivaldi/User Data/*/Code Cache",
+  "/Users/*/AppData/Local/Chromium/User Data/*/Cache",
+  "/Users/*/AppData/Local/Chromium/User Data/*/Code Cache",
+]
+goes = "contents"
+
+[[rule.restore]]
+risk = "safe"
+explain = "What the browser kept of pages and scripts it opened, to open them faster next time. It downloads them again; close the browser first, or what it has open stays."
 
 # --------------------------------------------------------------------- leftovers
 

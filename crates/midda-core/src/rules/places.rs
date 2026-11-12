@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use super::pattern::{Glob, Outer, Template};
+use super::pattern::{Glob, Known, Outer, Template};
 use super::{explained, kebab, read_globs, read_paths};
 use crate::consumers::Consumer;
 use crate::tree::{NodeId, Tree};
@@ -85,7 +85,7 @@ pub(super) struct RawPlace {
 }
 
 impl RawPlace {
-    pub(super) fn check(self) -> Result<Place, String> {
+    pub(super) fn check(self, known: &Known) -> Result<Place, String> {
         kebab(&self.id)?;
         if self.name.trim().is_empty() {
             return Err("a place needs a name a reader calls it by".to_owned());
@@ -97,7 +97,7 @@ impl RawPlace {
             return Err("an owner says whose machine a virtual disk is: only a place of `virtual-disks` has one".to_owned());
         }
         Ok(Place {
-            paths: read_paths(&self.paths)?,
+            paths: read_paths(&self.paths, known)?,
             beside: read_globs(&self.beside)?,
             inside: read_globs(&self.inside)?,
             id: self.id,

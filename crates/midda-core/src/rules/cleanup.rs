@@ -460,7 +460,16 @@ mod tests {
             .iter()
             .filter_map(|rule| rule.cleanup.as_ref().map(Cleanup::line))
             .collect();
-        assert_eq!(lines, ["npm cache clean --force", "pnpm store prune", "pip cache purge"]);
+        assert_eq!(
+            lines,
+            [
+                "npm cache clean --force",
+                "pnpm store prune",
+                "pip cache purge",
+                "yarn cache clean",
+                "bun pm cache rm"
+            ]
+        );
     }
 
     #[test]

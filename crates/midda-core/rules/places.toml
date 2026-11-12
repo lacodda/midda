@@ -25,7 +25,8 @@
 #   consumer  one of the above
 #   paths     where it is, read from its end as in dev.toml; a leading `/`
 #             puts the first name at the top of a volume - `/Windows` is the
-#             system's, not every folder called Windows
+#             system's, not every folder called Windows - and `{documents}`
+#             at the reader's Documents, wherever the shell keeps it
 #   beside    it counts only when one of these is next to it
 #   inside    it counts only when one of these is in it
 #   yields    a soft place: a file in it is what its own name says first -
@@ -261,7 +262,7 @@ paths = ["/Users/*/AppData/Roaming/.minecraft"]
 id = "game-saves"
 name = "game saves"
 consumer = "games"
-paths = ["/Users/*/Documents/My Games", "/Users/*/Saved Games"]
+paths = ["{documents}/My Games", "/Users/*/Saved Games"]
 
 # What a graphics driver compiles for the games that ran, and keeps.
 [[place]]
@@ -536,7 +537,7 @@ paths = ["/Users/*/VirtualBox VMs"]
 id = "vmware"
 name = "VMware machines"
 consumer = "virtual-disks"
-paths = ["/Users/*/Documents/Virtual Machines"]
+paths = ["{documents}/Virtual Machines"]
 
 # ----------------------------------------------------------------------- media
 
@@ -544,21 +545,21 @@ paths = ["/Users/*/Documents/Virtual Machines"]
 id = "pictures"
 name = "Pictures"
 consumer = "media"
-paths = ["/Users/*/Pictures"]
+paths = ["{pictures}"]
 yields = true
 
 [[place]]
 id = "music"
 name = "Music"
 consumer = "media"
-paths = ["/Users/*/Music"]
+paths = ["{music}"]
 yields = true
 
 [[place]]
 id = "videos"
 name = "Videos"
 consumer = "media"
-paths = ["/Users/*/Videos"]
+paths = ["{videos}"]
 yields = true
 
 [[file]]
@@ -581,21 +582,21 @@ names = [
 id = "documents"
 name = "Documents"
 consumer = "documents"
-paths = ["/Users/*/Documents"]
+paths = ["{documents}"]
 yields = true
 
 [[place]]
 id = "desktop"
 name = "the desktop"
 consumer = "documents"
-paths = ["/Users/*/Desktop"]
+paths = ["{desktop}"]
 yields = true
 
 [[place]]
 id = "downloads"
 name = "Downloads"
 consumer = "documents"
-paths = ["/Users/*/Downloads"]
+paths = ["{downloads}"]
 yields = true
 
 [[place]]

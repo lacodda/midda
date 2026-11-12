@@ -1,5 +1,6 @@
-//! What only a file can say about itself: where a shortcut points, and what
-//! an installer installs.
+//! What only a file can say about itself: where a shortcut points, what an
+//! installer installs, whether a folder says it is a cache, and what the
+//! Recycle Bin's records say it holds.
 //!
 //! A rule names an entry by where it is and how old it is — that is the
 //! tree's to answer. Whether `Foo.lnk` on the Desktop points to anything, or
@@ -29,8 +30,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::rules::{Finding, RuleSet, Waiting};
 
-/// What a rule asks a file, as a rule writes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// What a rule asks a file or a folder, as a rule writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Check {
     /// Whether a shortcut's target is there. Only a shortcut to nothing is
@@ -38,22 +39,45 @@ pub enum Check {
     Shortcut,
     /// Whether what an installer installs is installed here.
     Installer,
+    /// Whether a file in the folder starts as the rule says. Written as
+    /// `[rule.marker]`, never as `check`: a marker with nothing to look for
+    /// cannot be written.
+    #[serde(skip)]
+    Marker(Marker),
+}
+
+/// A file a folder holds to say what it is, and how it begins: a
+/// `CACHEDIR.TAG` that starts with the standard's signature says the folder
+/// is a tool's cache (bford.info/cachedir).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Marker {
+    /// The file's name, as the folder holds it: a name, never a pattern.
+    pub file: String,
+    /// What the file starts with, byte for byte.
+    pub starts: std::sync::Arc<[u8]>,
 }
 
 impl Check {
     /// What a rules file calls it.
     #[must_use]
-    pub const fn key(self) -> &'static str {
+    pub const fn key(&self) -> &'static str {
         match self {
             Self::Shortcut => "shortcut",
             Self::Installer => "installer",
+            Self::Marker(_) => "marker",
         }
+    }
+
+    /// Whether what this check reads is a folder rather than a file.
+    #[must_use]
+    pub const fn reads_folders(&self) -> bool {
+        matches!(self, Self::Marker(_))
     }
 
     /// Whether this check can answer `outcome`, so a way back can be taken
     /// by it.
     #[must_use]
-    pub const fn says(self, outcome: Outcome) -> bool {
+    pub const fn says(&self, outcome: Outcome) -> bool {
         matches!((self, outcome), (Self::Installer, Outcome::Installed | Outcome::OlderInstalled))
     }
 }
@@ -93,6 +117,10 @@ pub enum Seen {
     Fine,
     /// An installer, and what of it is installed.
     Installer(installer::Verdict),
+    /// A folder whose marker file starts as its rule says.
+    Marked,
+    /// A Recycle Bin folder, and what its records say of it, when any read.
+    Bin { about: Option<String> },
 }
 
 impl Seen {
@@ -101,7 +129,7 @@ impl Seen {
     #[must_use]
     pub fn outcome(&self) -> Option<Option<Outcome>> {
         match self {
-            Self::Broken { .. } => Some(None),
+            Self::Broken { .. } | Self::Marked | Self::Bin { .. } => Some(None),
             Self::Fine => None,
             Self::Installer(verdict) => Some(verdict.outcome),
         }
@@ -112,8 +140,9 @@ impl Seen {
     pub fn about(&self) -> Option<String> {
         match self {
             Self::Broken { target } => Some(format!("It points to {target}, which is not there.")),
-            Self::Fine => None,
+            Self::Fine | Self::Marked => None,
             Self::Installer(verdict) => Some(verdict.about.clone()),
+            Self::Bin { about } => about.clone(),
         }
     }
 }
@@ -142,16 +171,72 @@ impl Machine {
     }
 }
 
-/// Asks the file at `path` what `check` needs to know. Reads it, and for an
-/// installer asks Windows Installer; changes nothing - the time it was last
-/// opened included, which the read would otherwise make today.
+/// Asks the entry at `path` what `check` needs to know. Reads the file - for
+/// a folder, the file in it the check is about - and for an installer asks
+/// Windows Installer; changes nothing, the time a file was last opened
+/// included, which the read would otherwise make today.
 #[must_use]
-pub fn look(path: &Path, check: Check, machine: &Machine) -> Seen {
-    let _kept = crate::platform::keeping_access_time(path);
+pub fn look(path: &Path, check: &Check, machine: &Machine) -> Seen {
     match check {
-        Check::Shortcut => shortcut::look(path),
-        Check::Installer => Seen::Installer(installer::look(path, &machine.programs)),
+        Check::Shortcut => {
+            let _kept = crate::platform::keeping_access_time(path);
+            shortcut::look(path)
+        }
+        Check::Installer => {
+            let _kept = crate::platform::keeping_access_time(path);
+            Seen::Installer(installer::look(path, &machine.programs))
+        }
+        Check::Marker(marker) => {
+            let file = path.join(&marker.file);
+            let _kept = crate::platform::keeping_access_time(&file);
+            if starts_with(&file, &marker.starts) { Seen::Marked } else { Seen::Fine }
+        }
     }
+}
+
+/// What a rule's finding is told more of, read from its files once it is
+/// found: it says nothing about whether it is one (`about`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum About {
+    /// What the records of a Recycle Bin folder say it holds: how many
+    /// things, deleted when, by whom.
+    RecycleBin,
+}
+
+impl About {
+    /// Whether what this reads is a folder rather than a file.
+    #[must_use]
+    pub const fn reads_folders(self) -> bool {
+        matches!(self, Self::RecycleBin)
+    }
+}
+
+/// Reads what `about` tells of the entry at `path`.
+#[must_use]
+pub fn tell(path: &Path, about: About) -> Seen {
+    match about {
+        About::RecycleBin => Seen::Bin {
+            about: crate::recycled::read(path).about(SystemTime::now()),
+        },
+    }
+}
+
+/// A finding whose rule has more to tell of it, read away from the tree as
+/// a check is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Told {
+    pub path: PathBuf,
+    pub about: About,
+    pub finding: Finding,
+}
+
+/// Whether the file at `path` begins with `start`: only that many bytes are
+/// read. A file that cannot be read does not.
+fn starts_with(path: &Path, start: &[u8]) -> bool {
+    use std::io::Read as _;
+    let mut head = vec![0; start.len()];
+    std::fs::File::open(path).and_then(|mut file| file.read_exact(&mut head)).is_ok() && head == start
 }
 
 /// What checks saw of files, kept by path as of the size and the time each
@@ -164,6 +249,8 @@ pub fn look(path: &Path, check: Check, machine: &Machine) -> Seen {
 #[derive(Debug, Clone, Default)]
 pub struct Kept {
     seen: HashMap<PathBuf, (u64, Option<SystemTime>, Seen)>,
+    /// What was told of findings, the same way.
+    told: HashMap<PathBuf, (u64, Option<SystemTime>, Seen)>,
 }
 
 impl Kept {
@@ -187,5 +274,24 @@ impl Kept {
         }
         self.seen = kept;
         settled
+    }
+
+    /// What is told of each of `told`, by the entry - kept when it is as it
+    /// was, read with `tell` when it is not.
+    pub fn tell(&mut self, told: &[Told], tell: &mut dyn FnMut(&Told) -> Seen) -> Vec<(crate::NodeId, Seen)> {
+        let mut said = Vec::with_capacity(told.len());
+        let mut kept = HashMap::with_capacity(told.len());
+        for entry in told {
+            let size = entry.finding.holds.logical;
+            let written = entry.finding.newest;
+            let seen = match self.told.remove(&entry.path) {
+                Some((was, then, seen)) if was == size && then == written => seen,
+                _ => tell(entry),
+            };
+            said.push((entry.finding.id, seen.clone()));
+            kept.insert(entry.path.clone(), (size, written, seen));
+        }
+        self.told = kept;
+        said
     }
 }

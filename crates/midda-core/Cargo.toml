@@ -30,6 +30,8 @@ serde_json = "1"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
+    # Whose a Recycle Bin is: its folder is named by the account's SID.
+    "Win32_Security_Authorization",
     # What an installer in Downloads installs, and whether it is installed
     # (checks::installer): Windows Installer's own tables and product codes.
     "Win32_System_ApplicationInstallationAndServicing",
@@ -39,6 +41,9 @@ windows-sys = { version = "0.61", features = [
     # WSL lists its distributions and their disks in the registry (vdisk::wsl).
     "Win32_System_Registry",
     "Win32_System_Threading",
+    # Where the shell keeps the reader's folders now (shell::known_folders).
+    "Win32_System_Com",
+    "Win32_UI_Shell",
 ] }
 # The Recycle Bin is the shell's, and the shell is COM: IFileOperation, with a
 # progress sink of midda's own that says no when the shell would delete for

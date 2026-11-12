@@ -15,9 +15,19 @@
 //! It can be anchored to the top of one, though: a path written with a
 //! leading `/` starts there. `/Windows` is the system's folder, not every
 //! folder called `Windows` — `AppData\Local\Microsoft\Windows` is a profile's
-//! — and `/Users/*/AppData` is every profile's, on whichever volume.
+//! — and `/Users/*/AppData` is every profile's, on whichever volume. A path
+//! that starts with a drive, `D:/Archive`, is that volume's and no other's:
+//! what a reader writes about their own disk, and where a folder the shell
+//! moved is.
+//!
+//! And it can start where the shell keeps one of the reader's folders:
+//! `{downloads}/*` is what is in Downloads, wherever that is — in the
+//! profile, moved to `D:\Downloads`, or into OneDrive. A known folder is
+//! read when the set is ([`Known`]), and stands for every place it is: the
+//! profile's own folder of every account, and where this account's shell
+//! keeps it now.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, Prefix};
 
 use crate::tree::{NodeId, ROOT, Tree};
 
@@ -112,6 +122,17 @@ enum Step {
     Folders,
 }
 
+/// Where the first name of a path sits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Anchor {
+    /// Anywhere: the path is read from its end only.
+    Nowhere,
+    /// At the top of any volume.
+    Top,
+    /// At the top of this volume, by its drive as `C:` writes it, upper case.
+    Drive(String),
+}
+
 /// A path read from its end: the last name is the entry itself, the ones
 /// before it the folders it sits in.
 ///
@@ -122,23 +143,46 @@ enum Step {
 pub struct Template {
     /// Outermost first, as written.
     steps: Vec<Step>,
-    /// The first name sits at the top of a volume, with nothing above it.
-    anchored: bool,
+    /// Where the first name sits.
+    anchor: Anchor,
     /// Whether any step is `**`: a path without one is matched name for name,
     /// with nothing collected — the overwhelming majority.
     deep: bool,
 }
 
+/// The known folder a path starts with — `{downloads}/*` — and what follows
+/// it. A name in braces is a known folder when it is a lowercase word; any
+/// other — `{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}` — is a folder's own name,
+/// and means what it says.
+fn known_at_start(path: &str) -> Option<(&str, &str)> {
+    let (name, after) = path.strip_prefix('{')?.split_once('}')?;
+    (!name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase())).then_some((name, after))
+}
+
+/// The drive a path starts with — `D:/Archive` — and the rest of it.
+fn drive_of(path: &str) -> Option<(String, &str)> {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/').then(|| (path[..2].to_ascii_uppercase(), &path[3..]))
+}
+
 impl Template {
     /// A path of names separated by `/`; a leading `/` anchors it to the top
-    /// of a volume.
+    /// of a volume, a leading drive to the top of that one.
     ///
     /// # Errors
     ///
     /// When it is empty or any of its names is not a name; when it ends in
-    /// `**`, which would name no entry, or says `**` twice in a row.
+    /// `**`, which would name no entry, or says `**` twice in a row; when it
+    /// starts at a known folder, which only [`Template::read`] can place.
     pub fn new(path: &str) -> Result<Self, String> {
-        let (anchored, path) = path.strip_prefix('/').map_or((false, path), |rest| (true, rest));
+        if known_at_start(path).is_some() {
+            return Err(format!("`{path}` starts at a known folder, which is read with the set"));
+        }
+        let (anchor, path) = match (drive_of(path), path.strip_prefix('/')) {
+            (Some((drive, rest)), _) => (Anchor::Drive(drive), rest),
+            (None, Some(rest)) => (Anchor::Top, rest),
+            (None, None) => (Anchor::Nowhere, path),
+        };
         let steps = path
             .split('/')
             .map(|name| if name == "**" { Ok(Step::Folders) } else { Glob::new(name).map(Step::Name) })
@@ -152,7 +196,38 @@ impl Template {
             return Err(format!("`{path}` says `**` twice in a row"));
         }
         let deep = steps.contains(&Step::Folders);
-        Ok(Self { steps, anchored, deep })
+        Ok(Self { steps, anchor, deep })
+    }
+
+    /// A path as a rules file writes it: as [`Template::new`] reads one, or
+    /// starting at a known folder — `{downloads}/*` — which is a path for
+    /// every place `known` says the folder is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Template::new`]; and when a known folder is one midda does not
+    /// know, or is not where the path starts.
+    pub fn read(path: &str, known: &Known) -> Result<Vec<Self>, String> {
+        let Some((name, after)) = known_at_start(path) else {
+            return Ok(vec![Self::new(path)?]);
+        };
+        let folder = KnownFolder::from_key(name).ok_or_else(|| {
+            format!(
+                "`{{{name}}}` is not a folder midda knows: {}",
+                KnownFolder::ALL.map(|folder| format!("{{{}}}", folder.key())).join(", ")
+            )
+        })?;
+        let after = match after {
+            "" => "",
+            _ => after
+                .strip_prefix('/')
+                .ok_or_else(|| format!("`{path}`: a known folder is followed by `/` and a path"))?,
+        };
+        known
+            .places(folder)
+            .iter()
+            .map(|place| Self::new(&if after.is_empty() { place.clone() } else { format!("{place}/{after}") }))
+            .collect()
     }
 
     /// The path as written.
@@ -167,7 +242,11 @@ impl Template {
             })
             .collect::<Vec<_>>()
             .join("/");
-        if self.anchored { format!("/{path}") } else { path }
+        match &self.anchor {
+            Anchor::Nowhere => path,
+            Anchor::Top => format!("/{path}"),
+            Anchor::Drive(drive) => format!("{drive}/{path}"),
+        }
     }
 
     /// The last name: what the entry itself is called.
@@ -189,30 +268,176 @@ impl Template {
     /// `C:\Users\me\AppData\Local` as well as by a scan of `C:\`.
     #[must_use]
     pub fn matches(&self, tree: &Tree, id: NodeId, outer: &Outer) -> bool {
-        self.matches_names(upward(tree, id, outer))
+        self.on(outer) && self.matches_names(upward(tree, id, outer))
     }
 
     /// Whether this path names a folder above the root of a scan: the one
     /// `up` folders above it, which is not in the tree but in its path.
     #[must_use]
     pub fn matches_above(&self, outer: &Outer, up: usize) -> bool {
-        up > 0 && up < outer.names.len() && self.matches_names(outer.names[up..].iter().map(String::as_str))
+        up > 0 && up < outer.names.len() && self.on(outer) && self.matches_names(outer.names[up..].iter().map(String::as_str))
+    }
+
+    /// Whether the volume a scan is on is one this path can be on: any, but
+    /// for a path that names its drive.
+    fn on(&self, outer: &Outer) -> bool {
+        match &self.anchor {
+            Anchor::Drive(drive) => outer.drive.as_deref().is_some_and(|on| on.eq_ignore_ascii_case(drive)),
+            Anchor::Nowhere | Anchor::Top => true,
+        }
     }
 
     /// Whether this path names the entry whose name and whose folders' names
     /// are `names`, its own first.
     fn matches_names<'a>(&self, mut names: impl Iterator<Item = &'a str>) -> bool {
+        let anchored = self.anchor != Anchor::Nowhere;
         if self.deep {
             let names: Vec<&str> = names.collect();
             let steps: Vec<&Step> = self.steps.iter().rev().collect();
-            return deep_match(&steps, &names, self.anchored);
+            return deep_match(&steps, &names, anchored);
         }
         self.steps
             .iter()
             .rev()
             .all(|step| matches!(step, Step::Name(glob) if names.next().is_some_and(|name| glob.matches(name))))
-            && (!self.anchored || names.next().is_none())
+            && (!anchored || names.next().is_none())
     }
+}
+
+/// A folder the shell keeps for the reader, and moves when told to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KnownFolder {
+    Desktop,
+    Documents,
+    Downloads,
+    Music,
+    Pictures,
+    Videos,
+}
+
+impl KnownFolder {
+    pub const ALL: [Self; 6] = [Self::Desktop, Self::Documents, Self::Downloads, Self::Music, Self::Pictures, Self::Videos];
+
+    /// What a path calls it, between braces: `{downloads}`.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Documents => "documents",
+            Self::Downloads => "downloads",
+            Self::Music => "music",
+            Self::Pictures => "pictures",
+            Self::Videos => "videos",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|folder| folder.key() == key)
+    }
+
+    /// Where every account's profile has it until the shell is told to move
+    /// it: the folder's name in the profile.
+    #[must_use]
+    pub const fn in_profile(self) -> &'static str {
+        match self {
+            Self::Desktop => "Desktop",
+            Self::Documents => "Documents",
+            Self::Downloads => "Downloads",
+            Self::Music => "Music",
+            Self::Pictures => "Pictures",
+            Self::Videos => "Videos",
+        }
+    }
+}
+
+/// Where the known folders are, as paths a rule can start with.
+///
+/// Every account's profile has each one under its own name — that is where
+/// another account's folders are looked for, since only this account's
+/// shell can be asked — and this account's shell may keep it elsewhere: a
+/// policy or the reader moved Downloads to `D:\Downloads`, OneDrive took the
+/// Desktop. Both are the folder; a rule about Downloads is about either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Known {
+    places: Vec<(KnownFolder, Vec<String>)>,
+}
+
+impl Known {
+    /// Each folder in every profile, and nowhere else: what a set is read
+    /// with when there is no shell to ask, and in a test.
+    #[must_use]
+    pub fn in_profiles() -> Self {
+        Self {
+            places: KnownFolder::ALL
+                .into_iter()
+                .map(|folder| (folder, vec![format!("/Users/*/{}", folder.in_profile())]))
+                .collect(),
+        }
+    }
+
+    /// Each folder in every profile, and where this account's shell keeps it
+    /// now ([`crate::shell::known_folders`]).
+    #[must_use]
+    pub fn of_this_account() -> Self {
+        let mut known = Self::in_profiles();
+        for (folder, path) in crate::shell::known_folders() {
+            known.also(folder, &path);
+        }
+        known
+    }
+
+    /// Says `folder` is also at `path`: an absolute path, with its drive. A
+    /// path that is not one, or not a path a rule can write, says nothing.
+    pub fn also(&mut self, folder: KnownFolder, path: &Path) {
+        let Some(written) = written_as_rule(path) else {
+            return;
+        };
+        if let Some((_, places)) = self.places.iter_mut().find(|(known, _)| *known == folder)
+            && !places.iter().any(|place| place.eq_ignore_ascii_case(&written))
+        {
+            places.push(written);
+        }
+    }
+
+    /// Every place `folder` is, as paths.
+    #[must_use]
+    pub fn places(&self, folder: KnownFolder) -> &[String] {
+        self.places
+            .iter()
+            .find(|(known, _)| *known == folder)
+            .map_or(&[][..], |(_, places)| places.as_slice())
+    }
+}
+
+/// An absolute path as a rule writes it - `D:/Downloads` - when it has a
+/// drive and every name in it is a name a rule can hold: none with `*` or
+/// `?`, which a rule reads as wildcards.
+#[must_use]
+pub fn written_as_rule(path: &Path) -> Option<String> {
+    let mut components = path.components();
+    let drive = match components.next()? {
+        Component::Prefix(prefix) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => format!("{}:", char::from(letter).to_ascii_uppercase()),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mut written = drive;
+    for component in components {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                let name = name.to_str()?;
+                if name.contains(['*', '?']) {
+                    return None;
+                }
+                written.push('/');
+                written.push_str(name);
+            }
+            _ => return None,
+        }
+    }
+    (written.len() > 2).then_some(written)
 }
 
 /// `steps` against `names`, both innermost first: a name takes one, `**`
@@ -230,6 +455,9 @@ fn deep_match(steps: &[&Step], names: &[&str], anchored: bool) -> bool {
 #[derive(Debug, Clone, Default)]
 pub struct Outer {
     names: Vec<String>,
+    /// The drive the root is on, as `C:`: what a path that names its drive
+    /// is matched against. None for a share, or where there are no drives.
+    drive: Option<String>,
 }
 
 impl Outer {
@@ -237,15 +465,22 @@ impl Outer {
     /// a name: a path that reaches it has reached past every folder.
     #[must_use]
     pub fn of(root: &Path) -> Self {
+        let mut drive = None;
         let mut names: Vec<String> = root
             .components()
             .filter_map(|component| match component {
                 Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                Component::Prefix(prefix) => {
+                    if let Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) = prefix.kind() {
+                        drive = Some(format!("{}:", char::from(letter).to_ascii_uppercase()));
+                    }
+                    None
+                }
                 _ => None,
             })
             .collect();
         names.reverse();
-        Self { names }
+        Self { names, drive }
     }
 
     /// How many folders are above the root of the scan, the root's own name
@@ -345,9 +580,11 @@ mod tests {
         assert!(!path("Roaming/pnpm/store/v*").matches(&tree, v10, &outer));
         if cfg!(windows) {
             assert!(
-                !path("C:/Users/me/AppData/Local/pnpm/store/v10").matches(&tree, v10, &outer),
-                "a drive is not a name"
+                path("C:/Users/me/AppData/Local/pnpm/store/v10").matches(&tree, v10, &outer),
+                "a drive anchors a path to its volume"
             );
+            assert!(!path("D:/Users/me/AppData/Local/pnpm/store/v10").matches(&tree, v10, &outer), "and to no other");
+            assert!(!path("C:/me/AppData/Local/pnpm/store/v10").matches(&tree, v10, &outer), "from its top");
         }
         assert!(
             !path("x/Users/me/AppData/Local/pnpm/store/v10").matches(&tree, v10, &outer),

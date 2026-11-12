@@ -57,12 +57,28 @@
 //!   says which way back applies (`if`), or that the entry is none of the
 //!   rule's — a shortcut that works.
 //!
+//! - **A marker** (`[rule.marker]`): a file in the folder that says what the
+//!   folder is, and how it begins — a `CACHEDIR.TAG` with the standard's
+//!   signature is a tool's word that the folder is its cache. The survey
+//!   sees that the file is there; what it begins with is read afterwards,
+//!   as a check is.
+//!
 //! # Rules are data
 //!
-//! The rules midda ships with are files, `rules/dev.toml` and
-//! `rules/system.toml`, read by the same code that will read a user's own
-//! rules: one format, so whatever the shipped rules can say, a user's can.
-//! See `docs/adr/0012-rules-that-explain-themselves.md`.
+//! The rules midda ships with are files in `rules/` ([`SHIPPED`]), read by
+//! the same code that reads a reader's own: one format, so whatever the
+//! shipped rules can say, a reader's can, and a reader's file can become a
+//! shipped one by a pull request. A reader's files are tried first: their
+//! word on their own disk outranks midda's ([`RuleSet::with_own`]). See
+//! `docs/adr/0012-rules-that-explain-themselves.md` and
+//! `docs/adr/0019-rules-of-ones-own.md`.
+//!
+//! # Kept
+//!
+//! A file can also say what is never to go (`[[keep]]`): "this `target`
+//! holds a build I need". Nothing a keep names is a finding, nor anything in
+//! it, and a folder that holds something kept is never taken whole — a rule
+//! that names it leaves it as one thing nobody deletes.
 //!
 //! # Places
 //!
@@ -91,6 +107,7 @@
 //!   lie this product exists to stop telling.
 
 pub mod cleanup;
+pub mod own;
 pub mod pattern;
 mod places;
 
@@ -102,10 +119,10 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 pub use cleanup::Cleanup;
-use pattern::{Glob, Outer, Template};
+use pattern::{Glob, Known, Outer, Template};
 pub use places::{FileKind, Place};
 
-use crate::checks::{Check, Outcome, Seen};
+use crate::checks::{About, Check, Marker, Outcome, Seen, Told};
 use crate::consumers::{Above, Consumer};
 use crate::platform::FileIdentity;
 use crate::size::Size;
@@ -133,18 +150,26 @@ pub enum Group {
     Downloads,
     /// Empty folders and shortcuts to nothing.
     Leftovers,
+    /// What a browser keeps to open pages faster.
+    BrowserCaches,
+    /// What Windows keeps of its own that it no longer needs or makes again:
+    /// the previous Windows, the updates it downloaded, the thumbnails
+    /// Explorer drew.
+    Windows,
 }
 
 impl Group {
     /// Every group, in the order a list of findings shows them: what a
-    /// project installed, built and shares, then what Windows and the
-    /// reader's downloads leave behind.
-    pub const ALL: [Self; 8] = [
+    /// project installed, built and shares, then what a browser, Windows and
+    /// the reader's downloads leave behind.
+    pub const ALL: [Self; 10] = [
         Self::Dependencies,
         Self::Build,
         Self::Caches,
+        Self::BrowserCaches,
         Self::RecycleBin,
         Self::Temporary,
+        Self::Windows,
         Self::CrashReports,
         Self::Downloads,
         Self::Leftovers,
@@ -165,7 +190,8 @@ impl Group {
     pub const fn consumer(self) -> Option<Consumer> {
         match self {
             Self::Dependencies | Self::Build | Self::Caches => Some(Consumer::Development),
-            Self::RecycleBin | Self::Temporary | Self::CrashReports => Some(Consumer::System),
+            Self::RecycleBin | Self::Temporary | Self::CrashReports | Self::Windows => Some(Consumer::System),
+            Self::BrowserCaches => Some(Consumer::Browsers),
             Self::Downloads | Self::Leftovers => None,
         }
     }
@@ -259,6 +285,8 @@ pub struct Rule {
     except: Vec<Template>,
     /// What only the file can say, asked after the survey.
     pub check: Option<Check>,
+    /// What more is read of a finding once it is one.
+    pub about: Option<About>,
     restore: Vec<Restore>,
     pub cleanup: Option<Cleanup>,
 }
@@ -316,6 +344,19 @@ impl Rule {
             && (self.takes == Takes::Contents || self.old_enough(tree, id, here.now))
             && (self.within.is_empty() || (self.within.contains(&here.above.consumer()) && !place()))
             && (!self.hollow || hollow())
+            && self.marked(tree, id)
+    }
+
+    /// Whether the folder holds the file the rule's marker is, when it has
+    /// one: what it begins with is asked afterwards, as a check.
+    fn marked(&self, tree: &Tree, id: NodeId) -> bool {
+        let Some(Check::Marker(marker)) = &self.check else {
+            return true;
+        };
+        tree.node(id).children.iter().any(|&child| {
+            let node = tree.node(child);
+            !node.is_directory() && node.name.eq_ignore_ascii_case(&marker.file)
+        })
     }
 
     /// Which way back applies to `id` by what is beside it. A rule with a
@@ -356,6 +397,7 @@ pub struct RuleSet {
     rules: Vec<Rule>,
     places: Vec<Place>,
     files: Vec<FileKind>,
+    keeps: Vec<Keep>,
     /// The places by the last name of their paths, so a volume's folders are
     /// not each asked of every place.
     index: places::Index,
@@ -376,6 +418,14 @@ struct FileRules {
     wild: Vec<usize>,
 }
 
+/// The extension every name a pattern like `thumbcache_*.db` names ends in,
+/// folded to lower case: what follows its last dot, when that holds no
+/// wildcard. A file with another last extension cannot be one it names.
+fn ends_in_extension(pattern: &str) -> Option<String> {
+    let (_, extension) = pattern.rsplit_once('.')?;
+    (!extension.is_empty() && !extension.contains(['*', '?'])).then(|| extension.to_ascii_lowercase())
+}
+
 impl FileRules {
     fn of(rules: &[Rule]) -> Self {
         let mut index = Self::default();
@@ -384,7 +434,7 @@ impl FileRules {
                 let last = path.last().as_str();
                 let slot = if !last.contains(['*', '?']) {
                     index.named.entry(last.to_ascii_lowercase()).or_default()
-                } else if let Some(extension) = places::extension_of(last) {
+                } else if let Some(extension) = places::extension_of(last).or_else(|| ends_in_extension(last)) {
                     index.extended.entry(extension).or_default()
                 } else {
                     &mut index.wild
@@ -413,43 +463,59 @@ impl FileRules {
     }
 }
 
-/// The files the shipped rules and places are in.
-const DEV: &str = include_str!("../../rules/dev.toml");
-const SYSTEM: &str = include_str!("../../rules/system.toml");
-const PLACES: &str = include_str!("../../rules/places.toml");
+/// The files midda ships its rules and places in, in the order they are
+/// tried: a rule that names something first is the one that applies, so a
+/// file of rules that name anything at all comes after the ones that name
+/// one thing. A file in `rules/` that is not here is not shipped, and a test
+/// says so.
+pub const SHIPPED: [(&str, &str); 3] = [
+    ("dev.toml", include_str!("../../rules/dev.toml")),
+    ("system.toml", include_str!("../../rules/system.toml")),
+    ("places.toml", include_str!("../../rules/places.toml")),
+];
 
-impl RuleSet {
-    /// The rules and places midda ships with.
-    ///
-    /// # Panics
-    ///
-    /// If a shipped file does not read — which a test of this crate rules
-    /// out before anything is shipped.
+/// What a reader keeps: what a keep's paths name, and everything in it, is
+/// never a finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Keep {
+    paths: Vec<Template>,
+    /// Why, in the reader's words, when they gave any.
+    pub why: Option<String>,
+    /// The file it is written in.
+    pub file: String,
+}
+
+impl Keep {
+    /// The paths it keeps, as read.
     #[must_use]
-    pub fn shipped() -> &'static Self {
-        static SHIPPED: OnceLock<RuleSet> = OnceLock::new();
-        SHIPPED.get_or_init(|| Self::parse_all(&[DEV, SYSTEM, PLACES]).expect("the shipped rules read"))
+    pub fn paths(&self) -> Vec<String> {
+        self.paths.iter().map(Template::as_string).collect()
     }
+}
 
-    /// Reads a set written as `rules/dev.toml` and `rules/places.toml` are.
+/// One rules file, read and checked on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct File {
+    /// What it is called: its file name.
+    pub name: String,
+    rules: Vec<Rule>,
+    places: Vec<Place>,
+    files: Vec<FileKind>,
+    keeps: Vec<Keep>,
+}
+
+impl File {
+    /// Reads a file written as the ones in `rules/` are, its known folders
+    /// placed by `known`.
     ///
     /// # Errors
     ///
-    /// When the text is not TOML of that shape, or a rule in it cannot
-    /// explain itself: no way back, a last way back with a condition, an
-    /// empty sentence, a path that is not a path. The message names the rule
-    /// or the place.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        Self::parse_all(&[text])
-    }
-
-    /// Reads several files as one set: an id is unique across all of them,
-    /// and a rule or place in an earlier file is tried first.
-    ///
-    /// # Errors
-    ///
-    /// As [`RuleSet::parse`], for any of them.
-    pub fn parse_all(texts: &[&str]) -> Result<Self, String> {
+    /// When the text is not TOML of that shape, an id in it is written twice,
+    /// or a rule in it cannot explain itself: no way back, a last way back
+    /// with a condition, an empty sentence, a path that is not a path. The
+    /// message names the rule, the place or the keep.
+    pub fn read(name: &str, text: &str, known: &Known) -> Result<Self, String> {
+        let raw: RawFile = toml::from_str(text).map_err(|error| error.to_string())?;
         let mut seen = HashSet::new();
         let mut once = |id: &str| {
             if seen.insert(id.to_owned()) {
@@ -458,32 +524,185 @@ impl RuleSet {
                 Err(format!("`{id}` is written twice"))
             }
         };
-        let (mut rules, mut places, mut files) = (Vec::new(), Vec::new(), Vec::new());
-        for text in texts {
-            let file: RawFile = toml::from_str(text).map_err(|error| error.to_string())?;
-            for raw in file.rule {
-                once(&raw.id)?;
-                let id = raw.id.clone();
-                rules.push(raw.check().map_err(|why| format!("rule `{id}`: {why}"))?);
-            }
-            for raw in file.place {
-                once(&raw.id)?;
-                let id = raw.id.clone();
-                places.push(raw.check().map_err(|why| format!("place `{id}`: {why}"))?);
-            }
-            for raw in file.file {
-                files.push(raw.check()?);
+        let mut file = Self {
+            name: name.to_owned(),
+            rules: Vec::new(),
+            places: Vec::new(),
+            files: Vec::new(),
+            keeps: Vec::new(),
+        };
+        for rule in raw.rule {
+            once(&rule.id)?;
+            let id = rule.id.clone();
+            file.rules.push(rule.check(known).map_err(|why| format!("rule `{id}`: {why}"))?);
+        }
+        for place in raw.place {
+            once(&place.id)?;
+            let id = place.id.clone();
+            file.places.push(place.check(known).map_err(|why| format!("place `{id}`: {why}"))?);
+        }
+        for kind in raw.file {
+            file.files.push(kind.check()?);
+        }
+        for (at, keep) in raw.keep.into_iter().enumerate() {
+            file.keeps.push(keep.check(name, known).map_err(|why| format!("keep {}: {why}", at + 1))?);
+        }
+        Ok(file)
+    }
+
+    /// The ids of its rules and places.
+    fn ids(&self) -> impl Iterator<Item = &str> {
+        self.rules
+            .iter()
+            .map(|rule| rule.id.as_str())
+            .chain(self.places.iter().map(|place| place.id.as_str()))
+    }
+
+    /// How many rules, places and keeps it holds.
+    #[must_use]
+    pub fn counts(&self) -> (usize, usize, usize) {
+        (self.rules.len(), self.places.len(), self.keeps.len())
+    }
+}
+
+/// A reader's file that was not taken into the set, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    pub name: String,
+    pub why: String,
+}
+
+impl RuleSet {
+    /// The rules and places midda ships with, its known folders where this
+    /// account's shell keeps them.
+    ///
+    /// # Panics
+    ///
+    /// If a shipped file does not read — which a test of this crate rules
+    /// out before anything is shipped.
+    #[must_use]
+    pub fn shipped() -> &'static Self {
+        static SHIPPED_SET: OnceLock<RuleSet> = OnceLock::new();
+        SHIPPED_SET.get_or_init(|| Self::with_own(&[], &Known::of_this_account()).0)
+    }
+
+    /// Reads one text as a set, its known folders in the profiles only.
+    ///
+    /// # Errors
+    ///
+    /// As [`File::read`].
+    pub fn parse(text: &str) -> Result<Self, String> {
+        Self::parse_all(&[text])
+    }
+
+    /// Reads several texts as one set, as [`RuleSet::of`] puts files together.
+    ///
+    /// # Errors
+    ///
+    /// As [`RuleSet::of`].
+    pub fn parse_all(texts: &[&str]) -> Result<Self, String> {
+        let known = Known::in_profiles();
+        let files = texts
+            .iter()
+            .enumerate()
+            .map(|(at, text)| File::read(&format!("file {}", at + 1), text, &known))
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::of(files)
+    }
+
+    /// The shipped files, read with `known`.
+    ///
+    /// # Panics
+    ///
+    /// If one does not read; see [`RuleSet::shipped`].
+    #[must_use]
+    pub fn shipped_files(known: &Known) -> Vec<File> {
+        SHIPPED
+            .iter()
+            .map(|(name, text)| File::read(name, text, known).unwrap_or_else(|why| panic!("rules/{name} reads: {why}")))
+            .collect()
+    }
+
+    /// A reader's files and the shipped ones as one set: each of `own` that
+    /// reads and names nothing already named is taken, tried before the
+    /// shipped ones and in the order given; the rest are refused, each with
+    /// why. One file that does not read never costs the others.
+    ///
+    /// # Panics
+    ///
+    /// If a shipped file does not read; see [`RuleSet::shipped`].
+    #[must_use]
+    pub fn with_own(own: &[(String, String)], known: &Known) -> (Self, Vec<Refused>) {
+        let shipped = Self::shipped_files(known);
+        let mut whose: HashMap<String, String> = HashMap::new();
+        for file in &shipped {
+            for id in file.ids() {
+                whose.insert(id.to_owned(), format!("midda's {}", file.name));
             }
         }
-        let index = places::Index::of(&places, &files);
+        let mut taken = Vec::new();
+        let mut refused = Vec::new();
+        for (name, text) in own {
+            let file = match File::read(name, text, known) {
+                Ok(file) => file,
+                Err(why) => {
+                    refused.push(Refused { name: name.clone(), why });
+                    continue;
+                }
+            };
+            if let Some((id, there)) = file.ids().find_map(|id| whose.get(id).map(|there| (id.to_owned(), there.clone()))) {
+                refused.push(Refused {
+                    name: name.clone(),
+                    why: format!("`{id}` is written in {there} already: an id names one rule or place"),
+                });
+                continue;
+            }
+            for id in file.ids() {
+                whose.insert(id.to_owned(), name.clone());
+            }
+            taken.push(file);
+        }
+        taken.extend(shipped);
+        let set = Self::of(taken).expect("ids were made unique above");
+        (set, refused)
+    }
+
+    /// Files as one set: an id is unique across all of them, and a rule or
+    /// place in an earlier file is tried first.
+    ///
+    /// # Errors
+    ///
+    /// When an id is written in two of them.
+    pub fn of(files: Vec<File>) -> Result<Self, String> {
+        let mut whose: HashMap<String, String> = HashMap::new();
+        let (mut rules, mut places, mut kinds, mut keeps) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for file in files {
+            for id in file.ids() {
+                if let Some(there) = whose.insert(id.to_owned(), file.name.clone()) {
+                    return Err(format!("`{id}` is written twice: in {there} and in {}", file.name));
+                }
+            }
+            rules.extend(file.rules);
+            places.extend(file.places);
+            kinds.extend(file.files);
+            keeps.extend(file.keeps);
+        }
+        let index = places::Index::of(&places, &kinds);
         let file_rules = FileRules::of(&rules);
         Ok(Self {
             rules,
             places,
-            files,
+            files: kinds,
+            keeps,
             index,
             file_rules,
         })
+    }
+
+    /// What the set keeps, in the order its files were read.
+    #[must_use]
+    pub fn keeps(&self) -> &[Keep] {
+        &self.keeps
     }
 
     /// Every rule, in the order they are tried.
@@ -552,6 +771,9 @@ impl RuleSet {
                 return None;
             }
             let going = match rule.takes {
+                // A folder that holds something kept is the rule's, and does
+                // not go: nothing is taken, and the walk says it is held.
+                Takes::Whole if walk.keeping.holding.contains(&id) => Vec::new(),
                 Takes::Whole => vec![id],
                 Takes::Contents => {
                     let going: Vec<NodeId> = tree
@@ -559,7 +781,7 @@ impl RuleSet {
                         .children
                         .iter()
                         .copied()
-                        .filter(|&child| rule.goes_with(tree, child, &walk.outer, here.now))
+                        .filter(|&child| !walk.keeping.touches(child) && rule.goes_with(tree, child, &walk.outer, here.now))
                         .collect();
                     // An emptied folder with nothing old enough in it is not
                     // this rule's, and another may still name what is in it.
@@ -601,6 +823,10 @@ impl RuleSet {
     pub fn survey_at(&self, tree: &Tree, now: SystemTime) -> Survey {
         let walk = Walk::of(self, tree);
         let mut survey = Survey::default();
+        if walk.keeping.all {
+            // The folder opened is kept, or is in one that is.
+            return survey;
+        }
         let mut scratch = String::new();
         let root_above = if walk.places {
             self.at_root(tree, &walk.outer, &mut scratch).1
@@ -611,6 +837,9 @@ impl RuleSet {
         let mut among = Vec::new();
         self.look_in(tree, ROOT, &walk, Here { now, above: root_above }, &mut survey, &mut stack, &mut among);
         while let Some((id, above)) = stack.pop() {
+            if walk.keeping.named.contains(&id) {
+                continue;
+            }
             let here = Here { now, above };
             // Asked once of each folder: whether it is a place itself, and
             // what it says of what is in it.
@@ -620,6 +849,13 @@ impl RuleSet {
                 None
             };
             match self.naming(tree, id, &walk, here, &|| place.is_some(), None) {
+                // Held: the rule's, and something in it is kept. One thing,
+                // and nobody's to delete.
+                Some((rule, going)) if going.is_empty() => survey.closed.push(Closed {
+                    id,
+                    rule,
+                    group: self.rules[rule].group,
+                }),
                 Some((rule, going)) => self.found(tree, id, rule, &going, &mut survey),
                 None => match self.closing(tree, id, &walk.outer) {
                     Some(rule) => survey.closed.push(Closed {
@@ -674,7 +910,7 @@ impl RuleSet {
         for &child in &tree.node(id).children {
             if tree.node(child).is_directory() {
                 stack.push((child, here.above));
-            } else if walk.files {
+            } else if walk.files && !walk.keeping.named.contains(&child) {
                 self.file_rules.candidates(&tree.node(child).name, &mut scratch, among);
                 if among.is_empty() {
                     continue;
@@ -718,11 +954,20 @@ impl RuleSet {
             newest,
             goes,
         };
-        match spec.check {
-            None => survey.findings.push(finding),
+        match &spec.check {
+            None => {
+                if let Some(about) = spec.about {
+                    survey.told.push(Told {
+                        path: tree.path_of(id),
+                        about,
+                        finding,
+                    });
+                }
+                survey.findings.push(finding);
+            }
             Some(check) => survey.waiting.push(Waiting {
                 path: tree.path_of(id),
-                check,
+                check: check.clone(),
                 finding,
             }),
         }
@@ -780,11 +1025,12 @@ impl RuleSet {
             Takes::Whole => vec![finding.id],
             Takes::Contents => {
                 let outer = Outer::of(tree.root_path());
+                let keeping = Keeping::of(self, tree, &outer);
                 tree.node(finding.id)
                     .children
                     .iter()
                     .copied()
-                    .filter(|&child| rule.goes_with(tree, child, &outer, now))
+                    .filter(|&child| !keeping.touches(child) && rule.goes_with(tree, child, &outer, now))
                     .collect()
             }
         }
@@ -829,13 +1075,66 @@ struct Walk<'a> {
     /// What the scan could not read, for a hollow rule: a folder it could
     /// not list looks empty and is not.
     skipped: Vec<&'a std::path::Path>,
+    /// What the set's keeps name in the tree.
+    keeping: Keeping,
+}
+
+/// What a set's keeps name in one tree.
+#[derive(Debug, Default)]
+struct Keeping {
+    /// The root is kept, or a folder above it is: nothing in the tree goes.
+    all: bool,
+    /// The entries a keep names.
+    named: HashSet<NodeId>,
+    /// The folders that hold one of them, the root's included.
+    holding: HashSet<NodeId>,
+}
+
+impl Keeping {
+    /// What `rules` keep of `tree`: none when it keeps nothing, and then
+    /// nothing is looked at.
+    fn of(rules: &RuleSet, tree: &Tree, outer: &Outer) -> Self {
+        let paths: Vec<&Template> = rules.keeps.iter().flat_map(|keep| &keep.paths).collect();
+        if paths.is_empty() {
+            return Self::default();
+        }
+        let all = paths
+            .iter()
+            .any(|path| path.matches(tree, ROOT, outer) || (1..=outer.above_root()).any(|up| path.matches_above(outer, up)));
+        if all {
+            return Self { all, ..Self::default() };
+        }
+        let named: HashSet<NodeId> = tree
+            .nodes()
+            .map(|(id, _)| id)
+            .filter(|&id| id != ROOT && paths.iter().any(|path| path.matches(tree, id, outer)))
+            .collect();
+        let mut holding = HashSet::new();
+        for &id in &named {
+            let mut at = id;
+            while at != ROOT {
+                at = tree.node(at).parent;
+                if !holding.insert(at) {
+                    break;
+                }
+            }
+        }
+        Self { all, named, holding }
+    }
+
+    /// Whether `id` is kept or holds something that is.
+    fn touches(&self, id: NodeId) -> bool {
+        self.named.contains(&id) || self.holding.contains(&id)
+    }
 }
 
 impl<'a> Walk<'a> {
     fn of(rules: &RuleSet, tree: &'a Tree) -> Self {
         let hollow = rules.rules.iter().any(|rule| rule.hollow);
+        let outer = Outer::of(tree.root_path());
         Self {
-            outer: Outer::of(tree.root_path()),
+            keeping: Keeping::of(rules, tree, &outer),
+            outer,
             files: rules.rules.iter().any(|rule| rule.entries != Entries::Folders),
             places: rules.rules.iter().any(|rule| !rule.within.is_empty()),
             skipped: if hollow {
@@ -882,6 +1181,9 @@ pub struct Survey {
     /// The entries a rule names that its check has still to settle
     /// ([`RuleSet::settle`]), in the order the walk met them.
     pub waiting: Vec<Waiting>,
+    /// The findings whose rule has more to tell of them, read from their
+    /// files ([`crate::checks::Kept::tell`]).
+    pub told: Vec<Told>,
 }
 
 impl Survey {
@@ -1077,6 +1379,56 @@ struct RawFile {
     place: Vec<places::RawPlace>,
     #[serde(default)]
     file: Vec<places::RawFileKind>,
+    #[serde(default)]
+    keep: Vec<RawKeep>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawKeep {
+    paths: Vec<String>,
+    why: Option<String>,
+}
+
+impl RawKeep {
+    fn check(self, file: &str, known: &Known) -> Result<Keep, String> {
+        Ok(Keep {
+            paths: read_paths(&self.paths, known)?,
+            why: self.why.map(|why| why.trim().to_owned()).filter(|why| !why.is_empty()),
+            file: file.to_owned(),
+        })
+    }
+}
+
+/// A marker as a rule writes it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMarker {
+    file: String,
+    starts: String,
+}
+
+/// The longest start a marker reads: a marker is a signature, not a file to
+/// compare.
+const MARKER_BYTES: usize = 512;
+
+impl RawMarker {
+    fn check(self) -> Result<Marker, String> {
+        Glob::new(&self.file)?;
+        if self.file.contains(['*', '?']) {
+            return Err(format!("a marker is one file, by its name: `{}` is a pattern", self.file));
+        }
+        if self.starts.is_empty() {
+            return Err("a marker says what its file starts with: `starts` cannot be empty".to_owned());
+        }
+        if self.starts.len() > MARKER_BYTES {
+            return Err(format!("a marker's start is a signature, at most {MARKER_BYTES} bytes"));
+        }
+        Ok(Marker {
+            file: self.file,
+            starts: self.starts.into_bytes().into(),
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1104,6 +1456,8 @@ struct RawRule {
     #[serde(default)]
     except: Vec<String>,
     check: Option<Check>,
+    marker: Option<RawMarker>,
+    about: Option<About>,
     restore: Vec<RawRestore>,
     cleanup: Option<cleanup::Raw>,
 }
@@ -1149,12 +1503,17 @@ fn kebab(id: &str) -> Result<(), String> {
     }
 }
 
-/// The paths and names a rule or a place is written with, read.
-fn read_paths(paths: &[String]) -> Result<Vec<Template>, String> {
+/// The paths a rule, a place or a keep is written with, read: a path that
+/// starts at a known folder is one for each place the folder is.
+fn read_paths(paths: &[String], known: &Known) -> Result<Vec<Template>, String> {
     if paths.is_empty() {
         return Err("at least one path is needed".to_owned());
     }
-    paths.iter().map(|path| Template::new(path)).collect()
+    let mut read = Vec::new();
+    for path in paths {
+        read.extend(Template::read(path, known)?);
+    }
+    Ok(read)
 }
 
 fn read_globs(names: &[String]) -> Result<Vec<Glob>, String> {
@@ -1163,12 +1522,32 @@ fn read_globs(names: &[String]) -> Result<Vec<Glob>, String> {
 
 impl RawRule {
     /// The rule, when it can explain itself.
-    fn check(self) -> Result<Rule, String> {
+    fn check(mut self, known: &Known) -> Result<Rule, String> {
         kebab(&self.id)?;
         if self.name.trim().is_empty() {
             return Err("a rule needs a name a reader calls the thing by".to_owned());
         }
-        let paths = read_paths(&self.paths)?;
+        if let Some(about) = self.about {
+            if about.reads_folders() && self.entries != Entries::Folders {
+                return Err("what `about` reads is a folder: the rule names folders".to_owned());
+            }
+            if self.check.is_some() || self.marker.is_some() {
+                return Err("`about` tells more of a finding; a rule with a check or a marker has its check's word to tell".to_owned());
+            }
+        }
+        if let Some(marker) = self.marker.take() {
+            if self.check.is_some() {
+                return Err("a rule asks a marker or a check, not both".to_owned());
+            }
+            if self.entries != Entries::Folders {
+                return Err("a marker is a file in a folder: `marker` names folders".to_owned());
+            }
+            if self.cleanup.is_some() {
+                return Err("a cleanup is for a cache the rule names by where it is, not by its marker".to_owned());
+            }
+            self.check = Some(Check::Marker(marker.check()?));
+        }
+        let paths = read_paths(&self.paths, known)?;
         let beside = read_globs(&self.beside)?;
         let inside = read_globs(&self.inside)?;
         let older = self.older.as_deref().map(read_age).transpose()?;
@@ -1184,7 +1563,7 @@ impl RawRule {
             return Err("only the last way back goes without a condition: a way after one without would never be taken".to_owned());
         }
         for way in &self.restore {
-            match (self.check, way.when.is_some(), way.outcome) {
+            match (&self.check, way.when.is_some(), way.outcome) {
                 (Some(_), true, _) => return Err("a rule with a check takes its ways back by what the check says: `if`, not `when`".to_owned()),
                 (None, _, Some(_)) => return Err("`if` is what a check says, and this rule has no check".to_owned()),
                 (Some(check), _, Some(outcome)) if !check.says(outcome) => {
@@ -1227,8 +1606,16 @@ impl RawRule {
             takes: self.goes,
             hollow: self.hollow,
             within: self.within,
-            except: self.except.iter().map(|path| Template::new(path)).collect::<Result<_, _>>()?,
+            except: self
+                .except
+                .iter()
+                .map(|path| Template::read(path, known))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
             check: self.check,
+            about: self.about,
             restore,
             cleanup,
         })
@@ -1251,7 +1638,7 @@ impl RawRule {
         if self.closed && files {
             return Err("only a folder is closed".to_owned());
         }
-        if self.check.is_some() && folders {
+        if self.check.as_ref().is_some_and(|check| !check.reads_folders()) && folders {
             return Err("a check reads a file: `entries = \"files\"`".to_owned());
         }
         if self.cleanup.is_some() && self.check.is_some() {
@@ -1263,6 +1650,9 @@ impl RawRule {
 
 #[cfg(test)]
 mod system_tests;
+
+#[cfg(test)]
+mod own_tests;
 
 #[cfg(test)]
 mod tests {

@@ -24,6 +24,9 @@
 #            ways to call the tool (the first found is used), the command
 #            that cleans, and the command that prints the folder it cleans -
 #            the cleanup runs only when that is the folder found.
+#   marker   a file the folder holds to say what it is, and what that file
+#            starts with (`file`, `starts`): only a folder whose file starts
+#            so is the rule's. Read after the walk, as a check is.
 #
 # The first rule that names a folder is the one that applies, and nothing
 # inside a folder a rule names is looked at: it is one thing.
@@ -31,6 +34,16 @@
 # system.toml uses the rest of the format: files as well as folders, ages,
 # folders that are emptied rather than deleted, empty folders, whose an entry
 # is, and checks of what only a file can say.
+#
+# A file of a reader's own, in midda's rules folder, is written the same way
+# and tried before these. It can also keep what is never to go:
+#
+#   [[keep]]
+#   paths = ["D:/Projects/app/target"]
+#   why = "the release build I hand out"
+#
+# Nothing a keep names is a finding, nor anything in it, and a folder that
+# holds something kept is never taken whole. See docs/rules.md.
 
 # ---------------------------------------------------------------- dependencies
 
@@ -233,3 +246,66 @@ paths = [".gradle/caches"]
 [[rule.restore]]
 risk = "safe"
 explain = "Dependencies and build outputs Gradle downloaded and kept. A build downloads what it needs again, which needs the network."
+
+# Yarn 1 keeps one folder per layout of its cache, and cleans that one.
+[[rule]]
+id = "yarn-cache"
+name = "Yarn cache"
+group = "caches"
+paths = ["AppData/Local/Yarn/Cache/v*"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "Packages Yarn downloaded before, kept once for all projects. An install downloads what it needs again, which needs the network."
+
+[rule.cleanup]
+tools = [["yarn"]]
+run = ["cache", "clean"]
+locate = ["cache", "dir"]
+explain = "Yarn empties its cache."
+
+# No cleanup: the `yarn` on the search path is whichever version a project
+# pins, and only Yarn 1 says where its cache is.
+[[rule]]
+id = "yarn-berry-cache"
+name = "Yarn cache"
+group = "caches"
+paths = ["AppData/Local/Yarn/Berry/cache"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "Packages Yarn 2 and later downloaded for every project that shares its global cache. An install downloads what it needs again, which needs the network."
+
+[[rule]]
+id = "bun-cache"
+name = "Bun cache"
+group = "caches"
+paths = [".bun/install/cache"]
+
+[[rule.restore]]
+risk = "safe"
+explain = "Packages Bun downloaded before, kept once for all projects. An install downloads what it needs again, which needs the network."
+
+[rule.cleanup]
+tools = [["bun"]]
+run = ["pm", "cache", "rm"]
+locate = ["pm", "cache"]
+explain = "Bun empties its cache."
+
+# A cache that says so itself, by the standard at bford.info/cachedir: a tool
+# puts a CACHEDIR.TAG that starts with this signature into a folder it can
+# make again. Last of the rules that name a folder by what it is: a Cargo
+# `target` holds a CACHEDIR.TAG too, and is Cargo's build first.
+[[rule]]
+id = "tagged-cache"
+name = "Cache"
+group = "caches"
+paths = ["*"]
+
+[rule.marker]
+file = "CACHEDIR.TAG"
+starts = "Signature: 8a477f597d28d172789f06886806bc55"
+
+[[rule.restore]]
+risk = "safe"
+explain = "A cache that says so itself: the CACHEDIR.TAG in it is its tool's word that what is here is made again when needed. The tool is slower the first time after."
