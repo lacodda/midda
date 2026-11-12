@@ -24,6 +24,8 @@ commands = [
 [ci]
 provider = "github"
 workflow = "ci.yml"
+# The tag's release page: the changelog's section and the Checked live list.
+publish = "release.yml"
 
-# No [page] and no [post.install] yet: a release of midda is a tag and its
-# notes, with no files on the page. The installer of v0.23 brings both.
+# No [page] and no [post.install] yet: the page carries the notes and no
+# files. The installer of v0.23 brings both.
