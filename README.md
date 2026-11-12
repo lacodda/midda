@@ -27,6 +27,8 @@ The name comes from *midden* — the archaeological refuse layer. A disk is stra
 
 **What Windows leaves behind.** The Recycle Bin, what nothing has written to in a temporary folder for a week, crash reports and memory dumps, unfinished and old downloads, disc images, installers of programs already installed, empty folders and shortcuts to nothing - each with what is lost and how careful to be. An installer is checked against what Windows says is installed; a shortcut is read to see whether its target is still there.
 
+**Deleting, written down.** Pick what can go - an entry, or a whole group - and confirm one list that names both ways: what comes back as it was is deleted for good, since the Recycle Bin would only move it; what may not goes to the bin, and is never deleted instead when the bin will not take it. Deleting a careful one for good is asked about twice. Every deletion is measured and logged with how it comes back: `pnpm install`, and the folder to run it in.
+
 ## Privileges
 
 Reading the MFT means opening the volume as a device, bypassing the filesystem. Windows grants that to administrators only — otherwise any program could sidestep file permissions.
@@ -35,7 +37,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.14.0. A volume as a table and a treemap, kept current; why it is full and what grew; how old its layers are, and the fossils compressed in place; what a tool makes again, and what Windows and downloads leave behind; virtual disks read inside, with what compacting gives back. The formats of the index and the rules may change before 1.0 - see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.15.0: a volume read, kept current and explained - what fills it, what grew, how old it is, what can go - and what can go deleted, with a log of how each comes back. The formats of the index and the rules may change before 1.0; see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 
