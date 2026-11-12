@@ -13,6 +13,7 @@ import {
   describeKept,
   describeLastWritten,
   describeGrower,
+  describeRulesFile,
   describePlace,
   formatGap,
   formatPerDay,
@@ -717,5 +718,13 @@ describe('describeDeleted', () => {
       unlogged: null,
     }
     expect(describeDeleted(deleted, 'allocated')).toBe('Nothing was deleted. Stayed: 1 entry not taken by the Recycle Bin, and so not deleted.')
+  })
+})
+
+describe('describeRulesFile', () => {
+  it('says what a file holds, and nothing it does not', () => {
+    expect(describeRulesFile({ rules: 2, places: 1, keeps: 3 })).toBe('2 rules, 1 place, 3 keeps')
+    expect(describeRulesFile({ rules: 0, places: 0, keeps: 1 })).toBe('1 keep')
+    expect(describeRulesFile({ rules: 0, places: 0, keeps: 0 })).toBe('nothing in it yet')
   })
 })

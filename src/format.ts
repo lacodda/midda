@@ -585,13 +585,27 @@ export function relativeTo(root: string, path: string): string {
 export const GROUP_WORDS = {
   dependencies: 'Installed dependencies',
   build: 'Build output',
-  caches: 'Package caches',
+  caches: 'Development caches',
+  'browser-caches': 'Browser caches',
   'recycle-bin': 'Recycle Bin',
   temporary: 'Temporary files',
+  windows: 'What Windows keeps',
   'crash-reports': 'Crash reports',
   downloads: 'Downloads',
   leftovers: 'Empty folders and broken shortcuts',
 } as const satisfies Record<Group, string>
+
+/** What one of the reader's rules files holds, in words: "2 rules, 1 place,
+ * 3 keeps" - or that it holds nothing yet. */
+export function describeRulesFile(file: { rules: number; places: number; keeps: number }): string {
+  const parts = [
+    [file.rules, 'rule', 'rules'],
+    [file.places, 'place', 'places'],
+    [file.keeps, 'keep', 'keeps'],
+  ] as const
+  const said = parts.filter(([count]) => count > 0).map(([count, one, many]) => `${formatCount(count)} ${count === 1 ? one : many}`)
+  return said.length === 0 ? 'nothing in it yet' : said.join(', ')
+}
 
 /** Whose machine a virtual disk is, as a badge says it. Keys mirror `Owner`. */
 export const OWNER_WORDS = {

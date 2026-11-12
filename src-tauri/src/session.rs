@@ -95,11 +95,15 @@ pub struct Session {
     seen: Arc<Mutex<Kept>>,
     /// What was deleted, and how each comes back.
     deletions: Arc<Log>,
+    /// Where the reader's own rules files are (`crate::own`).
+    rules_folder: PathBuf,
 }
 
 /// What the rules say of one version of the open folder's tree: worked out
 /// once per version, and what fills it only once it is asked.
 struct Found {
+    /// The set the rules were, which each finding names its rule in.
+    rules: Arc<RuleSet>,
     arena: u64,
     version: u64,
     survey: Survey,
@@ -120,19 +124,56 @@ struct Found {
 }
 
 impl Session {
-    /// A session keeping what it saves under `data`: indexes in `index`,
-    /// snapshots in `snapshots`.
+    /// A session keeping what it saves under `data` - indexes in `index`,
+    /// snapshots in `snapshots` - and reading the reader's own rules from
+    /// `rules` under `config`.
     #[must_use]
-    pub fn new(data: &Path) -> Self {
+    pub fn new(data: &Path, config: &Path) -> Self {
+        let rules_folder = config.join("rules");
+        let (rules, own) = crate::own::load(&rules_folder);
         Self {
-            shared: Arc::new(RwLock::new(State::default())),
+            shared: Arc::new(RwLock::new(State {
+                rules: crate::own::Rules(rules),
+                own,
+                ..State::default()
+            })),
             keeper: Mutex::new(None),
             store: data.join("index"),
             snapshots: data.join("snapshots"),
             found: Arc::new(Mutex::new(None)),
             seen: Arc::new(Mutex::new(Kept::default())),
             deletions: Arc::new(Log::at(data.join("deletions.jsonl"))),
+            rules_folder,
         }
+    }
+
+    /// Where the reader's own rules files are.
+    pub(crate) fn rules_folder(&self) -> &Path {
+        &self.rules_folder
+    }
+
+    /// The set in effect, and how each of the reader's files read.
+    pub(crate) fn own_rules(&self) -> Result<(Arc<RuleSet>, Vec<crate::own::RulesFileRow>), String> {
+        let state = self.shared.read().map_err(poisoned)?;
+        Ok((Arc::clone(&state.rules.0), state.own.clone()))
+    }
+
+    /// Puts `rules` in effect. What is on screen changes with them - the
+    /// findings, the colours, what fills it - so the version moves, and the
+    /// window asks again.
+    pub(crate) fn put_rules(&self, rules: Arc<RuleSet>, own: Vec<crate::own::RulesFileRow>) -> Result<(), String> {
+        let mut state = self.shared.write().map_err(poisoned)?;
+        state.rules = crate::own::Rules(rules);
+        state.own = own;
+        state.version += 1;
+        Ok(())
+    }
+
+    /// Where the entry `id` of the folder as it is is.
+    pub(crate) fn entry_path(&self, arena: u64, id: u32) -> Result<PathBuf, String> {
+        let state = self.shared.read().map_err(poisoned)?;
+        let tree = tree_of(&state, View::Index, Some(arena))?.tree();
+        Ok(tree.path_of(checked(tree, id)?))
     }
 
     /// Where the snapshots of the open folder are kept.
@@ -201,6 +242,10 @@ struct State {
     compressing: Option<Compressing>,
     /// A deletion running now.
     deleting: Option<Deleting>,
+    /// The rules the folder is surveyed with: the reader's own and midda's.
+    rules: crate::own::Rules,
+    /// The reader's own files, and how each read.
+    own: Vec<crate::own::RulesFileRow>,
 }
 
 /// A compression running: what, how far, and out of how much.
@@ -641,6 +686,26 @@ fn poisoned<T>(_: T) -> String {
     "the session is poisoned".to_owned()
 }
 
+/// What the session holds once `root` is opened: nothing of the folder
+/// before, every id handed out for it stale - and the reader's rules as they
+/// were, since they are the window's, not the folder's.
+fn open_anew(state: &mut State, root: &Path) {
+    let arena = state.arena + 1;
+    let changes_arena = state.changes_arena + 1;
+    let comparison_arena = state.comparison_arena + 1;
+    let rules = std::mem::take(&mut state.rules);
+    let own = std::mem::take(&mut state.own);
+    *state = State {
+        root: Some(root.to_path_buf()),
+        arena,
+        changes_arena,
+        comparison_arena,
+        rules,
+        own,
+        ..State::default()
+    };
+}
+
 /// Opens `path`: puts its saved index on screen if there is one, and starts
 /// keeping it current.
 ///
@@ -651,19 +716,7 @@ fn poisoned<T>(_: T) -> String {
 pub fn start_scan(path: String, session: tauri::State<'_, Session>) -> Result<(), String> {
     session.close();
     let root = PathBuf::from(path);
-    {
-        let mut state = session.shared.write().map_err(poisoned)?;
-        let arena = state.arena + 1;
-        let changes_arena = state.changes_arena + 1;
-        let comparison_arena = state.comparison_arena + 1;
-        *state = State {
-            root: Some(root.clone()),
-            arena,
-            changes_arena,
-            comparison_arena,
-            ..State::default()
-        };
-    }
+    open_anew(&mut *session.shared.write().map_err(poisoned)?, &root);
 
     let stop = Arc::new(AtomicBool::new(false));
     let reread = Arc::new(AtomicBool::new(false));
@@ -947,7 +1000,7 @@ fn tiles_of(shared: &RwLock<State>, found: &Mutex<Option<Found>>, view: View, ar
     let state = shared.read().map_err(poisoned)?;
     let shown = tree_of(&state, view, Some(arena))?;
     let id = checked(shown.tree(), id)?;
-    let rules = RuleSet::shipped();
+    let rules = Arc::clone(&state.rules.0);
     let now = SystemTime::now();
     Ok(match shown {
         // Drawn by what moved, not by what is there.
@@ -957,10 +1010,10 @@ fn tiles_of(shared: &RwLock<State>, found: &Mutex<Option<Found>>, view: View, ar
             .map(|untouched| untouched.tiles(tree, id, layout))
             .unwrap_or_default(),
         Shown::Index(tree) => {
-            let units = with_found(&state, found, tree, |found| found.units.clone())?;
-            treemap::tiles(tree, id, layout, rules, &units, now)
+            let (rules, units) = with_found(&state, found, tree, |found| (Arc::clone(&found.rules), found.units.clone()))?;
+            treemap::tiles(tree, id, layout, &rules, &units, now)
         }
-        Shown::Changes(changes) => treemap::tiles(&changes.tree, id, layout, rules, &state.changes_units, now),
+        Shown::Changes(changes) => treemap::tiles(&changes.tree, id, layout, &rules, &state.changes_units, now),
     })
 }
 
@@ -990,7 +1043,7 @@ fn written_since(shared: &RwLock<State>, hours: u32) -> Result<ChangesSummary, S
     let mut state = shared.write().map_err(poisoned)?;
     let index = state.index.as_ref().ok_or_else(|| "nothing has been read yet".to_owned())?;
     let changes = midda_core::fresh::since::written_since(index, &records, moment, journal.place());
-    let units = rules::units_in(&changes.tree, index.tree(), &RuleSet::shipped().units(index.tree()));
+    let units = rules::units_in(&changes.tree, index.tree(), &state.rules.0.units(index.tree()));
     state.changes_units = units;
     state.changes_arena += 1;
     let summary = ChangesSummary {
@@ -1124,9 +1177,10 @@ fn compare_in(shared: &RwLock<State>, folder: &Path, root: &Path, from: &str, to
                 ((&second, second_at), (&first, first_at))
             };
             let comparison = compare(then.0.tree(), now.0.tree());
+            let rules = Arc::clone(&shared.read().map_err(poisoned)?.rules.0);
             Compared {
-                units_now: rules::units_in(comparison.tree(), now.0.tree(), &RuleSet::shipped().units(now.0.tree())),
-                units_then: rules::units_in(comparison.tree(), then.0.tree(), &RuleSet::shipped().units(then.0.tree())),
+                units_now: rules::units_in(comparison.tree(), now.0.tree(), &rules.units(now.0.tree())),
+                units_then: rules::units_in(comparison.tree(), then.0.tree(), &rules.units(then.0.tree())),
                 comparison,
                 then: then.1,
                 now: now.1,
@@ -1139,8 +1193,8 @@ fn compare_in(shared: &RwLock<State>, folder: &Path, root: &Path, from: &str, to
             let index = state.index.as_ref().ok_or_else(|| "nothing has been read yet".to_owned())?;
             let comparison = compare(first.tree(), index.tree());
             Compared {
-                units_now: rules::units_in(comparison.tree(), index.tree(), &RuleSet::shipped().units(index.tree())),
-                units_then: rules::units_in(comparison.tree(), first.tree(), &RuleSet::shipped().units(first.tree())),
+                units_now: rules::units_in(comparison.tree(), index.tree(), &state.rules.0.units(index.tree())),
+                units_then: rules::units_in(comparison.tree(), first.tree(), &state.rules.0.units(first.tree())),
                 comparison,
                 then: first_at,
                 now: SystemTime::now(),
@@ -1411,39 +1465,60 @@ pub async fn findings(arena: u64, basis: SizeBasis, limit: u32, whole: Option<Gr
         .map_err(|error| error.to_string())?
 }
 
-/// A finding, with what its check saw when it has one.
+/// A finding, with what its check saw - or what its rule tells of it - when
+/// there is anything.
 type Settled = (Finding, Option<Seen>);
+
+/// Every finding of one version of the tree, and the set of rules they are
+/// findings of: a finding names its rule by its place in the set, so the two
+/// travel together.
+#[derive(Clone)]
+struct SettledSet {
+    rules: Arc<RuleSet>,
+    settled: Arc<Vec<Settled>>,
+}
 
 /// Every finding of the tree on screen, the checked ones settled — once per
 /// version of the tree. The files are read with no lock on the tree held, as
 /// the virtual disks are; what a check saw of a file is kept between
 /// versions, and asked again only of a file that changed.
-fn current_settled(shared: &RwLock<State>, found: &Mutex<Option<Found>>, seen: &Mutex<Kept>, arena: u64) -> Result<Arc<Vec<Settled>>, String> {
-    let (version, findings, waiting) = {
+fn current_settled(shared: &RwLock<State>, found: &Mutex<Option<Found>>, seen: &Mutex<Kept>, arena: u64) -> Result<SettledSet, String> {
+    let (version, rules, findings, waiting, told) = {
         let state = shared.read().map_err(poisoned)?;
         let tree = tree_of(&state, View::Index, Some(arena))?.tree();
         let held = with_found(&state, found, tree, |found| match &found.settled {
-            Some(settled) => Ok(Arc::clone(settled)),
-            None => Err((found.survey.findings.clone(), found.survey.waiting.clone())),
+            Some(settled) => Ok(SettledSet {
+                rules: Arc::clone(&found.rules),
+                settled: Arc::clone(settled),
+            }),
+            None => Err((
+                Arc::clone(&found.rules),
+                found.survey.findings.clone(),
+                found.survey.waiting.clone(),
+                found.survey.told.clone(),
+            )),
         })?;
         match held {
             Ok(settled) => return Ok(settled),
-            Err((findings, waiting)) => (state.version, findings, waiting),
+            Err((rules, findings, waiting, told)) => (state.version, rules, findings, waiting, told),
         }
     };
     let mut machine: Option<Machine> = None;
-    let checked = seen
-        .lock()
-        .map_err(poisoned)?
-        .settle(RuleSet::shipped(), &waiting, &mut |entry| match entry.check {
-            // The programs installed are read once, by the first installer that
-            // is asked, for every one after it.
-            Check::Installer => checks::look(&entry.path, entry.check, machine.get_or_insert_with(Machine::read)),
-            Check::Shortcut => checks::look(&entry.path, entry.check, &Machine::default()),
-        });
+    let mut kept = seen.lock().map_err(poisoned)?;
+    let checked = kept.settle(&rules, &waiting, &mut |entry| match &entry.check {
+        // The programs installed are read once, by the first installer that
+        // is asked, for every one after it.
+        Check::Installer => checks::look(&entry.path, &entry.check, machine.get_or_insert_with(Machine::read)),
+        check => checks::look(&entry.path, check, &Machine::default()),
+    });
+    let mut said: std::collections::HashMap<NodeId, Seen> = kept.tell(&told, &mut |entry| checks::tell(&entry.path, entry.about)).into_iter().collect();
+    drop(kept);
     let settled: Vec<Settled> = findings
         .into_iter()
-        .map(|finding| (finding, None))
+        .map(|finding| {
+            let told = said.remove(&finding.id);
+            (finding, told)
+        })
         .chain(checked.into_iter().map(|(finding, seen)| (finding, Some(seen))))
         .collect();
     let settled = Arc::new(settled);
@@ -1451,21 +1526,25 @@ fn current_settled(shared: &RwLock<State>, found: &Mutex<Option<Found>>, seen: &
         .lock()
         .map_err(poisoned)?
         .as_mut()
-        .filter(|held| held.arena == arena && held.version == version)
+        .filter(|held| held.arena == arena && held.version == version && Arc::ptr_eq(&held.rules, &rules))
     {
         held.settled = Some(Arc::clone(&settled));
     }
-    Ok(settled)
+    Ok(SettledSet { rules, settled })
 }
 
 /// What the rules say of the tree on screen, worked out again only when it
 /// has changed since they last were, handed to `read`.
 fn with_found<T>(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, read: impl FnOnce(&mut Found) -> T) -> Result<T, String> {
     let mut found = found.lock().map_err(poisoned)?;
-    let current = found.as_ref().is_some_and(|held| held.arena == state.arena && held.version == state.version);
+    let current = found
+        .as_ref()
+        .is_some_and(|held| held.arena == state.arena && held.version == state.version && Arc::ptr_eq(&held.rules, &state.rules.0));
     if !current {
-        let survey = RuleSet::shipped().survey(tree);
+        let rules = Arc::clone(&state.rules.0);
+        let survey = rules.survey(tree);
         *found = Some(Found {
+            rules,
             arena: state.arena,
             version: state.version,
             units: survey.units(),
@@ -1481,13 +1560,14 @@ fn with_found<T>(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, read:
     Ok(read(found.as_mut().expect("worked out above")))
 }
 
-/// The findings of the tree on screen.
-fn current_findings(state: &State, found: &Mutex<Option<Found>>, tree: &Tree) -> Result<Vec<Finding>, String> {
-    with_found(state, found, tree, |found| found.survey.findings.clone())
+/// The findings of the tree on screen, and the set they are findings of.
+fn current_findings(state: &State, found: &Mutex<Option<Found>>, tree: &Tree) -> Result<(Arc<RuleSet>, Vec<Finding>), String> {
+    with_found(state, found, tree, |found| (Arc::clone(&found.rules), found.survey.findings.clone()))
 }
 
 /// What fills a version of the tree, as one ask of it needs it.
 struct Filled {
+    rules: Arc<RuleSet>,
     classified: Arc<Classified>,
     summary: Arc<Summary>,
     story: Arc<Story>,
@@ -1500,7 +1580,7 @@ fn classified_in(found: &mut Found, tree: &Tree) -> Arc<Classified> {
     Arc::clone(
         found
             .classified
-            .get_or_insert_with(|| Arc::new(consumers::classify(RuleSet::shipped(), tree, survey))),
+            .get_or_insert_with(|| Arc::new(consumers::classify(&found.rules, tree, survey))),
     )
 }
 
@@ -1511,7 +1591,7 @@ fn classified_in(found: &mut Found, tree: &Tree) -> Arc<Classified> {
 /// as often as it redraws.
 fn current_fills(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, basis: SizeBasis, space: Option<Space>, disks: &[Looked]) -> Result<Filled, String> {
     with_found(state, found, tree, |found| {
-        let rules = RuleSet::shipped();
+        let rules = Arc::clone(&found.rules);
         let classified = classified_in(found, tree);
         let mut summary = |basis: SizeBasis| {
             let slot = match basis {
@@ -1525,9 +1605,10 @@ fn current_fills(state: &State, found: &Mutex<Option<Found>>, tree: &Tree, basis
         let told = Arc::clone(
             found
                 .story
-                .get_or_insert_with(|| Arc::new(story::tell_from(rules, tree, &classified, &on_disk, space, disks))),
+                .get_or_insert_with(|| Arc::new(story::tell_from(&rules, tree, &classified, &on_disk, space, disks))),
         );
         Filled {
+            rules,
             classified,
             summary: shown,
             story: told,
@@ -1544,13 +1625,13 @@ fn findings_of(
     limit: usize,
     whole: Option<Group>,
 ) -> Result<FindingsSummary, String> {
-    let settled = current_settled(shared, found, seen, arena)?;
+    let SettledSet { rules, settled } = current_settled(shared, found, seen, arena)?;
+    let rules = rules.as_ref();
     let state = shared.read().map_err(poisoned)?;
     let tree = tree_of(&state, View::Index, Some(arena))?.tree();
     let mut findings: Vec<&Settled> = settled.iter().collect();
     // The core orders on disk; a reader looking at sizes gets their order.
     findings.sort_by(|(a, _), (b, _)| basis.of(b.frees).cmp(&basis.of(a.frees)).then_with(|| tree.scan_order(a.id, b.id)));
-    let rules = RuleSet::shipped();
 
     let mut summary = FindingsSummary {
         arena,
@@ -1702,11 +1783,12 @@ fn fills_of(
     let state = shared.read().map_err(poisoned)?;
     let tree = tree_of(&state, View::Index, Some(arena))?.tree();
     let Filled {
+        rules,
         classified,
         summary,
         story: told,
     } = current_fills(&state, found, tree, basis, space, &disks)?;
-    let rules = RuleSet::shipped();
+    let rules = rules.as_ref();
     let shares = summary
         .shares
         .iter()
@@ -1766,7 +1848,7 @@ fn current_disks(shared: &RwLock<State>, found: &Mutex<Option<Found>>, arena: u6
         let tree = tree_of(&state, View::Index, Some(arena))?.tree();
         let held = with_found(&state, found, tree, |found| match &found.disks {
             Some(looked) => Ok(Arc::clone(looked)),
-            None => Err(vdisk::find(RuleSet::shipped(), tree, &classified_in(found, tree))),
+            None => Err(vdisk::find(&Arc::clone(&found.rules), tree, &classified_in(found, tree))),
         })?;
         match held {
             Ok(looked) => return Ok(looked),
@@ -1959,12 +2041,12 @@ fn cleanup_of(session: &Session, arena: u64, id: u32) -> Result<(PathBuf, rules:
     let state = session.shared.read().map_err(poisoned)?;
     let tree = tree_of(&state, View::Index, Some(arena))?.tree();
     let id = checked(tree, id)?;
-    let findings = current_findings(&state, &session.found, tree)?;
+    let (rules, findings) = current_findings(&state, &session.found, tree)?;
     let finding = findings
         .iter()
         .find(|finding| finding.id == id)
         .ok_or_else(|| "no rule names this folder now".to_owned())?;
-    let cleanup = RuleSet::shipped()
+    let cleanup = rules
         .rule_of(finding)
         .cleanup
         .clone()
@@ -2131,8 +2213,10 @@ fn layers_of(
     let tree = tree_of(&state, View::Index, Some(arena))?.tree();
     let fossils = layers::fossils(tree, ROOT, now, basis, limit);
     let refused = compress::refused_on(tree.root_path());
-    let (classified, findings) = with_found(&state, found, tree, |found| (classified_in(found, tree), found.survey.findings.clone()))?;
-    let rules = RuleSet::shipped();
+    let (classified, findings, rules) = with_found(&state, found, tree, |found| {
+        (classified_in(found, tree), found.survey.findings.clone(), Arc::clone(&found.rules))
+    })?;
+    let rules = rules.as_ref();
     let rows = fossils
         .listed
         .iter()
@@ -2359,7 +2443,7 @@ fn delete_in(
     if picks.is_empty() {
         return Err("nothing is picked".to_owned());
     }
-    let settled = current_settled(shared, found, seen, arena)?;
+    let SettledSet { rules, settled } = current_settled(shared, found, seen, arena)?;
     let progress = Progress::new();
     let plan = {
         let mut state = shared.write().map_err(poisoned)?;
@@ -2373,12 +2457,15 @@ fn delete_in(
         // The findings the window picked from are those of the tree as it is
         // now, or the ids mean other entries.
         let current = found.lock().map_err(poisoned)?.as_ref().is_some_and(|held| {
-            held.arena == state.arena && held.version == state.version && held.settled.as_ref().is_some_and(|held| Arc::ptr_eq(held, &settled))
+            held.arena == state.arena
+                && held.version == state.version
+                && Arc::ptr_eq(&held.rules, &rules)
+                && held.settled.as_ref().is_some_and(|held| Arc::ptr_eq(held, &settled))
         });
         if !current {
             return Err("stale".to_owned());
         }
-        let plan = plan_of(tree, &settled, picks, now)?;
+        let plan = plan_of(tree, &rules, &settled, picks, now)?;
         state.deleting = Some(Deleting {
             progress: Arc::clone(&progress),
             of: plan.iter().map(|going| going.finding.holds.logical).sum(),
@@ -2397,8 +2484,7 @@ fn delete_in(
 
 /// What each pick takes, worked out from `tree` before anything goes: the
 /// picks in the order of what they free, the most first, each once.
-fn plan_of(tree: &Tree, settled: &[Settled], picks: &[Pick], now: SystemTime) -> Result<Vec<Going>, String> {
-    let rules = RuleSet::shipped();
+fn plan_of(tree: &Tree, rules: &RuleSet, settled: &[Settled], picks: &[Pick], now: SystemTime) -> Result<Vec<Going>, String> {
     let mut plan: Vec<Going> = Vec::new();
     for pick in picks {
         let id = checked(tree, pick.id)?;
@@ -3699,5 +3785,28 @@ mod tests {
             state.index.as_ref().expect("an index").tree().child(ROOT, "cold").expect("cold")
         };
         assert_eq!(compress_in(&shared, &found, 0, again).expect_err("nothing left"), "it is compressed already");
+    }
+
+    #[test]
+    fn opening_another_folder_keeps_the_readers_rules() {
+        let own = vec![("mine.toml".to_owned(), "[[keep]]\npaths = [\"x\"]\n".to_owned())];
+        let (rules, refused) = RuleSet::with_own(&own, &midda_core::rules::pattern::Known::in_profiles());
+        assert!(refused.is_empty());
+        let mut state = State {
+            rules: crate::own::Rules(Arc::new(rules)),
+            own: vec![crate::own::RulesFileRow {
+                name: "mine.toml".to_owned(),
+                rules: 0,
+                places: 0,
+                keeps: 1,
+                refused: None,
+            }],
+            ..State::default()
+        };
+        let before = Arc::clone(&state.rules.0);
+        open_anew(&mut state, Path::new("C:/other"));
+        assert!(Arc::ptr_eq(&state.rules.0, &before), "the same set reads the next folder");
+        assert_eq!(state.own.len(), 1);
+        assert_eq!((state.arena, state.root.as_deref()), (1, Some(Path::new("C:/other"))));
     }
 }

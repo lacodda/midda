@@ -26,6 +26,7 @@ import {
   deletionLog,
   findings,
   isStale,
+  keepEntry,
   pick,
   runCleanup,
   type DeletingRow,
@@ -49,6 +50,7 @@ import {
   formatCount,
   relativeTo,
 } from '@/format'
+import { OwnRules } from '@/OwnRules'
 import { VirtualDisks } from '@/VirtualDisks'
 
 /** How many findings each group lists before adding up the rest. A build
@@ -241,6 +243,22 @@ export function SafeToDelete({ arena, version, basis, root, deleting, onOpen }: 
       })
   }, [arena, picks, basis])
 
+  const keep = useCallback(
+    (finding: FindingRow) => {
+      keepEntry(arena, finding.id, null)
+        .then(() =>
+          setOutcome({
+            tone: 'good',
+            text: `${relativeTo(root, finding.path)} is kept: it is not listed again, nor anything in it. Stop keeping it under Kept, below.`,
+          }),
+        )
+        .catch((cause: unknown) =>
+          setOutcome({ tone: 'warn', text: isStale(cause) ? 'The folder changed; keep it once it is listed again.' : `It was not kept: ${String(cause)}` }),
+        )
+    },
+    [arena, root],
+  )
+
   if (failure !== null) return <p className="p-4 text-sm text-bad">{failure}</p>
 
   const forGood = picks.filter((held) => held.way === 'for-good')
@@ -277,8 +295,9 @@ export function SafeToDelete({ arena, version, basis, root, deleting, onOpen }: 
 
           {summary !== null && summary.count === 0 && (
             <p className="text-sm text-dim">
-              Nothing here that a rule knows can go: no installed dependencies, build output or package caches, nothing in a Recycle Bin, temporary folder or
-              crash report, no old downloads, empty folders or broken shortcuts.
+              Nothing here that a rule knows can go: no installed dependencies, build output or caches, nothing in a Recycle Bin, temporary folder, browser
+              cache or crash report, nothing Windows keeps that it no longer needs, no old downloads, empty folders or broken shortcuts - or nothing you
+              have not kept.
             </p>
           )}
 
@@ -294,9 +313,12 @@ export function SafeToDelete({ arena, version, basis, root, deleting, onOpen }: 
               onPick={toggle}
               onOpen={onOpen}
               onClean={ask}
+              onKeep={keep}
               onWhole={() => setWhole(group.group)}
             />
           ))}
+
+          <OwnRules version={version} onChanged={() => setOutcome(null)} />
 
           {log !== null && log.count > 0 && <Deleted log={log} root={root} />}
 
@@ -350,12 +372,13 @@ interface FindingsProps {
   onPick: (ids: number[], on: boolean) => void
   onOpen: (id: number) => void
   onClean: (finding: FindingRow) => void
+  onKeep: (finding: FindingRow) => void
   onWhole: () => void
 }
 
 /** One group: its findings, the most freed first, what is not listed, and
  * the switch that sends what is picked of it one way. */
-function Findings({ group, basis, root, mode, picked, onMode, onPick, onOpen, onClean, onWhole }: FindingsProps) {
+function Findings({ group, basis, root, mode, picked, onMode, onPick, onOpen, onClean, onKeep, onWhole }: FindingsProps) {
   const ids = group.rows.map((finding) => finding.id)
   const count = ids.filter((id) => picked.has(id)).length
   // The Recycle Bin's own contents go nowhere but for good.
@@ -405,6 +428,7 @@ function Findings({ group, basis, root, mode, picked, onMode, onPick, onOpen, on
             onPick={(on) => onPick([finding.id], on)}
             onOpen={onOpen}
             onClean={onClean}
+            onKeep={onKeep}
           />
         ))}
         {group.more > 0 && (
@@ -430,11 +454,13 @@ interface FindingProps {
   onPick: (on: boolean) => void
   onOpen: (id: number) => void
   onClean: (finding: FindingRow) => void
+  onKeep: (finding: FindingRow) => void
 }
 
 /** One finding: whether it is picked and how it would go, what it frees,
- * where it is, how careful to be, and why. */
-function Finding({ finding, basis, root, way, onPick, onOpen, onClean }: FindingProps) {
+ * where it is, how careful to be, and why - and Keep, for one that is the
+ * reader's and is never to be listed again. */
+function Finding({ finding, basis, root, way, onPick, onOpen, onClean, onKeep }: FindingProps) {
   const kept = describeKept(pick(finding.holds, basis), pick(finding.frees, basis))
   const written = describeLastWritten(finding.subtreeModified)
   const relative = relativeTo(root, finding.path)
@@ -475,13 +501,22 @@ function Finding({ finding, basis, root, way, onPick, onOpen, onClean }: Finding
             .flatMap((part, index) => (index === 0 ? [part] : [<span key={`dot${index}`}> · </span>, part]))}
         </p>
       </div>
-      {finding.cleanup !== null ? (
-        <Button variant="soft" size="sm" onClick={() => onClean(finding)} title={`${finding.cleanup.explain} midda runs ${finding.cleanup.line} rather than deleting the folder.`}>
-          Clean with {finding.cleanup.line.split(' ')[0]}
+      <div className="flex shrink-0 items-center gap-2">
+        {finding.cleanup !== null && (
+          <Button variant="soft" size="sm" onClick={() => onClean(finding)} title={`${finding.cleanup.explain} midda runs ${finding.cleanup.line} rather than deleting the folder.`}>
+            Clean with {finding.cleanup.line.split(' ')[0]}
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onKeep(finding)}
+          aria-label={`Keep ${relative}`}
+          title="Mine, and never to go: midda does not list it again, nor anything in it."
+        >
+          Keep
         </Button>
-      ) : (
-        <span />
-      )}
+      </div>
     </li>
   )
 }

@@ -549,7 +549,17 @@ export function topGrowth(view: View, arena: number, basis: SizeBasis, limit: nu
 
 /** Where a finding is listed. Mirrors `Group` in midda-core, in the order
  * `Group::ALL` lists them. */
-export type Group = 'dependencies' | 'build' | 'caches' | 'recycle-bin' | 'temporary' | 'crash-reports' | 'downloads' | 'leftovers'
+export type Group =
+  | 'dependencies'
+  | 'build'
+  | 'caches'
+  | 'browser-caches'
+  | 'recycle-bin'
+  | 'temporary'
+  | 'windows'
+  | 'crash-reports'
+  | 'downloads'
+  | 'leftovers'
 
 /** How careful to be. Mirrors `Risk`: with `safe` nothing anyone needs is
  * lost; `caution` may not come back as it was, or may be the only copy. */
@@ -1059,4 +1069,74 @@ export function naturalDirection(key: SortKey): Direction {
   // "Which of these is big" and "what changed lately" are largest-first
   // questions; the alphabet runs one way.
   return key === 'name' ? 'ascending' : 'descending'
+}
+
+/** One of the reader's own rules files. Mirrors `RulesFileRow`. */
+export interface RulesFileRow {
+  name: string
+  rules: number
+  places: number
+  keeps: number
+  /** Why it was not taken into the set, when it was not. */
+  refused: string | null
+}
+
+/** One keep. Mirrors `KeepRow`. */
+export interface KeepRow {
+  paths: string[]
+  why: string | null
+  /** The file it is written in. */
+  file: string
+  /** Whether the window wrote it, and can let it go. */
+  mine: boolean
+}
+
+/** The reader's own rules. Mirrors `OwnRules`. */
+export interface OwnRules {
+  /** Where they are kept. */
+  folder: string
+  files: RulesFileRow[]
+  keeps: KeepRow[]
+}
+
+/** The reader's own rules files and what they keep. */
+export function ownRules(): Promise<OwnRules> {
+  return invoke<OwnRules>('own_rules')
+}
+
+/** Reads the rules folder again, after the reader changed it by hand. */
+export function readRulesAgain(): Promise<OwnRules> {
+  return invoke<OwnRules>('read_rules_again')
+}
+
+/** Copies the rules file at `path` into the folder, once it reads with the
+ * rest; rejects with why it was not taken. */
+export function addRulesFile(path: string): Promise<OwnRules> {
+  return invoke<OwnRules>('add_rules_file', { path })
+}
+
+/** Saves a copy of the reader's file `name` at `to`. */
+export function saveRulesFile(name: string, to: string): Promise<void> {
+  return invoke<void>('save_rules_file', { name, to })
+}
+
+/** Sends the reader's file `name` to the Recycle Bin. */
+export function removeRulesFile(name: string): Promise<OwnRules> {
+  return invoke<OwnRules>('remove_rules_file', { name })
+}
+
+/** Opens the rules folder in Explorer. */
+export function openRulesFolder(): Promise<void> {
+  return invoke<void>('open_rules_folder')
+}
+
+/** Keeps the entry `id` of the folder as it is in `arena`: never a finding
+ * again, nor anything in it. */
+export function keepEntry(arena: number, id: number, why: string | null): Promise<OwnRules> {
+  return invoke<OwnRules>('keep_entry', { arena, id, why })
+}
+
+/** Stops keeping `path`, which the window kept. */
+export function letGo(path: string): Promise<OwnRules> {
+  return invoke<OwnRules>('let_go', { path })
 }

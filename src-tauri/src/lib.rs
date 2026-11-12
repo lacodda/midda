@@ -7,6 +7,7 @@
 //! step.
 
 mod elevate;
+mod own;
 mod session;
 mod volumes;
 
@@ -28,7 +29,10 @@ pub fn run() {
             // in the user's local application data: they are pictures of
             // this machine's disk, not documents, and do not roam.
             let data = app.path().app_local_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("midda"));
-            app.manage(session::Session::new(&data));
+            // The reader's own rules are what they want of any disk, and roam
+            // with them.
+            let config = app.path().app_config_dir().unwrap_or_else(|_| data.clone());
+            app.manage(session::Session::new(&data, &config));
             show_if_the_page_never_does(app.handle());
             Ok(())
         })
@@ -63,6 +67,14 @@ pub fn run() {
             session::delete_findings,
             session::cancel_delete,
             session::deletion_log,
+            own::own_rules,
+            own::read_rules_again,
+            own::add_rules_file,
+            own::save_rules_file,
+            own::remove_rules_file,
+            own::open_rules_folder,
+            own::keep_entry,
+            own::let_go,
             elevate::acceleration,
             elevate::accelerate,
             elevate::launch_request,
