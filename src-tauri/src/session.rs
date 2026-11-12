@@ -2388,7 +2388,7 @@ fn delete_in(
         });
         plan
     };
-    let outcome = take_all(shared, log, &plan, &progress, now);
+    let outcome = take_all(shared, log, &plan, &progress);
     if let Ok(mut state) = shared.write() {
         state.deleting = None;
     }
@@ -2438,7 +2438,7 @@ fn plan_of(tree: &Tree, settled: &[Settled], picks: &[Pick], now: SystemTime) ->
 }
 
 /// Takes each of `plan` its way, reads it again, and writes it to `log`.
-fn take_all(shared: &RwLock<State>, log: &Log, plan: &[Going], progress: &Progress, now: SystemTime) -> Result<DeletedRow, String> {
+fn take_all(shared: &RwLock<State>, log: &Log, plan: &[Going], progress: &Progress) -> Result<DeletedRow, String> {
     let mut row = DeletedRow {
         items: Vec::new(),
         stopped: false,
@@ -2487,7 +2487,8 @@ fn take_all(shared: &RwLock<State>, log: &Log, plan: &[Going], progress: &Progre
         }
         if removed.any() {
             let written = log.write(&Deletion {
-                at: millis(now).unwrap_or_default(),
+                // When this one went: a long deletion spans minutes.
+                at: millis(SystemTime::now()).unwrap_or_default(),
                 path: going.path.to_string_lossy().into_owned(),
                 name: going.name.clone(),
                 rule: going.rule.clone(),

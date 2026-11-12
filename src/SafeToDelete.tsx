@@ -506,9 +506,12 @@ interface DeleteDialogProps {
  * restore it. While it runs: how far, and Stop.
  */
 function DeleteDialog({ stage, picks, basis, root, deleting, onAgain, onBack, onDelete, onClose }: DeleteDialogProps) {
-  const forGood = picks.filter((held) => held.way === 'for-good')
-  const binned = picks.filter((held) => held.way === 'recycle-bin')
+  // The most freed first, as they go.
+  const ordered = [...picks].sort((a, b) => pick(b.finding.frees, basis) - pick(a.finding.frees, basis))
+  const forGood = ordered.filter((held) => held.way === 'for-good')
+  const binned = ordered.filter((held) => held.way === 'recycle-bin')
   const careful = forGood.filter((held) => held.finding.risk === 'caution')
+  const one = careful.length === 1
   const frees = (of: Picked[]) => of.reduce((sum, held) => sum + pick(held.finding.frees, basis), 0)
   const running = stage === 'running'
   return (
@@ -516,13 +519,11 @@ function DeleteDialog({ stage, picks, basis, root, deleting, onAgain, onBack, on
       <ConfirmDialogPopup size="lg">
         <ConfirmDialogHeader>
           <ConfirmDialogTitle>
-            {stage === 'again'
-              ? `Delete ${formatCount(careful.length)} for good that may not come back?`
-              : `Delete ${formatCount(picks.length)} picked?`}
+            {stage === 'again' ? `Delete for good what may not come back?` : `Delete ${formatCount(picks.length)} picked?`}
           </ConfirmDialogTitle>
           <ConfirmDialogDescription>
             {stage === 'again'
-              ? 'These are marked Caution: they may not come back as they were, or may be the only copy. Deleted for good, nothing restores them - not the Recycle Bin, not midda.'
+              ? `${one ? 'This one is' : `These ${formatCount(careful.length)} are`} marked Caution: ${one ? 'it' : 'they'} may not come back as ${one ? 'it was' : 'they were'}, or may be the only copy. Deleted for good, nothing restores ${one ? 'it' : 'them'} - not the Recycle Bin, not midda.${picks.length > careful.length ? ` The other ${formatCount(picks.length - careful.length)} picked go as listed before.` : ''}`
               : 'What is deleted for good gives its space back now. What goes to the Recycle Bin, Explorer restores; its space comes back once the bin is emptied. midda measures each again afterwards and writes down how it comes back.'}
           </ConfirmDialogDescription>
         </ConfirmDialogHeader>
@@ -553,7 +554,7 @@ function DeleteDialog({ stage, picks, basis, root, deleting, onAgain, onBack, on
                 Back
               </Button>
               <Button variant="danger" onClick={onDelete}>
-                Delete them for good
+                {one ? 'Delete it for good' : 'Delete them for good'}
               </Button>
             </>
           ) : (
