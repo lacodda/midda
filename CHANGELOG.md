@@ -8,6 +8,16 @@ last release, which follow [Conventional Commits](https://www.conventionalcommit
 $ git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md
 ```
 
+## [0.17.0] - 2026-11-22
+
+### Documentation
+- Say in the README's status what v0.17 brings
+
+### Features
+- Read an old working copy for what its remote does not have
+- List an old working copy whole, with its clone command
+- Take dowel 1.0 and draw the entries on its VirtualGrid
+
 ## [0.16.0] - 2026-11-12
 
 ### CI

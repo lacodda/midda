@@ -43,7 +43,7 @@ So `midda` runs both ways: without elevation it walks the filesystem normally an
 
 ## Status
 
-v0.16.0: a volume read, kept current and explained - what fills it, what grew, how old it is, what can go - and what can go deleted, with a log of how each comes back. A Git working copy left alone is one finding: safe with the clone that brings it back when all of it is on its remote, careful with what is only here when not. The formats of the index and the rules may change before 1.0; see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
+v0.17.0: a volume read, kept current and explained - what fills it, what grew, how old it is, what can go - and what can go deleted, with a log of how each comes back. A Git working copy left alone is one finding: safe with the clone that brings it back when all of it is on its remote, careful with what is only here when not. The formats of the index and the rules may change before 1.0; see the [CHANGELOG](https://github.com/lacodda/midda/blob/main/CHANGELOG.md).
 
 ## License
 

@@ -2935,7 +2935,7 @@ dependencies = [
 
 [[package]]
 name = "midda-core"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "gix",
  "rayon",
@@ -2951,7 +2951,7 @@ dependencies = [
 
 [[package]]
 name = "midda-desktop"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "midda-core",
  "png",
