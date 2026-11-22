@@ -553,6 +553,7 @@ export type Group =
   | 'dependencies'
   | 'build'
   | 'caches'
+  | 'repositories'
   | 'browser-caches'
   | 'recycle-bin'
   | 'temporary'

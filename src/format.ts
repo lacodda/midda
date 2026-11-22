@@ -586,6 +586,7 @@ export const GROUP_WORDS = {
   dependencies: 'Installed dependencies',
   build: 'Build output',
   caches: 'Development caches',
+  repositories: 'Working copies left alone',
   'browser-caches': 'Browser caches',
   'recycle-bin': 'Recycle Bin',
   temporary: 'Temporary files',

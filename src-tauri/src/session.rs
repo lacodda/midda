@@ -1508,18 +1508,27 @@ fn current_settled(shared: &RwLock<State>, found: &Mutex<Option<Found>>, seen: &
     let checked = kept.settle(&rules, &waiting, &mut |entry| match &entry.check {
         // The programs installed are read once, by the first installer that
         // is asked, for every one after it.
-        Check::Installer => checks::look(&entry.path, &entry.check, machine.get_or_insert_with(Machine::read)),
-        check => checks::look(&entry.path, check, &Machine::default()),
+        Check::Installer => checks::ask(entry, machine.get_or_insert_with(Machine::read)),
+        _ => checks::ask(entry, &Machine::default()),
     });
     let mut said: std::collections::HashMap<NodeId, Seen> = kept.tell(&told, &mut |entry| checks::tell(&entry.path, entry.about)).into_iter().collect();
     drop(kept);
+    // A working copy a check made a finding is one thing: what was found in
+    // it goes with it, and is not listed beside it.
+    let swallowed = rules::swallowed(&waiting, &checked);
     let settled: Vec<Settled> = findings
         .into_iter()
+        .filter(|finding| !swallowed.contains(&finding.id))
         .map(|finding| {
             let told = said.remove(&finding.id);
             (finding, told)
         })
-        .chain(checked.into_iter().map(|(finding, seen)| (finding, Some(seen))))
+        .chain(
+            checked
+                .into_iter()
+                .filter(|(finding, _)| !swallowed.contains(&finding.id))
+                .map(|(finding, seen)| (finding, Some(seen))),
+        )
         .collect();
     let settled = Arc::new(settled);
     if let Some(held) = found
@@ -2019,7 +2028,7 @@ fn finding_row(tree: &Tree, rules: &RuleSet, finding: &Finding, seen: Option<&Se
         rule: rule.id.clone(),
         name: rule.name.clone(),
         risk: restore.risk,
-        command: restore.command.clone(),
+        command: rules.command_of(finding, seen),
         explain: restore.explain.clone(),
         detail: rules.detail(finding, seen),
         goes: finding.goes,
@@ -2492,7 +2501,7 @@ fn plan_of(tree: &Tree, rules: &RuleSet, settled: &[Settled], picks: &[Pick], no
             continue;
         }
         let path = tree.path_of(id);
-        let (finding, _) = settled
+        let (finding, seen) = settled
             .iter()
             .find(|(finding, _)| finding.id == id)
             .ok_or_else(|| format!("no rule names {} now", path.display()))?;
@@ -2515,7 +2524,7 @@ fn plan_of(tree: &Tree, rules: &RuleSet, settled: &[Settled], picks: &[Pick], no
             name: rule.name.clone(),
             rule: rule.id.clone(),
             risk: restore.risk,
-            command: restore.command.clone(),
+            command: rules.command_of(finding, seen.as_ref()),
             explain: restore.explain.clone(),
         });
     }
@@ -3687,6 +3696,104 @@ mod tests {
             .open(path)
             .and_then(|folder| folder.set_times(std::fs::FileTimes::new().set_modified(then)))
             .expect("date the folder");
+    }
+
+    /// Dates everything in `root` and `root` itself as last written `days`
+    /// ago, the deepest first: a folder is written whenever an entry in it
+    /// is, so it is dated after them.
+    fn all_ago(root: &Path, days: u64) {
+        let mut folders = vec![root.to_path_buf()];
+        let mut at = 0;
+        while at < folders.len() {
+            let entries: Vec<_> = std::fs::read_dir(&folders[at]).expect("list").flatten().collect();
+            for entry in entries {
+                let path = entry.path();
+                if entry.file_type().expect("a type").is_dir() {
+                    folders.push(path);
+                } else {
+                    let then = SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
+                    let mut permissions = entry.metadata().expect("metadata").permissions();
+                    let read_only = permissions.readonly();
+                    if read_only {
+                        #[allow(clippy::permissions_set_readonly_false, reason = "a test file is dated, then made read-only again")]
+                        permissions.set_readonly(false);
+                        std::fs::set_permissions(&path, permissions.clone()).expect("writable");
+                    }
+                    std::fs::File::options()
+                        .write(true)
+                        .open(&path)
+                        .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(then)))
+                        .expect("date the file");
+                    if read_only {
+                        permissions.set_readonly(true);
+                        std::fs::set_permissions(&path, permissions).expect("read-only again");
+                    }
+                }
+            }
+            at += 1;
+        }
+        for folder in folders.iter().rev() {
+            folder_ago(folder, days);
+        }
+    }
+
+    #[test]
+    fn an_old_working_copy_on_its_remote_is_one_finding_with_the_clone_that_brings_it_back() {
+        // Not in the system's temporary folder: a scan inside it is Windows'
+        // by the places above it, and a working copy is only the reader's.
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target");
+        std::fs::create_dir_all(&target).expect("the build's folder");
+        let dir = tempfile::tempdir_in(&target).expect("a folder");
+        let copy = dir.path().join("app");
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&copy)
+                .output()
+                .is_ok_and(|output| output.status.success())
+        };
+        write(&copy.join("package.json"), 10);
+        write(&copy.join("pnpm-lock.yaml"), 10);
+        std::fs::write(copy.join(".gitignore"), "node_modules/\n").expect("write");
+        if !git(&["init", "--quiet", "--initial-branch=main"]) {
+            eprintln!("git is not on the search path: skipped");
+            return;
+        }
+        assert!(git(&["add", "--all"]) && git(&["commit", "--quiet", "-m", "first"]));
+        assert!(git(&["remote", "add", "origin", "https://example.com/team/app.git"]));
+        assert!(git(&["update-ref", "refs/remotes/origin/main", "HEAD"]), "as a push leaves it");
+        write(&copy.join("node_modules/a/index.js"), 30_000);
+        all_ago(dir.path(), 400);
+
+        let shared = opened(index_of(dir.path()));
+        let summary = findings_of(&shared, &nothing_found(), &nothing_seen(), 0, SizeBasis::Logical, 10, None).expect("findings");
+        let groups: Vec<_> = summary.groups.iter().map(|group| (group.group, group.count)).collect();
+        assert_eq!(
+            groups,
+            [(Group::Repositories, 1)],
+            "the node_modules in it is part of it, not a line of its own"
+        );
+        let row = &summary.groups[0].rows[0];
+        assert_eq!((row.rule.as_str(), row.risk), ("git-working-copy", Risk::Safe));
+        assert_eq!(row.command.as_deref(), Some("git clone https://example.com/team/app.git app"));
+        assert!(
+            row.detail
+                .as_deref()
+                .is_some_and(|detail| detail.starts_with("All of it is on origin at https://example.com/team/app.git")),
+            "{:?}",
+            row.detail
+        );
+        assert!(row.frees.logical >= 30_000, "the copy frees what is in it, its node_modules included");
+
+        // Something only here makes it one to look at first, and says what.
+        std::fs::write(copy.join("notes.md"), "mine").expect("write");
+        all_ago(dir.path(), 400);
+        let shared = opened(index_of(dir.path()));
+        let summary = findings_of(&shared, &nothing_found(), &nothing_seen(), 0, SizeBasis::Logical, 10, None).expect("findings");
+        let row = &summary.groups[0].rows[0];
+        assert_eq!((row.risk, row.command.as_deref()), (Risk::Caution, None));
+        assert_eq!(row.detail.as_deref(), Some("Not tracked: notes.md."));
     }
 
     #[test]
