@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
-import { TableSortHeader } from '@/components/ui/table'
-import { windowFor } from '@/components/ui/virtual-list'
+import { TableSortButton } from '@/components/ui/table'
+import { ariaSort } from '@/components/ui/table-sort'
+import { VirtualGrid, VirtualGridCell, VirtualGridColumn } from '@/components/ui/virtual-grid'
 import {
   growthOf,
   hasTrait,
@@ -36,15 +37,15 @@ const OVERSCAN = 12
  *
  * A `<table>` sizes its columns from what is in the DOM, and a virtualized body
  * holds one screenful — so the widths would shift on every scroll. One grid
- * template, shared by the header row and every body row, is what keeps them in
- * line. It is also why the body rows are a list of grids rather than a
- * `<tbody>`: the browser cannot be asked to lay out rows it cannot see.
+ * template, shared by the heading and every row, is what keeps them in line:
+ * dowel's VirtualGrid puts it on both. Written whole, as classes, so the
+ * stylesheet has them.
  */
-const GRID = 'minmax(0,1fr) 5rem 4.5rem 7rem 6rem 6rem'
+const GRID = 'grid-cols-[minmax(0,1fr)_5rem_4.5rem_7rem_6rem_6rem]'
 
 /** The columns of a comparison: what each entry held then, holds now, and
  * the difference, all on the size being read. */
-const COMPARED_GRID = 'minmax(0,1fr) 5rem 6.5rem 6.5rem 7rem'
+const COMPARED_GRID = 'grid-cols-[minmax(0,1fr)_5rem_6.5rem_6.5rem_7rem]'
 
 interface Column {
   /** What clicking this header sorts by. A column with no key of its own is
@@ -124,9 +125,8 @@ interface EntryTableProps {
  * survive a change it should not have survived.
  */
 export function EntryTable({ view, arena, version, parentId, total, sort, basis, selectedId, onSortChange, onDescend, onSelect }: EntryTableProps) {
-  const viewport = useRef<HTMLDivElement>(null)
-  const [scrollTop, setScrollTop] = useState(0)
-  const [viewportHeight, setViewportHeight] = useState(0)
+  /** The rows drawn now, by index: what the grid says is in view. */
+  const [range, setRange] = useState({ start: 0, end: 0 })
   const [count, setCount] = useState(0)
   /** The rows that have arrived, by their index in the ordered list. */
   const [rows, setRows] = useState<Map<number, Row>>(new Map())
@@ -144,37 +144,12 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
   // row held - the ones off screen are as old as the ones on it.
   const heldVersion = useRef(version)
 
-  const measure = useCallback(() => {
-    const element = viewport.current
-    if (!element) return
-    setViewportHeight(element.clientHeight)
-    setScrollTop(element.scrollTop)
-  }, [])
-
-  useEffect(() => {
-    const element = viewport.current
-    if (!element) return
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(measure)
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [measure])
-
-  const { start, end, totalHeight, offsetTop } = windowFor({
-    count,
-    rowHeight: ROW_HEIGHT,
-    viewportHeight,
-    scrollTop,
-    overscan: OVERSCAN,
-  })
-
-  // Fetch whatever part of the visible window has not arrived. The first pass
+  // Fetch whatever part of the rows in view has not arrived. The first pass
   // runs with `count` at zero, which asks for one page and learns the real
   // total from it.
   useEffect(() => {
-    const from = count === 0 ? 0 : start
-    const to = count === 0 ? OVERSCAN * 4 : end
+    const from = count === 0 ? 0 : range.start
+    const to = count === 0 ? OVERSCAN * 4 : range.end
     if (to <= from && count !== 0) return
 
     const outdated = heldVersion.current !== version
@@ -208,182 +183,156 @@ export function EntryTable({ view, arena, version, parentId, total, sort, basis,
         if (isStale(cause)) return
         setFailure(String(cause))
       })
-  }, [view, arena, version, parentId, sort, basis, start, end, count, rows])
+  }, [view, arena, version, parentId, sort, basis, range, count, rows])
 
   if (failure !== null) {
     return <p className="p-4 text-sm text-bad">{failure}</p>
   }
 
-  const drawn: (Row | undefined)[] = []
-  for (let index = start; index < end; index += 1) drawn.push(rows.get(index))
+  // The picture chooses by entry, the grid by place: the chosen entry is
+  // chosen here once its row has arrived, and brought into view then.
+  let selected: number | null = null
+  if (selectedId !== null) {
+    for (const [index, row] of rows) {
+      if (row.id === selectedId) {
+        selected = index
+        break
+      }
+    }
+  }
+  const sorted = { column: sort.key, direction: sort.direction === 'ascending' ? 'asc' : 'desc' } as const
+
+  const header = columns.map((column) =>
+    column.key === null ? (
+      <VirtualGridColumn key={column.label} className="px-3 text-right">
+        {column.label}
+      </VirtualGridColumn>
+    ) : (
+      <VirtualGridColumn key={column.label} aria-sort={ariaSort(sorted, column.key)} className={column.numeric ? 'px-3 text-right' : 'px-3'}>
+        <TableSortButton
+          column={column.key}
+          sort={sorted}
+          onSortChange={(key) => onSortChange(key as SortKey)}
+          // A button takes no case from the heading it is in (the stylesheet's
+          // reset), and the grid's headings are set in capitals.
+          className={column.numeric ? 'w-[calc(100%+0.5rem)] justify-end uppercase' : 'w-[calc(100%+0.5rem)] uppercase'}
+        >
+          {column.label}
+        </TableSortButton>
+      </VirtualGridColumn>
+    ),
+  )
+
+  const renderRow = (index: number) => {
+    const row = rows.get(index)
+    // A row that has not arrived: drawn empty at its height, so the list
+    // does not jump when it lands.
+    if (!row) return null
+
+    // In a comparison the bar is the row's share of what moved in the
+    // folder, as its tile in the picture is; in the view of what is
+    // untouched, of what of the folder is.
+    const size = row.compared !== null ? pick(row.compared.moved, basis) : row.untouched !== null ? pick(row.untouched, basis) : sizeOf(row, basis)
+    // The two size columns of the view of what is untouched are what of the
+    // row is: the folder by its old bytes alone.
+    const shown = row.untouched ?? { allocated: row.allocated, logical: row.logical }
+    // Why this row's two numbers differ, when they do. A second name for
+    // shared bytes is the one worth marking in the list itself rather than
+    // only in a tooltip: it is the row whose zero would otherwise read as a
+    // scanner that gave up.
+    const explanation = explainSize(row.traits, row.links)
+    // Marked when this row's own size would otherwise be a mystery: a second
+    // name, or a folder whose contents are named elsewhere and counted there.
+    // Both draw a zero the reader would otherwise read as a scanner that gave
+    // up.
+    const shared = isSharedName(row.traits) || hasTrait(row.traits, TRAIT.holdsShared)
+    return (
+      <>
+        <VirtualGridCell className="flex items-center gap-2 px-3" title={explanation === null ? row.path : `${row.path}\n${explanation}`}>
+          {/* The bar is the row's share of the folder, so a glance down the
+              column is the shape of what is here. */}
+          <span className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-soft" aria-hidden>
+            <span className="block h-full bg-accent" style={{ width: total > 0 ? `${(size / total) * 100}%` : '0%' }} />
+          </span>
+          <span className={row.isDirectory ? 'truncate font-medium' : 'truncate text-dim'}>
+            {row.name}
+            {row.isDirectory && <span className="text-dim">/</span>}
+          </span>
+          {/* A word on the row rather than only in the tooltip: the reader is
+              scanning a column of sizes for something to delete, and a zero
+              with no reason beside it is the one row they will act on
+              wrongly. Only the second name is marked here — the name holding
+              the bytes is an ordinary large row, and labelling it too would
+              put a badge on half the list. */}
+          {shared && (
+            <Badge variant="soft" className="shrink-0 px-1.5 py-0 text-2xs leading-4" title={explanation ?? undefined}>
+              linked
+            </Badge>
+          )}
+          {/* In the view of what changed, the word that keeps a size honest:
+              a file written to holds this much now, and grew by an amount
+              nothing recorded. */}
+          {row.change !== null && (
+            <Badge
+              variant="soft"
+              className="shrink-0 px-1.5 py-0 text-2xs leading-4"
+              title={row.change === 'created' ? 'Did not exist at the start of the span' : 'Existed before, and was written to since'}
+            >
+              {row.change === 'created' ? 'new' : 'written'}
+            </Badge>
+          )}
+          {/* In a comparison, what happened to the entry as a whole. A file
+              that only changed size carries no word: the change column is the
+              word. */}
+          {row.compared !== null && MARK_WORDS[row.compared.mark] !== null && (
+            <Badge variant="soft" className="shrink-0 px-1.5 py-0 text-2xs leading-4" title={MARK_TITLES[row.compared.mark]}>
+              {MARK_WORDS[row.compared.mark]}
+            </Badge>
+          )}
+        </VirtualGridCell>
+        <VirtualGridCell className="tabular px-3 text-right text-xs text-dim">{row.isDirectory ? formatCount(row.entries) : ''}</VirtualGridCell>
+        {row.compared !== null && <ComparedCells row={row} basis={basis} />}
+        {row.compared === null && (
+          <>
+            <VirtualGridCell className="tabular px-3 text-right text-xs text-dim">{formatShare(size, total)}</VirtualGridCell>
+            <VirtualGridCell className="tabular px-3 text-right">{formatBytes(shown.allocated)}</VirtualGridCell>
+            <VirtualGridCell className="tabular px-3 text-right text-dim">{formatBytes(shown.logical)}</VirtualGridCell>
+            <VirtualGridCell className="tabular px-3 text-right text-xs text-dim">{formatAge(row.subtreeModified)}</VirtualGridCell>
+          </>
+        )}
+      </>
+    )
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <table className="w-full table-fixed border-collapse text-left text-sm">
-        <thead className="border-b border-line text-xs text-dim">
-          <tr style={{ display: 'grid', gridTemplateColumns: grid }} className="h-8 items-center">
-            {columns.map((column) =>
-              column.key === null ? (
-                <th
-                  key={column.label}
-                  scope="col"
-                  className="flex items-center justify-end overflow-hidden whitespace-nowrap px-3 font-medium"
-                >
-                  {column.label}
-                </th>
-              ) : (
-                <TableSortHeader
-                  key={column.label}
-                  column={column.key}
-                  numeric={column.numeric}
-                  sort={{ column: sort.key, direction: sort.direction === 'ascending' ? 'asc' : 'desc' }}
-                  onSortChange={(key) => onSortChange(key as SortKey)}
-                  className="flex items-center overflow-hidden whitespace-nowrap"
-                >
-                  {column.label}
-                </TableSortHeader>
-              ),
-            )}
-          </tr>
-        </thead>
-      </table>
-
-      <div
-        ref={viewport}
-        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-        tabIndex={0}
-        role="rowgroup"
-        aria-label="Entries"
-        className="min-h-0 flex-1 overflow-y-auto"
-      >
-        {count === 0 ? (
-          <p className="px-3 py-6 text-sm text-dim">
-            {compared ? 'Nothing in this folder changed size.' : view === 'old' ? 'Nothing in this folder has gone a year untouched.' : 'This folder is empty.'}
-          </p>
-        ) : (
-          <div style={{ height: totalHeight }} className="relative">
-            <div style={{ transform: `translateY(${offsetTop}px)` }}>
-              {drawn.map((row, at) => {
-                const index = start + at
-                if (!row) {
-                  // A row that has not arrived. Drawn as an empty line of the
-                  // right height rather than skipped, so the list does not
-                  // jump when it lands.
-                  return <div key={`pending-${index}`} style={{ height: ROW_HEIGHT }} aria-hidden />
-                }
-
-                // In a comparison the bar is the row's share of what moved in
-                // the folder, as its tile in the picture is; in the view of
-                // what is untouched, of what of the folder is.
-                const size = row.compared !== null ? pick(row.compared.moved, basis) : row.untouched !== null ? pick(row.untouched, basis) : sizeOf(row, basis)
-                // The two size columns of the view of what is untouched are
-                // what of the row is: the folder by its old bytes alone.
-                const shown = row.untouched ?? { allocated: row.allocated, logical: row.logical }
-                const chosen = row.id === selectedId
-                // Why this row's two numbers differ, when they do. A second
-                // name for shared bytes is the one worth marking in the list
-                // itself rather than only in a tooltip: it is the row whose
-                // zero would otherwise read as a scanner that gave up.
-                const explanation = explainSize(row.traits, row.links)
-                // Marked when this row's own size would otherwise be a mystery:
-                // a second name, or a folder whose contents are named elsewhere
-                // and counted there. Both draw a zero the reader would
-                // otherwise read as a scanner that gave up.
-                const shared = isSharedName(row.traits) || hasTrait(row.traits, TRAIT.holdsShared)
-                return (
-                  // eslint-disable-next-line dowel/no-raw-button -- a row of a six-column grid, windowed from a million: RowButton lays out three slots, and dowel's Table is a <table>, which cannot be windowed
-                  <button
-                    key={row.id}
-                    type="button"
-                    role="row"
-                    aria-selected={chosen}
-                    /* One click highlights, and the picture beside this
-                     * highlights with it; a second on a folder goes in. A
-                     * single click that descended would make the two views
-                     * impossible to point at the same thing, because pointing
-                     * at it would have left it. */
-                    onClick={() => onSelect(row)}
-                    onDoubleClick={() => onDescend(row)}
-                    title={explanation === null ? row.path : `${row.path}\n${explanation}`}
-                    style={{ display: 'grid', gridTemplateColumns: grid, height: ROW_HEIGHT }}
-                    className={
-                      chosen
-                        ? 'w-full cursor-pointer items-center bg-accent-soft text-left'
-                        : row.isDirectory
-                          ? 'w-full cursor-pointer items-center text-left hover:bg-soft'
-                          : 'w-full cursor-pointer items-center text-left hover:bg-soft'
-                    }
-                  >
-                    <span role="gridcell" className="flex min-w-0 items-center gap-2 px-3">
-                      {/* The bar is the row's share of the folder, so a glance
-                          down the column is the shape of what is here. */}
-                      <span className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-soft" aria-hidden>
-                        <span className="block h-full bg-accent" style={{ width: total > 0 ? `${(size / total) * 100}%` : '0%' }} />
-                      </span>
-                      <span className={row.isDirectory ? 'truncate font-medium' : 'truncate text-dim'}>
-                        {row.name}
-                        {row.isDirectory && <span className="text-dim">/</span>}
-                      </span>
-                      {/* A word on the row rather than only in the tooltip: the
-                          reader is scanning a column of sizes for something to
-                          delete, and a zero with no reason beside it is the one
-                          row they will act on wrongly. Only the second name is
-                          marked here — the name holding the bytes is an
-                          ordinary large row, and labelling it too would put a
-                          badge on half the list. */}
-                      {shared && (
-                        <Badge variant="soft" className="shrink-0 px-1.5 py-0 text-2xs leading-4" title={explanation ?? undefined}>
-                          linked
-                        </Badge>
-                      )}
-                      {/* In the view of what changed, the word that keeps a
-                          size honest: a file written to holds this much now,
-                          and grew by an amount nothing recorded. */}
-                      {row.change !== null && (
-                        <Badge
-                          variant="soft"
-                          className="shrink-0 px-1.5 py-0 text-2xs leading-4"
-                          title={row.change === 'created' ? 'Did not exist at the start of the span' : 'Existed before, and was written to since'}
-                        >
-                          {row.change === 'created' ? 'new' : 'written'}
-                        </Badge>
-                      )}
-                      {/* In a comparison, what happened to the entry as a
-                          whole. A file that only changed size carries no
-                          word: the change column is the word. */}
-                      {row.compared !== null && MARK_WORDS[row.compared.mark] !== null && (
-                        <Badge variant="soft" className="shrink-0 px-1.5 py-0 text-2xs leading-4" title={MARK_TITLES[row.compared.mark]}>
-                          {MARK_WORDS[row.compared.mark]}
-                        </Badge>
-                      )}
-                    </span>
-                    <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
-                      {row.isDirectory ? formatCount(row.entries) : ''}
-                    </span>
-                    {row.compared !== null && <ComparedCells row={row} basis={basis} />}
-                    {row.compared === null && (
-                      <>
-                        <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
-                          {formatShare(size, total)}
-                        </span>
-                        <span role="gridcell" className="tabular truncate px-3 text-right">
-                          {formatBytes(shown.allocated)}
-                        </span>
-                        <span role="gridcell" className="tabular truncate px-3 text-right text-dim">
-                          {formatBytes(shown.logical)}
-                        </span>
-                        <span role="gridcell" className="tabular truncate px-3 text-right text-xs text-dim">
-                          {formatAge(row.subtreeModified)}
-                        </span>
-                      </>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        )}
-      </div>
+      <VirtualGrid
+        label="Entries"
+        count={count}
+        rowHeight={ROW_HEIGHT}
+        columns={grid}
+        header={header}
+        renderRow={renderRow}
+        rowKey={(index) => rows.get(index)?.id ?? `pending-${index}`}
+        selected={selected}
+        /* One click highlights, and the picture beside this highlights with
+         * it; a second on a folder, or Enter, goes in. A single click that
+         * descended would make the two views impossible to point at the same
+         * thing, because pointing at it would have left it. */
+        onSelectedChange={(index) => onSelect(rows.get(index) ?? null)}
+        onActivate={(index) => {
+          const row = rows.get(index)
+          if (row) onDescend(row)
+        }}
+        onRangeChange={(from, to) => setRange({ start: from, end: to })}
+        overscan={OVERSCAN}
+        className={count === 0 ? 'shrink-0' : 'min-h-0 flex-1'}
+      />
+      {count === 0 && (
+        <p className="px-3 py-6 text-sm text-dim">
+          {compared ? 'Nothing in this folder changed size.' : view === 'old' ? 'Nothing in this folder has gone a year untouched.' : 'This folder is empty.'}
+        </p>
+      )}
     </div>
   )
 }
@@ -408,15 +357,11 @@ function ComparedCells({ row, basis }: { row: Row; basis: SizeBasis }) {
   const before = row.compared === null ? 0 : pick(row.compared.before, basis)
   return (
     <>
-      <span role="gridcell" className="tabular truncate px-3 text-right text-dim">
-        {formatBytes(before)}
-      </span>
-      <span role="gridcell" className="tabular truncate px-3 text-right">
-        {formatBytes(sizeOf(row, basis))}
-      </span>
-      <span role="gridcell" className={`tabular truncate px-3 text-right font-medium ${growth > 0 ? 'text-bad' : growth < 0 ? 'text-good' : 'text-dim'}`}>
+      <VirtualGridCell className="tabular px-3 text-right text-dim">{formatBytes(before)}</VirtualGridCell>
+      <VirtualGridCell className="tabular px-3 text-right">{formatBytes(sizeOf(row, basis))}</VirtualGridCell>
+      <VirtualGridCell className={`tabular px-3 text-right font-medium ${growth > 0 ? 'text-bad' : growth < 0 ? 'text-good' : 'text-dim'}`}>
         {formatSigned(growth)}
-      </span>
+      </VirtualGridCell>
     </>
   )
 }

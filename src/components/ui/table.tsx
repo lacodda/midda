@@ -1,4 +1,4 @@
-import type { HTMLAttributes, TdHTMLAttributes, ThHTMLAttributes } from 'react'
+import type { ButtonHTMLAttributes, HTMLAttributes, TdHTMLAttributes, ThHTMLAttributes } from 'react'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from 'dowel-ui'
 import { ariaSort, type Sort } from './table-sort'
@@ -152,6 +152,86 @@ export function TableHeader({ numeric = false, className, ...props }: TableHeade
   )
 }
 
+export interface TableSortButtonProps
+  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'type'> {
+  /** This column's id - the key the accessor sorts by. */
+  column: string
+  /** What is sorted now, across the whole table. */
+  sort: Sort | undefined
+  /** Called with this column's id when the button is pressed. The product
+   * decides what comes next - the table does not sort or flip the direction. */
+  onSortChange: (column: string) => void
+}
+
+/** The button that reorders a column, for a heading that holds more than it.
+ *
+ * `TableSortHeader` is this inside a `<th>`, and it takes the whole cell: its
+ * children are the button's words. A heading that also carries a funnel, a
+ * resize grip or a menu cannot put them there - a button inside a button is
+ * not a control a browser or a reader can press - so it writes its own
+ * `TableHeader` and puts this beside them:
+ *
+ * ```tsx
+ * <TableHeader aria-sort={ariaSort(sort, 'stage')} className="group">
+ *   <span className="flex items-center gap-1">
+ *     <TableSortButton column="stage" sort={sort} onSortChange={reorder}>{t('stage')}</TableSortButton>
+ *     <FilterPopover … />
+ *   </span>
+ * </TableHeader>
+ * ```
+ *
+ * `aria-sort` stays on the cell, where it describes the column; `ariaSort`
+ * from `table-sort` gives the value, and nothing at all on a column that is
+ * not the sorted one.
+ *
+ * The arrow is `aria-hidden`, because `aria-sort` on the cell already says
+ * which way the column points - a reader would otherwise hear the direction
+ * twice, once as a word and once as a character nobody meant to publish. */
+export function TableSortButton({
+  column,
+  sort,
+  onSortChange,
+  className,
+  children,
+  ...props
+}: TableSortButtonProps) {
+  const active = sort?.column === column
+
+  return (
+    <button
+      type="button"
+      data-sorted={active ? sort.direction : undefined}
+      onClick={() => onSortChange(column)}
+      className={cn(
+        // `min-w-0`, and the words truncate: a column dragged narrower than
+        // its heading shows the start of the name and keeps the arrow, rather
+        // than pushing a funnel beside it out of the cell.
+        'group/sort -mx-1 inline-flex min-w-0 cursor-pointer items-center gap-1 rounded-sm px-1',
+        'transition-colors hover:text-text',
+        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+        active && 'text-text',
+        className,
+      )}
+      {...props}
+    >
+      <span className="truncate">{children}</span>
+      <span
+        aria-hidden
+        className={cn(
+          'shrink-0 text-2xs transition-opacity',
+          // The arrow of the unsorted column appears on hover rather than
+          // never: a heading that gives no sign it can be clicked is one
+          // nobody clicks. It stays out of the way until the pointer is on
+          // it, so a table of eight columns is not a row of eight arrows.
+          active ? 'opacity-100' : 'opacity-0 group-hover/sort:opacity-40',
+        )}
+      >
+        {active && sort.direction === 'desc' ? '▼' : '▲'}
+      </span>
+    </button>
+  )
+}
+
 export interface TableSortHeaderProps extends Omit<TableHeaderProps, 'onClick'> {
   /** This column's id - the key the accessor sorts by. */
   column: string
@@ -169,9 +249,9 @@ export interface TableSortHeaderProps extends Omit<TableHeaderProps, 'onClick'> 
  * part a hand-rolled table almost always gets wrong, and it is invisible to
  * everyone who reorders with a mouse.
  *
- * The arrow is `aria-hidden`, because `aria-sort` on the cell already says
- * which way the column points - a reader would otherwise hear the direction
- * twice, once as a word and once as a character nobody meant to publish. */
+ * The button takes the whole cell, so its children are its words. A heading
+ * that holds anything else as well - a funnel, a resize grip - is a
+ * `TableHeader` with a `TableSortButton` in it. */
 export function TableSortHeader({
   column,
   sort,
@@ -181,9 +261,6 @@ export function TableSortHeader({
   children,
   ...props
 }: TableSortHeaderProps) {
-  const active = sort?.column === column
-  const direction = sort?.direction
-
   return (
     <th
       scope="col"
@@ -193,32 +270,16 @@ export function TableSortHeader({
       className={cn('px-3 font-medium', numeric && 'tabular-nums', className)}
       {...props}
     >
-      <button
-        type="button"
-        onClick={() => onSortChange(column)}
-        className={cn(
-          'group -mx-1 inline-flex w-[calc(100%+0.5rem)] cursor-pointer items-center gap-1 rounded-sm px-1',
-          'transition-colors hover:text-text',
-          'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-          active && 'text-text',
-          numeric && 'justify-end',
-        )}
+      <TableSortButton
+        column={column}
+        sort={sort}
+        onSortChange={onSortChange}
+        // The whole cell is the target, less the padding the button lends
+        // back to its own focus ring.
+        className={cn('w-[calc(100%+0.5rem)]', numeric && 'justify-end')}
       >
         {children}
-        <span
-          aria-hidden
-          className={cn(
-            'text-2xs transition-opacity',
-            // The arrow of the unsorted column appears on hover rather than
-            // never: a heading that gives no sign it can be clicked is one
-            // nobody clicks. It stays out of the way until the pointer is on
-            // it, so a table of eight columns is not a row of eight arrows.
-            active ? 'opacity-100' : 'opacity-0 group-hover:opacity-40',
-          )}
-        >
-          {direction === 'desc' && active ? '▼' : '▲'}
-        </span>
-      </button>
+      </TableSortButton>
     </th>
   )
 }

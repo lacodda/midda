@@ -123,8 +123,8 @@ export interface RowButtonProps extends RowSlots, Omit<HTMLAttributes<HTMLElemen
  *
  * `aria-current` says which one is open, the way a list beside an editor
  * works: the row is where you are, not a value you are submitting. A product
- * that puts rows in a `listbox` passes `aria-selected` instead, and the
- * attribute it passes wins.
+ * that puts rows in a `listbox` passes `aria-selected` instead (a toggle,
+ * `aria-pressed`), and then `aria-current` is left off.
  */
 export function RowButton({
   start,
@@ -137,6 +137,11 @@ export function RowButton({
   className,
   ...props
 }: RowButtonProps) {
+  // The caller's own word for the state replaces `aria-current` rather than
+  // joining it: a row in a listbox announced as both selected and current
+  // reads one fact twice.
+  const named = props['aria-selected'] !== undefined || props['aria-pressed'] !== undefined
+
   return useRender({
     render,
     defaultTagName: 'button',
@@ -144,7 +149,7 @@ export function RowButton({
       // A `<button>` inside a form submits it unless told otherwise, and a
       // list of rows inside a settings form is where that bites.
       ...(render === undefined ? { type: 'button', disabled } : {}),
-      'aria-current': selected ? 'true' : undefined,
+      'aria-current': selected && !named ? 'true' : undefined,
       className: cn(
         'flex w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-sm text-text no-underline',
         'transition-colors hover:bg-soft',

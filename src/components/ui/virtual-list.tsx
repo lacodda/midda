@@ -102,6 +102,32 @@ export function windowFor({
   return { start, end, totalHeight, offsetTop: start * height }
 }
 
+export interface ScrollToShowInput {
+  /** The row to bring into view. */
+  index: number
+  rowHeight: number
+  /** Where the box is scrolled to now. */
+  scrollTop: number
+  /** How tall the box is. */
+  viewportHeight: number
+}
+
+/** Where to scroll so a row is in view, for a list a keyboard walks.
+ *
+ * Nowhere, if it is already. The least distance, if it is near - within a
+ * screen of the edge it crossed - so walking down a list moves it a row at a
+ * time. And a third of the way down the box if it is far, because a jump of a
+ * thousand rows that lands on the bottom edge hides everything after the row
+ * the reader went to. Returns the new `scrollTop`. */
+export function scrollToShow({ index, rowHeight, scrollTop, viewportHeight }: ScrollToShowInput): number {
+  const top = Math.max(0, index) * rowHeight
+  const bottom = top + rowHeight
+  if (top >= scrollTop && bottom <= scrollTop + viewportHeight) return scrollTop
+  const near = top >= scrollTop - viewportHeight && bottom <= scrollTop + 2 * viewportHeight
+  if (near) return top < scrollTop ? top : Math.max(0, bottom - viewportHeight)
+  return Math.max(0, top - Math.floor(viewportHeight / 3))
+}
+
 export interface VirtualListProps<Row> {
   /** Every row there is, in order. Only the ones in view are drawn. */
   rows: readonly Row[]

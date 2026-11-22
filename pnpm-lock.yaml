@@ -24,8 +24,8 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       dowel-ui:
-        specifier: ^0.43.1
-        version: 0.43.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        specifier: ^1.0.0
+        version: 1.0.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       react:
         specifier: ^19.3.1
         version: 19.3.1
@@ -973,8 +973,8 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dowel-ui@0.43.1:
-    resolution: {integrity: sha512-tWFty/JbX/X00nS7KbmIexG7KFaVtQFbkCVISrHVZ2SsVl0Z3U7krjO2XuU2PlucNgCBfEZOfDOhXpOfU6Jstw==}
+  dowel-ui@1.0.0:
+    resolution: {integrity: sha512-NYnUL8Yyjf7zK3x5dIp68/LO6QKwJRmVYgMDXSlSp/pOmDE8lUZOHQRKw+ljCVB59UzK2pRW9PZTvtGBU9lhGQ==}
     hasBin: true
     peerDependencies:
       react: ^19.0.0
@@ -2406,7 +2406,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  dowel-ui@0.43.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1):
+  dowel-ui@1.0.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1):
     dependencies:
       clsx: 2.1.1
       react: 19.3.1

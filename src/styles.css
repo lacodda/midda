@@ -7,8 +7,8 @@
 @import 'dowel-ui/theme.css';
 
 /*
- * midda — violet #A46BE8, the colour of its mark. The file is dowel's, not a
- * local copy of the hex: the accent moves in one place for the whole line.
+ * midda — violet, the colour of its mark. The file is dowel's, not a local
+ * copy of its value: the accent moves in one place for the whole line.
  */
 @import 'dowel-ui/accents/midda.css';
 
