@@ -477,3 +477,105 @@ fn a_scan_of_a_folder_knows_whose_the_folders_above_it_are() {
         "the deepest place above says: a game's saves, though in Documents"
     );
 }
+
+#[test]
+fn an_old_working_copy_waits_for_its_check_and_what_is_found_in_it_is_its_own() {
+    use crate::checks::repository::Verdict as Copy;
+    let tree = volume(&[
+        ("Projects/", 0, Some(300)),
+        ("Projects/old/", 0, Some(300)),
+        ("Projects/old/.git/", 0, Some(300)),
+        ("Projects/old/.git/HEAD", 20, Some(300)),
+        ("Projects/old/package.json", 1, Some(300)),
+        ("Projects/old/pnpm-lock.yaml", 1, Some(300)),
+        ("Projects/old/node_modules/", 0, Some(300)),
+        ("Projects/old/node_modules/a.js", 5000, Some(300)),
+        ("Projects/old/dist/", 0, Some(300)),
+        ("Projects/old/dist/app.js", 900, Some(300)),
+        ("Projects/old/vendor/", 0, Some(300)),
+        ("Projects/old/vendor/lib/", 0, Some(300)),
+        ("Projects/old/vendor/lib/.git/", 0, Some(300)),
+        ("Projects/old/vendor/lib/.git/HEAD", 20, Some(300)),
+        ("Projects/young/", 0, Some(10)),
+        ("Projects/young/.git/", 0, Some(10)),
+        ("Projects/young/.git/HEAD", 20, Some(10)),
+        ("Users/", 0, Some(300)),
+        ("Users/me/", 0, Some(300)),
+        ("Users/me/scoop/", 0, Some(300)),
+        ("Users/me/scoop/buckets/", 0, Some(300)),
+        ("Users/me/scoop/buckets/main/", 0, Some(300)),
+        ("Users/me/scoop/buckets/main/.git/", 0, Some(300)),
+        ("Users/me/scoop/buckets/main/.git/HEAD", 20, Some(300)),
+    ]);
+    let rules = RuleSet::shipped();
+    let survey = survey(&tree);
+    let copies: Vec<&Waiting> = survey.waiting.iter().filter(|waiting| waiting.check == Check::Repository).collect();
+    let named: Vec<NodeId> = copies.iter().map(|copy| copy.finding.id).collect();
+    assert_eq!(
+        named,
+        [at(&tree, "Projects/old"), at(&tree, "Projects/old/vendor/lib")],
+        "the old copies among the reader's own folders: not one written to lately, not a program's"
+    );
+    let (old, lib) = (copies[0], copies[1]);
+    assert_eq!(old.within, ["node_modules"], "the lockfile brings it back; a dist may hold what no build made");
+    assert!(old.inner.contains(&lib.finding.id), "a copy inside a copy is the outer one's");
+    assert_eq!(
+        said(rules, &tree, &survey.findings),
+        ["dist Projects/old/dist", "node-modules Projects/old/node_modules"],
+        "the walk went on into the copy, as if no rule named it"
+    );
+
+    let on_remote = Seen::Repository(Copy {
+        outcome: Some(Outcome::OnRemote),
+        about: "All of it is on origin.".to_owned(),
+        command: Some("git clone https://example.com/old.git old".to_owned()),
+    });
+    let found = rules.settle(old, &on_remote).expect("the rule's");
+    assert_eq!((found.group, rules.restore_of(&found).risk), (Group::Repositories, Risk::Safe));
+    assert_eq!(
+        rules.command_of(&found, Some(&on_remote)).as_deref(),
+        Some("git clone https://example.com/old.git old"),
+        "the clone the check saw, not the rule's bare command"
+    );
+    assert_eq!(
+        survey.swallowed(&[(found, on_remote)]),
+        HashSet::from([at(&tree, "Projects/old/node_modules"), at(&tree, "Projects/old/dist"), lib.finding.id]),
+        "once the copy is a finding, what was found in it is part of it"
+    );
+
+    let only_here = Seen::Repository(Copy {
+        outcome: None,
+        about: "1 change not committed: a.rs.".to_owned(),
+        command: None,
+    });
+    let careful = rules.settle(old, &only_here).expect("the rule's");
+    assert_eq!(rules.restore_of(&careful).risk, Risk::Caution);
+    assert_eq!(rules.command_of(&careful, Some(&only_here)), None);
+    assert_eq!(rules.detail(&careful, Some(&only_here)).as_deref(), Some("1 change not committed: a.rs."));
+
+    assert_eq!(rules.settle(old, &Seen::Fine), None, "a folder no working copy can be read in");
+    assert!(survey.swallowed(&[]).is_empty(), "and then what was found in it stays");
+}
+
+#[test]
+fn a_working_copy_that_holds_something_kept_is_looked_into_and_never_named() {
+    let keep = format!("[[keep]]\npaths = [\"{VOLUME}Projects/old/build\"]\n");
+    let (rules, refused) = RuleSet::with_own(&[("mine.toml".to_owned(), keep)], &Known::in_profiles());
+    assert!(refused.is_empty(), "{refused:?}");
+    let tree = volume(&[
+        ("Projects/", 0, Some(300)),
+        ("Projects/old/", 0, Some(300)),
+        ("Projects/old/.git/", 0, Some(300)),
+        ("Projects/old/.git/HEAD", 20, Some(300)),
+        ("Projects/old/build/", 0, Some(300)),
+        ("Projects/old/build/app.exe", 900, Some(300)),
+        ("Projects/old/package.json", 1, Some(300)),
+        ("Projects/old/pnpm-lock.yaml", 1, Some(300)),
+        ("Projects/old/node_modules/", 0, Some(300)),
+        ("Projects/old/node_modules/a.js", 5000, Some(300)),
+    ]);
+    let survey = rules.survey_at(&tree, now());
+    assert!(survey.waiting.is_empty(), "a copy something in which is kept never goes whole");
+    assert!(survey.closed.iter().all(|closed| closed.id != at(&tree, "Projects/old")), "nor is it closed");
+    assert_eq!(said(&rules, &tree, &survey.findings), ["node-modules Projects/old/node_modules"]);
+}

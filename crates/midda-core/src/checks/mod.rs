@@ -1,6 +1,7 @@
 //! What only a file can say about itself: where a shortcut points, what an
-//! installer installs, whether a folder says it is a cache, and what the
-//! Recycle Bin's records say it holds.
+//! installer installs, whether a folder says it is a cache, what the Recycle
+//! Bin's records say it holds, and what of a Git working copy its remote does
+//! not have.
 //!
 //! A rule names an entry by where it is and how old it is — that is the
 //! tree's to answer. Whether `Foo.lnk` on the Desktop points to anything, or
@@ -17,9 +18,11 @@
 //! shortcut to a drive that is not connected is not broken, and an installer
 //! that does not say what it installs is not "installed".
 //!
-//! See `docs/adr/0016-what-windows-and-downloads-leave-behind.md`.
+//! See `docs/adr/0016-what-windows-and-downloads-leave-behind.md` and
+//! `docs/adr/0020-working-copies-a-clone-brings-back.md`.
 
 pub mod installer;
+pub mod repository;
 pub mod shortcut;
 
 use std::collections::HashMap;
@@ -39,6 +42,11 @@ pub enum Check {
     Shortcut,
     /// Whether what an installer installs is installed here.
     Installer,
+    /// Whether everything in a Git working copy is on its remote
+    /// ([`repository`]). Read in the folder; the walk goes on into it, and
+    /// what it finds there is the copy's own until the check says the copy
+    /// is one thing.
+    Repository,
     /// Whether a file in the folder starts as the rule says. Written as
     /// `[rule.marker]`, never as `check`: a marker with nothing to look for
     /// cannot be written.
@@ -64,6 +72,7 @@ impl Check {
         match self {
             Self::Shortcut => "shortcut",
             Self::Installer => "installer",
+            Self::Repository => "repository",
             Self::Marker(_) => "marker",
         }
     }
@@ -71,14 +80,27 @@ impl Check {
     /// Whether what this check reads is a folder rather than a file.
     #[must_use]
     pub const fn reads_folders(&self) -> bool {
-        matches!(self, Self::Marker(_))
+        matches!(self, Self::Marker(_) | Self::Repository)
+    }
+
+    /// Whether the walk goes on into what this check reads before it is
+    /// asked: a working copy is the copy's own findings until its check says
+    /// it is one thing a clone brings back - or that something in it is only
+    /// here, and it is one thing to look at first. A folder that is no
+    /// working copy it can read keeps what was found in it.
+    #[must_use]
+    pub const fn looks_inside(&self) -> bool {
+        matches!(self, Self::Repository)
     }
 
     /// Whether this check can answer `outcome`, so a way back can be taken
     /// by it.
     #[must_use]
     pub const fn says(&self, outcome: Outcome) -> bool {
-        matches!((self, outcome), (Self::Installer, Outcome::Installed | Outcome::OlderInstalled))
+        matches!(
+            (self, outcome),
+            (Self::Installer, Outcome::Installed | Outcome::OlderInstalled) | (Self::Repository, Outcome::OnRemote)
+        )
     }
 }
 
@@ -92,6 +114,9 @@ pub enum Outcome {
     /// An older version than the one the installer installs is: it may be
     /// an update not yet run.
     OlderInstalled,
+    /// Everything in the working copy is on its remote, and what git ignores
+    /// in it a rule says comes back.
+    OnRemote,
 }
 
 impl Outcome {
@@ -101,6 +126,7 @@ impl Outcome {
         match self {
             Self::Installed => "installed",
             Self::OlderInstalled => "older-installed",
+            Self::OnRemote => "on-remote",
         }
     }
 }
@@ -121,6 +147,8 @@ pub enum Seen {
     Marked,
     /// A Recycle Bin folder, and what its records say of it, when any read.
     Bin { about: Option<String> },
+    /// A Git working copy, and what of it its remote has.
+    Repository(repository::Verdict),
 }
 
 impl Seen {
@@ -132,6 +160,17 @@ impl Seen {
             Self::Broken { .. } | Self::Marked | Self::Bin { .. } => Some(None),
             Self::Fine => None,
             Self::Installer(verdict) => Some(verdict.outcome),
+            Self::Repository(verdict) => Some(verdict.outcome),
+        }
+    }
+
+    /// The command that brings this one back, when what the check saw names
+    /// it better than the rule can: the clone of this working copy's remote.
+    #[must_use]
+    pub fn command(&self) -> Option<&str> {
+        match self {
+            Self::Repository(verdict) => verdict.command.as_deref(),
+            _ => None,
         }
     }
 
@@ -142,6 +181,7 @@ impl Seen {
             Self::Broken { target } => Some(format!("It points to {target}, which is not there.")),
             Self::Fine | Self::Marked => None,
             Self::Installer(verdict) => Some(verdict.about.clone()),
+            Self::Repository(verdict) => Some(verdict.about.clone()),
             Self::Bin { about } => about.clone(),
         }
     }
@@ -171,13 +211,25 @@ impl Machine {
     }
 }
 
+/// Asks the entry that waits what its check needs to know ([`look`]).
+#[must_use]
+pub fn ask(entry: &Waiting, machine: &Machine) -> Seen {
+    match entry.check {
+        Check::Repository => repository::look(&entry.path, &entry.within).map_or(Seen::Fine, Seen::Repository),
+        _ => look(&entry.path, &entry.check, machine),
+    }
+}
+
 /// Asks the entry at `path` what `check` needs to know. Reads the file - for
 /// a folder, the file in it the check is about - and for an installer asks
 /// Windows Installer; changes nothing, the time a file was last opened
-/// included, which the read would otherwise make today.
+/// included, which the read would otherwise make today. A working copy is
+/// read with nothing in it explained: [`ask`] passes what the rules found in
+/// it.
 #[must_use]
 pub fn look(path: &Path, check: &Check, machine: &Machine) -> Seen {
     match check {
+        Check::Repository => repository::look(path, &[]).map_or(Seen::Fine, Seen::Repository),
         Check::Shortcut => {
             let _kept = crate::platform::keeping_access_time(path);
             shortcut::look(path)
@@ -245,10 +297,12 @@ fn starts_with(path: &Path, start: &[u8]) -> bool {
 /// The survey runs again whenever the tree changes, and nearly every change
 /// is to some other file: asking every shortcut and installer again each time
 /// would read them all for nothing. A file whose size or time moved is read
-/// again; one that is gone is forgotten.
+/// again; one that is gone is forgotten. A working copy is read again, too,
+/// when what the rules explain in it is not what it was: the reader's own
+/// rules can change that without a byte of the copy moving.
 #[derive(Debug, Clone, Default)]
 pub struct Kept {
-    seen: HashMap<PathBuf, (u64, Option<SystemTime>, Seen)>,
+    seen: HashMap<PathBuf, (u64, Option<SystemTime>, Vec<String>, Seen)>,
     /// What was told of findings, the same way.
     told: HashMap<PathBuf, (u64, Option<SystemTime>, Seen)>,
 }
@@ -264,13 +318,13 @@ impl Kept {
             let size = entry.finding.holds.logical;
             let written = entry.finding.newest;
             let seen = match self.seen.remove(&entry.path) {
-                Some((was, then, seen)) if was == size && then == written => seen,
+                Some((was, then, within, seen)) if was == size && then == written && within == entry.within => seen,
                 _ => look(entry),
             };
             if let Some(finding) = rules.settle(entry, &seen) {
                 settled.push((finding, seen.clone()));
             }
-            kept.insert(entry.path.clone(), (size, written, seen));
+            kept.insert(entry.path.clone(), (size, written, entry.within.clone(), seen));
         }
         self.seen = kept;
         settled

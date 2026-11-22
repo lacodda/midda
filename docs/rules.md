@@ -62,7 +62,7 @@ explain = "What Unity imported from the project's assets. Opening the project im
 | --- | --- |
 | `id` | Lowercase letters, digits and dashes, unique across every file. |
 | `name` | What a reader calls the thing found. |
-| `group` | Where it is listed: `dependencies`, `build`, `caches`, `browser-caches`, `recycle-bin`, `temporary`, `windows`, `crash-reports`, `downloads`, `leftovers`. |
+| `group` | Where it is listed: `dependencies`, `build`, `caches`, `repositories`, `browser-caches`, `recycle-bin`, `temporary`, `windows`, `crash-reports`, `downloads`, `leftovers`. |
 | `paths` | Where it is, read from its end (see below). |
 | `beside` | It counts only when one of these is next to it. |
 | `inside` | It counts only when one of these is in it. |
@@ -73,7 +73,7 @@ explain = "What Unity imported from the project's assets. Opening the project im
 | `hollow` | Only a folder with no file anywhere in it. |
 | `within` | Only strictly inside what these consumers hold: `documents`, `media`, `unrecognised`, … |
 | `except` | Paths the rule never names, and that never go with a folder it empties. |
-| `check` | What only the file can say, asked after the walk: `shortcut` (only a shortcut to nothing is the rule's) or `installer` (whether what it installs is installed). |
+| `check` | What only the file can say, asked after the walk: `shortcut` (only a shortcut to nothing is the rule's), `installer` (whether what it installs is installed) or `repository` (whether all of a Git working copy is on its remote - below). |
 | `marker` | A file the folder holds to say what it is, and how it starts (below). |
 | `about` | What more is read of a finding once it is one: `recycle-bin`. |
 | `restore` | The ways back, tried in order (below). At least one. |
@@ -99,7 +99,7 @@ explain = "Packages installed for this project. There is no lockfile beside it, 
 
 The first way whose `when` is next to the folder is taken - or, for a rule
 with a check, whose `if` is what the check said (`installed`,
-`older-installed`); the last has neither and takes the rest. `risk` is `safe`
+`older-installed`, `on-remote`); the last has neither and takes the rest. `risk` is `safe`
 (nothing anyone needs is lost) or `caution` (it may not come back as it was);
 `command` is what to run beside the folder to make it again; `explain` is one
 or two sentences said to the reader as they are.
@@ -131,6 +131,40 @@ Only a folder that holds `file`, and whose `file` starts with `starts`, is the
 rule's. The file is read after the walk, as far as `starts` is long - at most
 512 bytes. This is how midda finds a cache that says so itself, by the
 [cache directory tagging standard](https://bford.info/cachedir/).
+
+### A working copy
+
+```toml
+[[rule]]
+id = "old-clones"
+name = "Clone I read once"
+group = "repositories"
+paths = ["D:/src/*"]
+inside = [".git"]
+older = "1 year"
+check = "repository"
+
+[[rule.restore]]
+if = "on-remote"
+command = "git clone"
+risk = "safe"
+explain = "All of it is on its remote; a clone brings it back."
+
+[[rule.restore]]
+risk = "caution"
+explain = "Something in it is only here."
+```
+
+The check reads the repository after the walk, without running git and
+without writing. A copy is `on-remote` when every commit, branch and tag is
+on its remote, nothing is changed, untracked or stashed, no operation is left
+halfway, and what git ignores in it is something another rule says comes
+back - a `node_modules` beside its lockfile, a Cargo `target`. A `.env` or a
+`dist` keeps it careful. The finding then says what is only here, or where the
+remote is, and its command is the exact clone: `git clone <address> <folder>`.
+What the rules found in the copy is part of it once it is a finding. The
+shipped rule is `git-working-copy` in `rules/dev.toml`; see
+[ADR 0020](adr/0020-working-copies-a-clone-brings-back.md).
 
 ## Places
 

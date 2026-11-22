@@ -63,6 +63,14 @@
 //!   sees that the file is there; what it begins with is read afterwards,
 //!   as a check is.
 //!
+//! - **A working copy** (`check = "repository"`): a folder with a `.git` in
+//!   it, read for what its remote does not have (ADR 0020). It is the one
+//!   check the walk does not stop at: what the rules find inside the copy
+//!   is found as before, and the copy's check is told which of it comes
+//!   back, since what git ignores is lost unless a rule says otherwise. Once
+//!   the check makes the copy a finding, what was found in it is part of it
+//!   ([`Survey::swallowed`]).
+//!
 //! # Rules are data
 //!
 //! The rules midda ships with are files in `rules/` ([`SHIPPED`]), read by
@@ -156,16 +164,20 @@ pub enum Group {
     /// the previous Windows, the updates it downloaded, the thumbnails
     /// Explorer drew.
     Windows,
+    /// Git working copies nothing has written to for long: whole, when a
+    /// clone brings them back.
+    Repositories,
 }
 
 impl Group {
     /// Every group, in the order a list of findings shows them: what a
-    /// project installed, built and shares, then what a browser, Windows and
-    /// the reader's downloads leave behind.
-    pub const ALL: [Self; 10] = [
+    /// project installed, built and shares, the projects left alone, then
+    /// what a browser, Windows and the reader's downloads leave behind.
+    pub const ALL: [Self; 11] = [
         Self::Dependencies,
         Self::Build,
         Self::Caches,
+        Self::Repositories,
         Self::BrowserCaches,
         Self::RecycleBin,
         Self::Temporary,
@@ -189,7 +201,7 @@ impl Group {
     #[must_use]
     pub const fn consumer(self) -> Option<Consumer> {
         match self {
-            Self::Dependencies | Self::Build | Self::Caches => Some(Consumer::Development),
+            Self::Dependencies | Self::Build | Self::Caches | Self::Repositories => Some(Consumer::Development),
             Self::RecycleBin | Self::Temporary | Self::CrashReports | Self::Windows => Some(Consumer::System),
             Self::BrowserCaches => Some(Consumer::Browsers),
             Self::Downloads | Self::Leftovers => None,
@@ -297,6 +309,67 @@ struct Here {
     now: SystemTime,
     /// Who the place the entry is in says its bytes are for.
     above: Above,
+    /// The innermost working copy the entry is in, when it is in one.
+    copy: Enclosing,
+}
+
+/// The innermost working copy a walk is in, by its place in
+/// [`Survey::waiting`].
+type Enclosing = Option<usize>;
+
+/// The working copies one walk is inside, each with the one around it.
+#[derive(Debug, Default)]
+struct Copies {
+    /// By a copy's place in [`Survey::waiting`]: the copy around it.
+    around: HashMap<usize, Enclosing>,
+}
+
+impl Copies {
+    /// Records that the walk goes into the working copy waiting at
+    /// `waiting`, inside `around`; the copy the walk is in from there.
+    fn open(&mut self, waiting: usize, around: Enclosing) -> usize {
+        self.around.insert(waiting, around);
+        waiting
+    }
+
+    /// Records that `id`, found inside `copy`, is that copy's and every
+    /// copy's around it.
+    fn hold(&self, survey: &mut Survey, mut copy: Enclosing, id: NodeId) {
+        while let Some(at) = copy {
+            survey.waiting[at].inner.push(id);
+            copy = self.around.get(&at).copied().flatten();
+        }
+    }
+
+    /// Tells each working copy what in it comes back as it was: the
+    /// findings in it, whole, whose way back is safe - as paths from the
+    /// copy, with `/`. A finding a check still has to settle is not one yet.
+    fn explain(&self, rules: &RuleSet, tree: &Tree, survey: &mut Survey) {
+        if self.around.is_empty() {
+            return;
+        }
+        let safe: HashSet<NodeId> = survey
+            .findings
+            .iter()
+            .filter(|finding| finding.goes == Goes::Whole && rules.restore_of(finding).risk == Risk::Safe)
+            .map(|finding| finding.id)
+            .collect();
+        for &at in self.around.keys() {
+            let copy = &survey.waiting[at];
+            let root = copy.path.clone();
+            let within = copy
+                .inner
+                .iter()
+                .filter(|id| safe.contains(id))
+                .filter_map(|&id| {
+                    let path = tree.path_of(id);
+                    let relative = path.strip_prefix(&root).ok()?;
+                    Some(relative.to_string_lossy().replace('\\', "/"))
+                })
+                .collect();
+            survey.waiting[at].within = within;
+        }
+    }
 }
 
 impl Rule {
@@ -833,14 +906,20 @@ impl RuleSet {
         } else {
             Above::default()
         };
-        let mut stack: Vec<(NodeId, Above)> = Vec::new();
+        let mut stack: Vec<(NodeId, Above, Enclosing)> = Vec::new();
         let mut among = Vec::new();
-        self.look_in(tree, ROOT, &walk, Here { now, above: root_above }, &mut survey, &mut stack, &mut among);
-        while let Some((id, above)) = stack.pop() {
+        let mut copies = Copies::default();
+        let top = Here {
+            now,
+            above: root_above,
+            copy: None,
+        };
+        self.look_in(tree, ROOT, &walk, top, &mut survey, &mut stack, &mut among, &copies);
+        while let Some((id, above, copy)) = stack.pop() {
             if walk.keeping.named.contains(&id) {
                 continue;
             }
-            let here = Here { now, above };
+            let here = Here { now, above, copy };
             // Asked once of each folder: whether it is a place itself, and
             // what it says of what is in it.
             let place = if walk.places {
@@ -848,28 +927,51 @@ impl RuleSet {
             } else {
                 None
             };
-            match self.naming(tree, id, &walk, here, &|| place.is_some(), None) {
+            let named = self.naming(tree, id, &walk, here, &|| place.is_some(), None);
+            // A working copy is looked into whatever its check says: what is
+            // in it is found as if no rule named it, and is the copy's.
+            let inside = match named {
+                Some((rule, _)) if self.rules[rule].check.as_ref().is_some_and(Check::looks_inside) => Some(rule),
+                _ => None,
+            };
+            let copy = match (named, inside) {
+                // Something in it is kept: the copy never goes whole, and
+                // what is in it is what it was.
+                (Some((_, going)), Some(_)) if going.is_empty() => copy,
+                (Some((rule, going)), Some(_)) => {
+                    self.found(tree, id, rule, &going, &mut survey, &copies, copy);
+                    Some(copies.open(survey.waiting.len() - 1, copy))
+                }
                 // Held: the rule's, and something in it is kept. One thing,
                 // and nobody's to delete.
-                Some((rule, going)) if going.is_empty() => survey.closed.push(Closed {
-                    id,
-                    rule,
-                    group: self.rules[rule].group,
-                }),
-                Some((rule, going)) => self.found(tree, id, rule, &going, &mut survey),
-                None => match self.closing(tree, id, &walk.outer) {
-                    Some(rule) => survey.closed.push(Closed {
+                (Some((rule, going)), None) if going.is_empty() => {
+                    survey.closed.push(Closed {
                         id,
                         rule,
                         group: self.rules[rule].group,
-                    }),
-                    None => {
-                        let inner = place.map_or(above, |place| Above::of(&self.places[place]));
-                        self.look_in(tree, id, &walk, Here { now, above: inner }, &mut survey, &mut stack, &mut among);
-                    }
-                },
+                    });
+                    continue;
+                }
+                (Some((rule, going)), None) => {
+                    self.found(tree, id, rule, &going, &mut survey, &copies, copy);
+                    continue;
+                }
+                (None, _) => copy,
+            };
+            if inside.is_none()
+                && let Some(rule) = self.closing(tree, id, &walk.outer)
+            {
+                survey.closed.push(Closed {
+                    id,
+                    rule,
+                    group: self.rules[rule].group,
+                });
+                continue;
             }
+            let inner = place.map_or(above, |place| Above::of(&self.places[place]));
+            self.look_in(tree, id, &walk, Here { now, above: inner, copy }, &mut survey, &mut stack, &mut among, &copies);
         }
+        copies.explain(self, tree, &mut survey);
         survey.findings.sort_by(|a, b| {
             b.frees
                 .allocated
@@ -905,11 +1007,21 @@ impl RuleSet {
     /// `stack`, each with what the walk knows of where it is. `among` is
     /// room for the rules a file's name lets name it.
     #[allow(clippy::too_many_arguments, reason = "one step of one walk, and the room it reuses")]
-    fn look_in(&self, tree: &Tree, id: NodeId, walk: &Walk<'_>, here: Here, survey: &mut Survey, stack: &mut Vec<(NodeId, Above)>, among: &mut Vec<usize>) {
+    fn look_in(
+        &self,
+        tree: &Tree,
+        id: NodeId,
+        walk: &Walk<'_>,
+        here: Here,
+        survey: &mut Survey,
+        stack: &mut Vec<(NodeId, Above, Enclosing)>,
+        among: &mut Vec<usize>,
+        copies: &Copies,
+    ) {
         let mut scratch = String::new();
         for &child in &tree.node(id).children {
             if tree.node(child).is_directory() {
-                stack.push((child, here.above));
+                stack.push((child, here.above, here.copy));
             } else if walk.files && !walk.keeping.named.contains(&child) {
                 self.file_rules.candidates(&tree.node(child).name, &mut scratch, among);
                 if among.is_empty() {
@@ -917,15 +1029,18 @@ impl RuleSet {
                 }
                 let place = || walk.places && self.place_of(tree, child, &walk.outer, &mut String::new()).is_some();
                 if let Some((rule, going)) = self.naming(tree, child, walk, here, &place, Some(among)) {
-                    self.found(tree, child, rule, &going, survey);
+                    self.found(tree, child, rule, &going, survey, copies, here.copy);
                 }
             }
         }
     }
 
     /// Records that `rule` names `id`, with `going` what deleting it takes:
-    /// a finding, or an entry whose check is still to be asked.
-    fn found(&self, tree: &Tree, id: NodeId, rule: usize, going: &[NodeId], survey: &mut Survey) {
+    /// a finding, or an entry whose check is still to be asked - and, when
+    /// the walk is inside working copies (`copy`), that it is theirs.
+    #[allow(clippy::too_many_arguments, reason = "one finding of one walk, and where in the walk it is")]
+    fn found(&self, tree: &Tree, id: NodeId, rule: usize, going: &[NodeId], survey: &mut Survey, copies: &Copies, copy: Enclosing) {
+        copies.hold(survey, copy, id);
         let spec = &self.rules[rule];
         let mut holds = Size::zero();
         let mut entries = 0;
@@ -969,6 +1084,8 @@ impl RuleSet {
                 path: tree.path_of(id),
                 check: check.clone(),
                 finding,
+                inner: Vec::new(),
+                within: Vec::new(),
             }),
         }
     }
@@ -988,6 +1105,20 @@ impl RuleSet {
             restore: rule.way_seen(outcome),
             ..waiting.finding
         })
+    }
+
+    /// The command that brings a finding back: the one its check saw, when
+    /// it names one - the clone of a working copy's remote - else its way
+    /// back's.
+    ///
+    /// # Panics
+    ///
+    /// If `finding` came from another set.
+    #[must_use]
+    pub fn command_of(&self, finding: &Finding, seen: Option<&Seen>) -> Option<String> {
+        seen.and_then(Seen::command)
+            .map(ToOwned::to_owned)
+            .or_else(|| self.restore_of(finding).command.clone())
     }
 
     /// What a reader is told of a finding beside its rule's sentence: what
@@ -1206,6 +1337,15 @@ impl Survey {
             .collect()
     }
 
+    /// What `settled` - the waiting entries a check made findings - holds of
+    /// the rest: everything found inside a working copy that is now one
+    /// finding itself. A list of findings leaves these out; what fills the
+    /// disk and the picture still see them, as what they are.
+    #[must_use]
+    pub fn swallowed(&self, settled: &[(Finding, Seen)]) -> HashSet<NodeId> {
+        swallowed(&self.waiting, settled)
+    }
+
     /// Everything a rule claims whole for its group's consumer: the findings
     /// of a group that says whose they are, and the closed folders. A finding
     /// whose group says nothing — an old download — claims no bytes.
@@ -1299,6 +1439,24 @@ pub struct Waiting {
     pub check: Check,
     /// The finding it is, but for the way back.
     pub finding: Finding,
+    /// For a working copy: every finding and waiting entry the walk met in
+    /// it, which are part of it once it is a finding.
+    pub inner: Vec<NodeId>,
+    /// For a working copy: what in it comes back as it was, by what the
+    /// rules found there - paths from the copy, with `/`.
+    pub within: Vec<String>,
+}
+
+/// What `settled` - the entries of `waiting` a check made findings - holds
+/// of the rest of a survey ([`Survey::swallowed`]).
+#[must_use]
+pub fn swallowed(waiting: &[Waiting], settled: &[(Finding, Seen)]) -> HashSet<NodeId> {
+    let found: HashSet<NodeId> = settled.iter().map(|(finding, _)| finding.id).collect();
+    waiting
+        .iter()
+        .filter(|waiting| !waiting.inner.is_empty() && found.contains(&waiting.finding.id))
+        .flat_map(|waiting| waiting.inner.iter().copied())
+        .collect()
 }
 
 /// What deleting `going` would give back: every file under them whose names

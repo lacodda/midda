@@ -17,11 +17,12 @@
 #   except   paths, read as `paths` are, the rule never names, and that
 #            never go with a folder it empties
 #   check    what only the file can say, asked after the walk: `shortcut`
-#            (only a shortcut to nothing is the rule's) or `installer`
-#            (whether what it installs is installed here)
+#            (only a shortcut to nothing is the rule's), `installer`
+#            (whether what it installs is installed here) or `repository`
+#            (whether all of a Git working copy is on its remote: dev.toml)
 #   if       on a way back, what the check says for it to be taken:
-#            `installed` (this version or a newer one is) or
-#            `older-installed`
+#            `installed` (this version or a newer one is),
+#            `older-installed` or `on-remote`
 #   about    what more is read of a finding once it is one, without a word
 #            on whether it is: `recycle-bin` (what the bin's records say -
 #            how many things, deleted when, by whom)

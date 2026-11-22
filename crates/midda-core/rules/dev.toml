@@ -7,7 +7,7 @@
 #
 #   id       kebab-case, unique in the file
 #   name     what a reader calls the thing found
-#   group    dependencies | build | caches
+#   group    dependencies | build | caches | repositories
 #   paths    where the folder is, read from its end: `node_modules` is one
 #            anywhere, `AppData/Local/npm-cache` one in any profile. `*` and
 #            `?` work inside a name; case is ignored.
@@ -291,6 +291,38 @@ tools = [["bun"]]
 run = ["pm", "cache", "rm"]
 locate = ["pm", "cache"]
 explain = "Bun empties its cache."
+
+# ---------------------------------------------------------------- repositories
+
+# A Git working copy nothing has written to for half a year. Its check reads
+# the repository after the walk: a clone of its remote brings it back when
+# every commit, branch and tag of it is on that remote, nothing is changed,
+# untracked or stashed, and what git ignores in it is something a rule above
+# says comes back - `node_modules` beside its lockfile, a Cargo `target`. Then
+# the copy is one finding, and what was found in it is part of it. Anything
+# else is listed, and the copy is one thing to look at first.
+#
+# Only among the reader's own folders: a copy a program keeps - a Scoop
+# bucket, an editor's plugins - is the program's, and it breaks without it.
+[[rule]]
+id = "git-working-copy"
+name = "Git working copy"
+group = "repositories"
+paths = ["*"]
+inside = [".git"]
+older = "6 months"
+within = ["documents", "media", "development", "unrecognised"]
+check = "repository"
+
+[[rule.restore]]
+if = "on-remote"
+command = "git clone"
+risk = "safe"
+explain = "A Git working copy nothing has written to for half a year, and all of it is on its remote: every commit, branch and tag is there, nothing is changed, untracked or stashed, and its tools make again what git ignores here. A clone brings it back; its own settings in .git and its hooks are not on the remote."
+
+[[rule.restore]]
+risk = "caution"
+explain = "A Git working copy nothing has written to for half a year, with something in it its remote does not have. What is only here is listed: push it or keep it somewhere first."
 
 # A cache that says so itself, by the standard at bford.info/cachedir: a tool
 # puts a CACHEDIR.TAG that starts with this signature into a folder it can
